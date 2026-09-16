@@ -25,8 +25,8 @@ namespace pinpoint {
      * @brief Token bucket rate limiter used for sampling throughput limits.
      *
      * Capacity is `tps` tokens and the refill rate is `tps` tokens per second
-     * off a monotonic clock. A fixed wall-clock window would instead admit up to 2*tps across a second
-     * boundary and tie the window to wall time.
+     * off a monotonic clock. A fixed wall-clock window would instead admit up
+     * to 2*tps across a second boundary and tie the window to wall time.
      *
      * The whole bucket is one 64-bit atomic: the theoretical arrival time of
      * the next token, in nanoseconds. Tokens are the distance between that
@@ -36,10 +36,8 @@ namespace pinpoint {
      * twice.
      *
      * That clock starts at construction, so the bucket fills while the limiter
-     * is idle and unused: Guava resyncs its stopwatch in `setRate()` and turns
-     * everything elapsed since into permits on the first `acquire()`, so an
-     * agent that sits idle for a second before its first request admits a
-     * whole second of burst rather than a single call.
+     * is idle and unused: an agent quiet for a second before its first request
+     * admits a whole second of burst rather than a single call.
      */
     class RateLimiter {
     public:

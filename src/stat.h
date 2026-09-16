@@ -44,10 +44,9 @@ namespace pinpoint {
         double     system_cpu_time_{0};
         double     process_cpu_time_{0};
         // Thread count and resident memory, or -1 when the platform reading
-        // failed. Defaulted to
-        // the sentinel so a /proc that is unmounted or hidepid-restricted
-        // never plots as a measured 0 in Inspector's Heap Usage and Thread
-        // Count charts.
+        // failed. Defaulted to the sentinel so a /proc that is unmounted or
+        // hidepid-restricted never plots as a measured 0 in Inspector's Heap
+        // Usage and Thread Count charts.
         int64_t    num_threads_{UNCOLLECTED_STAT_VALUE};
         int64_t    heap_alloc_size_{UNCOLLECTED_STAT_VALUE};
         int64_t    heap_max_size_{UNCOLLECTED_STAT_VALUE};
@@ -92,11 +91,10 @@ namespace pinpoint {
         /// kActiveSpanWarnThreshold warning and tests.
         size_t activeSpanCount() const noexcept;
 
-        // Registered spans above which addActiveSpan logs a rate-limited
-        // WARN. This registry cannot evict (see active_span.h), so the count
-        // is only reported.
-        // A sustained count above it means spans are not being ended — an
-        // instrumentation bug in the host — not legitimate load.
+        // Registered spans above which addActiveSpan logs a rate-limited WARN.
+        // The registry cannot evict (see active_span.h), so the count is only
+        // reported. A sustained count above it means spans are not being ended
+        // — an instrumentation bug in the host — not legitimate load.
         static constexpr size_t kActiveSpanWarnThreshold = 10240;
         
         // Counter incrementers. Called once per request, routed to the
@@ -184,12 +182,11 @@ namespace pinpoint {
          * The active-span registry is the one per-request structure a span
          * touches without going through AgentImpl, so AgentImpl's own guards
          * (tracing_active, the pid-guarded teardown) do not cover it. Its
-         * add/drop/collect all take a shard mutex, and a mutex some thread
-         * held at the fork instant is inherited locked with no thread left in
-         * the child to unlock it — the caller would block forever. A span
-         * created before the fork is exactly such a caller: the child runs on
-         * the forking thread's stack, so EndSpan on that span is reached
-         * directly, not through the agent.
+         * add/drop/collect all take a shard mutex, and a mutex some thread held
+         * at the fork instant is inherited locked with no thread left in the
+         * child to unlock it. A span created before the fork is exactly such a
+         * caller: the child runs on the forking thread's stack, so EndSpan on
+         * that span is reached directly, not through the agent.
          */
         bool inheritedAcrossFork() const noexcept;
         /// @brief Drains every per-thread shard in one sweep: response-time
@@ -211,13 +208,11 @@ namespace pinpoint {
 
         // Cache-line-aligned per-thread shard: every request updates exactly
         // one shard (picked by thread id), so the per-request RMWs never
-        // contend across threads. Besides the response-time fields it carries
-        // the sampler-outcome counters: as process-wide singles they were one
-        // shared line hit once per request — span_lifecycle_benchmark
-        // measured that at ~23 ns/request of cross-core traffic at 4 threads,
-        // the same contention this sharding exists to remove. Nine counters
-        // exceed one 64-byte line, but both lines still belong to a single
-        // thread's shard, which is the isolation that matters.
+        // contend across threads. The sampler-outcome counters live here for
+        // the same reason — process-wide they would be one shared line hit
+        // once per request. Nine counters exceed one 64-byte line, but both
+        // lines still belong to a single thread's shard, which is the
+        // isolation that matters.
         struct alignas(64) ResponseTimeShard {
             std::atomic<int64_t> acc_response_time_{0};
             std::atomic<int64_t> request_count_{0};
@@ -232,15 +227,13 @@ namespace pinpoint {
 
         ResponseTimeShard& responseTimeShard();
 
-        // Non-owning. The agent joins the stats worker before its own
-        // destruction, and this object can now outlive the agent (it is
-        // shared with every AgentRuntime snapshot, which live spans and TLS
-        // caches keep alive) — but only the span-facing methods
-        // (collectResponseTime, add/dropActiveSpan, the incr counters) run
-        // in that afterlife, and none of them reads agent_. Everything that
-        // does (the worker loop, collectAgentStat) runs on threads joined
-        // while the agent is alive. A shared_ptr here would form a cycle
-        // and leak the agent.
+        // Non-owning. This object outlives the agent (it is shared with every
+        // AgentRuntime snapshot, which live spans and TLS caches keep alive),
+        // but only the span-facing methods (collectResponseTime,
+        // add/dropActiveSpan, the incr counters) run in that afterlife and none
+        // of them reads agent_. Everything that does (the worker loop,
+        // collectAgentStat) runs on threads the agent joins before its own
+        // destruction. A shared_ptr here would form a cycle and leak the agent.
         AgentService* agent_{};
         std::mutex mutex_{};
         std::condition_variable cond_var_{};

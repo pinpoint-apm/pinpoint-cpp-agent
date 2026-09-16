@@ -74,7 +74,7 @@ namespace pinpoint {
         constexpr int SQL_ERROR_COUNT = 100;
         constexpr int LOG_MAX_FILE_SIZE_MB = 10;
         // Rotated files kept alongside the live one (agent.log.1 ..
-        // agent.log.N). 1 is what the agent did before the setting existed.
+        // agent.log.N).
         constexpr int LOG_MAX_BACKUPS = 1;
         // New exception chains admitted per second.
         constexpr int CALLSTACK_TRACE_NEW_THROUGHPUT = 1000;
@@ -429,15 +429,14 @@ namespace pinpoint {
                 std::vector<std::string> proxy_user_header_names;
                 // Disables all proxy-header parsers when false.
                 bool proxy_header_enable = true;
-                // Java profiler.server.tracerequestparam, but off by default:
-                // query strings carry tokens and ids.
+                // Record the request's query string as an annotation. Off by
+                // default: query strings carry tokens and ids.
                 bool record_request_param = false;
-                // Ordered headers the client address is taken from (Java
-                // profiler.server.realipheader). Java trusts none by default;
-                // the historical XFF / X-Real-Ip pair is kept for compatibility.
+                // Ordered headers the client address is taken from, in
+                // precedence order.
                 std::vector<std::string> real_ip_header = {"X-Forwarded-For", "X-Real-Ip"};
-                // A header value equal to this (case-insensitive) is skipped
-                // (Java profiler.server.realipemptyvalue, e.g. "unknown").
+                // A header value equal to this (case-insensitive) is skipped,
+                // e.g. "unknown".
                 std::string real_ip_empty_value;
             } server;
 
@@ -446,7 +445,7 @@ namespace pinpoint {
                 std::vector<std::string> rec_request_cookie;
                 std::vector<std::string> rec_response_header;
                 // Keep the query string in the client URL annotation. Off by
-                // default, like Java's profiler.<plugin>.param.
+                // default: query strings carry tokens and ids.
                 bool record_url_query = false;
             } client;
         } http;
@@ -586,7 +585,7 @@ namespace pinpoint {
      *        sources named by @p options and environment overrides.
      *
      * The YAML source is the file named by `resolve_config_file_path(options)`
-     * (re-read on every call), falling back to `options.config_yaml`. On the
+     * (re-read on every call), falling back to `options.config_yaml`.
      * Environment variables are applied on top of the YAML source on every
      * load, so they outrank the file whether or not this is a reload. On the
      * first load (@p old is nullptr) the logger is configured immediately.

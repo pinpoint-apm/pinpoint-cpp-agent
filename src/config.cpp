@@ -93,10 +93,10 @@ namespace pinpoint {
         });
     }
 
-    // One `Span.ErrorMark` / `Span.ErrorMarkExclude` token to its bit, 0 for
-    // an unrecognised one. Tokens are matched case-insensitively like every
-    // other config value here. kUnknown has no
-    // spelling on purpose: it is never selectable, because it is always on.
+    // One `Span.ErrorMark` / `Span.ErrorMarkExclude` token to its bit, 0 for an
+    // unrecognised one. Tokens are matched case-insensitively like every other
+    // config value here. kUnknown has no spelling on purpose: it is never
+    // selectable, because it is always on.
     static int error_category_bit(const std::string_view token) {
         if (absl::EqualsIgnoreCase(token, "exception")) {
             return static_cast<int>(ErrorCategory::kException);
@@ -112,8 +112,8 @@ namespace pinpoint {
 
     // Folds a category list into a mask. Each entry is split on commas, so the
     // YAML list also accepts comma-separated values. An empty entry is skipped
-    // silently; anything else unrecognised is a typo worth naming, since it silently
-    // widens or narrows which errors fail a transaction.
+    // silently; anything else unrecognised is a typo worth naming, since it
+    // silently widens or narrows which errors fail a transaction.
     static int to_category_mask(const std::vector<std::string>& categories,
                                 const std::string_view key) {
         int mask = 0;
@@ -138,10 +138,9 @@ namespace pinpoint {
         const int marked = mark.empty() ? ALL_ERROR_CATEGORIES
                                         : to_category_mask(mark, "Span.ErrorMark");
         const int excluded = to_category_mask(exclude, "Span.ErrorMarkExclude");
-        // kUnknown survives every exclusion. It is the category of
-        // a failure whose cause was not classified, so excluding it would
-        // amount to "never fail a transaction" - which is not what either
-        // key is for.
+        // kUnknown survives every exclusion. It is the category of a failure
+        // whose cause was not classified, so excluding it would amount to
+        // "never fail a transaction" — which is not what either key is for.
         return (marked & ~excluded) | static_cast<int>(ErrorCategory::kUnknown);
     }
 
@@ -309,10 +308,10 @@ namespace pinpoint {
             auto last_write_time = std::filesystem::last_write_time(path, seed_ec);
 
             // A missing file is a state, not an error: a ConfigMap update
-            // replaces the file rather than rewriting it, so the path is
-            // briefly absent on every rollout. We poll a path, so we
-            // report it, but at most once per reporter window rather than once
-            // per tick, and we keep polling so the replacement is picked up.
+            // replaces the file rather than rewriting it, so the path is briefly
+            // absent on every rollout. Reported at most once per reporter window
+            // rather than once per tick, and polling continues so the
+            // replacement is picked up.
             QueueDropReporter missing_reporter{};
             bool missing = false;
 
@@ -324,9 +323,9 @@ namespace pinpoint {
             // anything down, so an in-flight reload always sees a live agent.
             while (!stop->wait(tick)) {
                 try {
-                    // Non-throwing overload: the throwing one turned every
-                    // tick of an absent file into an exception, and the
-                    // handler below into an unthrottled per-tick WARN.
+                    // Non-throwing overload: the throwing one turns every tick
+                    // of an absent file into an exception, and the handler below
+                    // into an unthrottled per-tick WARN.
                     std::error_code ec;
                     auto current = std::filesystem::last_write_time(path, ec);
                     if (ec) {
@@ -525,12 +524,12 @@ namespace pinpoint {
         {"ServiceName", REF(service_name_), FIXED, env::SERVICE_NAME},
         {"ApiKey", REF(api_key_), FIXED, env::API_KEY},
         // FIXED, not RELOAD: make_agent() is the only consumer and it reads
-        // this once, when the agent is constructed (src/agent.cpp:1446), so a
-        // reload could never start or stop tracing. Tagged RELOAD the value
-        // silently changed under a running agent that ignored it; tagged FIXED
-        // the running value is retained and the existing non-reloadable
-        // warning names the attempt. IsContainer below is genuinely reloadable
-        // — build_agent_info() re-reads it for each periodic re-registration.
+        // this once, when the agent is constructed, so a reload can never start
+        // or stop tracing. Tagged FIXED the running value is retained and the
+        // non-reloadable warning names the attempt; tagged RELOAD the value
+        // would change silently under a running agent that ignores it.
+        // IsContainer below is genuinely reloadable — build_agent_info()
+        // re-reads it for each periodic re-registration.
         {"Enable", REF(enable), FIXED, env::ENABLE},
         {"IsContainer", REF(is_container), RELOAD, env::IS_CONTAINER},
         {"Log.Level", REF(log.level), RELOAD, env::LOG_LEVEL, "LogLevel"},
@@ -681,9 +680,9 @@ namespace pinpoint {
     }
 
     // The reverse of the table-driven loader: walks the file's map tree and
-    // warns about every key the table does not know. The loader only ever
-    // looks up known paths, so a misspelled key ("Sampling.CounterRte") was
-    // silently ignored and, being unknown, never appeared in the "config:"
+    // warns about every key the table does not know. The loader only ever looks
+    // up known paths, so without this a misspelled key ("Sampling.CounterRte")
+    // is silently ignored and, being unknown, never appears in the "config:"
     // dump either — the one place the documentation sends an operator whose
     // setting seems to have no effect. `Profile.<name>` subtrees are checked
     // against the same table as the top level, since the loader reads them
@@ -960,9 +959,9 @@ namespace pinpoint {
         }
 
         // Resolve agent self-identity (ObjectName) according to the configured
-        // uid version. The resolver owns
-        // version-aware validation (e.g. applicationName <=24 for v1 vs <=254 for
-        // v3, which check() cannot distinguish since both map to version 1).
+        // uid version. The resolver owns version-aware validation (e.g.
+        // applicationName <=24 for v1 vs <=254 for v3, which check() cannot
+        // distinguish since both map to version 1).
         {
             const auto name_version = parse_name_version(config->uid_version_);
             config->object_name_version_ =
@@ -1026,9 +1025,8 @@ namespace pinpoint {
         // Three outcomes: <= 0 never samples, >= 100 always samples, and
         // everything between runs the percent sampler on the truncated rate.
         // Nothing is raised to a minimum here: PercentSampler's truncation is
-        // the first branch, and
-        // isSampled()'s `rate_ <= 0` / `rate_ >= MAX_PERCENT_RATE` guards are
-        // the other two.
+        // the first branch, and isSampled()'s `rate_ <= 0` /
+        // `rate_ >= MAX_PERCENT_RATE` guards are the other two.
         //
         // Log level differs by intent. A rate of 0 or below is a deliberate
         // "off" switch, so it is INFO, not a warning about a mistake. A

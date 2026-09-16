@@ -173,7 +173,7 @@ namespace pinpoint {
         virtual void Set(std::string_view key, std::string_view value) override = 0;
     };
 
-    /// @brief Interface used to enumerates frames stored inside a call stack.
+    /// @brief Interface used to enumerate the frames stored inside a call stack.
     class CallStackReader {
     public:
         virtual ~CallStackReader() = default;
@@ -823,8 +823,9 @@ namespace pinpoint {
 
     namespace helper {
         /// @brief Records an inbound request on @p span: the endpoint, the
-        ///        remote address (taken from X-Forwarded-For / X-Real-Ip when
-        ///        present, else @p remote_addr), the Pinpoint proxy headers,
+        ///        remote address (taken from the first usable
+        ///        Http.Server.RealIpHeader — X-Forwarded-For / X-Real-Ip by
+        ///        default — else @p remote_addr), the Pinpoint proxy headers,
         ///        and the request headers named in the configuration.
         ///        A null @p span is ignored.
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader);
@@ -840,12 +841,11 @@ namespace pinpoint {
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, std::string_view query_string);
         void TraceHttpServerRequest(SpanPtr span, std::string_view remote_addr, std::string_view endpoint, HeaderReader& request_reader, HeaderReader& cookie_reader, std::string_view query_string);
 
-        /// @brief Formats a raw query string the way the Java agent's
-        ///        HttpServletParameterExtractor does: `k=v&k=v`, keys and
-        ///        values percent-decoded (`+` is a space), each cut to 64
-        ///        chars plus "...", the whole capped at 512 chars — an item
-        ///        that would cross the cap is replaced by a final "...".
-        ///        Malformed escapes are kept verbatim. Never throws.
+        /// @brief Formats a raw query string as `k=v&k=v`, keys and values
+        ///        percent-decoded (`+` is a space), each cut to 64 chars plus
+        ///        "...", the whole capped at 512 chars — an item that would
+        ///        cross the cap is replaced by a final "...". Malformed
+        ///        escapes are kept verbatim. Never throws.
         std::string FormatRequestParams(std::string_view query_string);
 
         /// @brief Records the response on @p span: the status code, URL stats
@@ -892,12 +892,10 @@ namespace pinpoint {
 
             ~ScopedSpanEvent() {
                 if (event_) {
-                    // A destructor is implicitly noexcept, so anything
-                    // escaping EndEvent() would std::terminate the host
-                    // process. Current library builds already catch inside
-                    // EndEvent(), but this header is compiled into the host
-                    // and may run against an older library — swallow
-                    // defensively.
+                    // A destructor is implicitly noexcept, so anything escaping
+                    // EndEvent() would std::terminate the host process.
+                    // EndEvent() already catches, but this header is compiled
+                    // into the host and may run against an older library.
                     try {
                         event_->EndEvent();
                     } catch (...) {

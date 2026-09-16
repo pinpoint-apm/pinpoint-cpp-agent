@@ -97,7 +97,6 @@ protected:
     std::map<std::string, std::string> saved_env_;
     std::string temp_dir_;
     
-    // Test YAML configurations
     const std::string complete_config_yaml_ = R"(
 ApplicationName: "MyTestApp"
 AgentName: "TestAgentName"
@@ -227,29 +226,24 @@ Http:
 
 // ========== Default Configuration Tests ==========
 
-// Test default configuration values
 TEST_F(ConfigTest, DefaultConfigurationTest) {
     auto config = make_config();
     
-    // Test basic default values
     EXPECT_EQ(config->app_name_, "") << "Default app name should be empty";
     EXPECT_FALSE(config->agent_id_.empty()) << "Agent ID should be generated when empty, so not empty after make_config";
     EXPECT_EQ(config->agent_name_, "") << "Default agent name should be empty";
     EXPECT_TRUE(config->enable) << "Should be enabled by default";
     
-    // Test log defaults
     EXPECT_EQ(config->log.level, "info") << "Default log level should be info";
     EXPECT_EQ(config->log.file_path, "") << "Default log file path should be empty";
     EXPECT_EQ(config->log.max_file_size, 10) << "Default max file size should be 10MB";
     EXPECT_EQ(config->log.max_backups, 1) << "Default backup count matches the pre-setting behavior";
     
-    // Test collector defaults
     EXPECT_EQ(config->collector.host, "") << "Default collector host should be empty";
     EXPECT_EQ(config->collector.agent_port, 9991) << "Default agent port should be 9991";
     EXPECT_EQ(config->collector.span_port, 9993) << "Default span port should be 9993";
     EXPECT_EQ(config->collector.stat_port, 9992) << "Default stat port should be 9992";
 
-    // Test gRPC channel defaults
     EXPECT_FALSE(config->collector.grpc.ssl.enable) << "gRPC SSL should be disabled by default";
     EXPECT_EQ(config->collector.grpc.channel.keepalive_time_ms, 30000) << "Default keepalive time should be 30s";
     EXPECT_EQ(config->collector.grpc.channel.keepalive_timeout_ms, 60000) << "Default keepalive timeout should be 60s";
@@ -261,14 +255,12 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.stream_max_age_ms, 0) << "Stream max age should be disabled by default";
     EXPECT_EQ(config->collector.grpc.channel.idle_timeout_ms, 0) << "gRPC idle timeout should be disabled by default";
 
-    // Test sampling defaults
     EXPECT_EQ(config->sampling.type, "COUNTER") << "Default sampling type should be COUNTER";
     EXPECT_EQ(config->sampling.counter_rate, 1) << "Default counter rate should be 1";
     EXPECT_EQ(config->sampling.percent_rate, 100) << "Default percent rate should be 100";
     EXPECT_EQ(config->sampling.new_throughput, 0) << "Default new throughput should be 0";
     EXPECT_EQ(config->sampling.cont_throughput, 0) << "Default continue throughput should be 0";
     
-    // Test span defaults
     EXPECT_EQ(config->span.queue_size, 1024) << "Default queue size should be 1024";
     EXPECT_EQ(config->span.max_event_depth, 64) << "Default max event depth should be 64";
     EXPECT_EQ(config->span.max_event_sequence, 5000) << "Default max event sequence should be 5000";
@@ -281,12 +273,10 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->collector.agent_info.max_try_per_attempt, defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT)
         << "Default AgentInfo max try count should be 3";
     
-    // Test stat defaults
     EXPECT_TRUE(config->stat.enable) << "Stat should be enabled by default";
     EXPECT_EQ(config->stat.batch_count, 6) << "Default batch count should be 6";
     EXPECT_EQ(config->stat.collect_interval, 5000) << "Default collect interval should be 5000ms";
     
-    // Test HTTP defaults
     EXPECT_FALSE(config->http.url_stat.enable) << "URL stat should be disabled by default";
     EXPECT_EQ(config->http.url_stat.limit, 1000) << "Default URL stat limit is Java's completed.data.limit.size";
     EXPECT_EQ(config->http.url_stat.queue_size, 1024) << "Default URL stat queue size should be 1024";
@@ -294,7 +284,6 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_EQ(config->http.url_stat.trim_path_depth, 3) << "Default path depth should be 3";
     EXPECT_FALSE(config->http.url_stat.method_prefix) << "Method prefix should be false by default";
     
-    // Test HTTP server defaults
     EXPECT_EQ(config->http.server.status_errors.size(), 1) << "Should have default status error";
     EXPECT_EQ(config->http.server.status_errors[0], "5xx") << "Default status error should be 5xx";
     EXPECT_TRUE(config->http.server.exclude_url.empty()) << "Exclude URL list should be empty by default";
@@ -305,12 +294,10 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     EXPECT_TRUE(config->http.server.proxy_user_header_names.empty())
         << "no user proxy header is read until one is named, as in Java";
     
-    // Test HTTP client defaults
     EXPECT_TRUE(config->http.client.rec_request_header.empty()) << "Client request header list should be empty by default";
     EXPECT_TRUE(config->http.client.rec_request_cookie.empty()) << "Client request cookie list should be empty by default";
     EXPECT_TRUE(config->http.client.rec_response_header.empty()) << "Client response header list should be empty by default";
     
-    // Test SQL defaults
     EXPECT_EQ(config->sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
     EXPECT_FALSE(config->sql.enable_sql_stats) << "SQL stats should be disabled by default";
     EXPECT_TRUE(config->sql.enable_raw_sql_cache) << "Raw SQL cache should be enabled by default";
@@ -318,7 +305,6 @@ TEST_F(ConfigTest, DefaultConfigurationTest) {
     
     EXPECT_EQ(config->sql.error_count, 100) << "Default sql error count should be Java's 100";
 
-    // Test CallStack trace default
     EXPECT_FALSE(config->enable_callstack_trace) << "CallStack trace should be disabled by default";
     EXPECT_EQ(config->callstack_trace_new_throughput, 1000)
         << "Default exception chain throughput should be Java's 1000/s";
@@ -389,7 +375,6 @@ TEST_F(ConfigTest, GeneratedAgentIdTest) {
     EXPECT_FALSE(config->agent_id_.empty()) << "Agent ID should be generated when not provided";
     EXPECT_GE(config->agent_id_.length(), 5) << "Generated agent ID should have reasonable length";
     
-    // Test that multiple calls generate different IDs
     auto config2 = make_config();
     EXPECT_NE(config->agent_id_, config2->agent_id_) << "Multiple calls should generate different agent IDs";
 }
@@ -400,7 +385,6 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     set_config_string(complete_config_yaml_);
     auto config = make_config();
     
-    // Test basic values
     EXPECT_EQ(config->app_name_, "MyTestApp") << "App name should match YAML";
     EXPECT_EQ(config->agent_id_.size(), 22u)
         << "the Agent ID is always auto-generated (base64 UUIDv7)";
@@ -408,19 +392,16 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_TRUE(config->enable) << "Enable should match YAML";
     EXPECT_TRUE(config->is_container) << "IsContainer should match YAML";
     
-    // Test log configuration
     EXPECT_EQ(config->log.level, "debug") << "Log level should match YAML";
     EXPECT_EQ(config->log.file_path, "/tmp/pinpoint.log") << "Log file path should match YAML";
     EXPECT_EQ(config->log.max_file_size, 20) << "Log max file size should match YAML";
     EXPECT_EQ(config->log.max_backups, 5) << "Log max backups should match YAML";
     
-    // Test collector configuration
     EXPECT_EQ(config->collector.host, "test.collector.host") << "Collector host should match YAML";
     EXPECT_EQ(config->collector.agent_port, 9000) << "Agent port should match YAML";
     EXPECT_EQ(config->collector.span_port, 9001) << "Span port should match YAML";
     EXPECT_EQ(config->collector.stat_port, 9002) << "Stat port should match YAML";
 
-    // Test gRPC channel configuration
     EXPECT_EQ(config->collector.grpc.ssl.trust_cert_file_path, "/tmp/trust.pem") << "Trust cert path should match YAML";
     EXPECT_EQ(config->collector.grpc.ssl.root_cert_file_path, "/tmp/root.pem") << "Root cert path should match YAML";
     EXPECT_TRUE(config->collector.grpc.ssl.enable) << "gRPC SSL enable should match YAML";
@@ -434,14 +415,12 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->collector.grpc.channel.stream_max_age_ms, 1800000) << "gRPC stream max age should match YAML";
     EXPECT_EQ(config->collector.grpc.channel.idle_timeout_ms, 600000) << "gRPC idle timeout should match YAML";
 
-    // Test sampling configuration
     EXPECT_EQ(config->sampling.type, "PERCENT") << "Sampling type should match YAML";
     EXPECT_EQ(config->sampling.counter_rate, 20) << "Counter rate should match YAML";
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0.1) << "Percent rate should match YAML";
     EXPECT_EQ(config->sampling.new_throughput, 50) << "New throughput should match YAML";
     EXPECT_EQ(config->sampling.cont_throughput, 60) << "Continue throughput should match YAML";
     
-    // Test span configuration
     EXPECT_EQ(config->span.queue_size, 512) << "Queue size should match YAML";
     EXPECT_EQ(config->span.max_event_depth, 32) << "Max event depth should match YAML";
     EXPECT_EQ(config->span.max_event_sequence, 512) << "Max event sequence should match YAML";
@@ -451,12 +430,10 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->collector.agent_info.send_retry_interval_ms, 25) << "AgentInfo retry interval should match YAML";
     EXPECT_EQ(config->collector.agent_info.max_try_per_attempt, 2) << "AgentInfo max try count should match YAML";
     
-    // Test stat configuration
     EXPECT_TRUE(config->stat.enable) << "Stat enable should match YAML";
     EXPECT_EQ(config->stat.batch_count, 10) << "Batch count should match YAML";
     EXPECT_EQ(config->stat.collect_interval, 7000) << "Collect interval should match YAML";
     
-    // Test HTTP configuration
     EXPECT_TRUE(config->http.url_stat.enable) << "URL stat enable should match YAML";
     EXPECT_EQ(config->http.url_stat.limit, 2048) << "URL stat limit should match YAML";
     EXPECT_EQ(config->http.url_stat.queue_size, 4096) << "URL stat queue size should match YAML";
@@ -464,7 +441,6 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->http.url_stat.trim_path_depth, 4) << "URL stat path depth should match YAML";
     EXPECT_TRUE(config->http.url_stat.method_prefix) << "URL stat method prefix should match YAML";
     
-    // Test HTTP server configuration
     EXPECT_EQ(config->http.server.status_errors.size(), 3) << "Should have 3 status errors";
     EXPECT_EQ(config->http.server.status_errors[0], "5xx") << "First status error should be 5xx";
     EXPECT_EQ(config->http.server.status_errors[1], "401") << "Second status error should be 401";
@@ -492,7 +468,6 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->http.server.proxy_user_header_names[0], "Pinpoint-ProxyUser");
     EXPECT_EQ(config->http.server.proxy_user_header_names[1], "X-My-Proxy");
     
-    // Test HTTP client configuration
     EXPECT_EQ(config->http.client.rec_request_header.size(), 1) << "Should have 1 client request header";
     EXPECT_EQ(config->http.client.rec_request_header[0], "User-Agent") << "Client request header should be User-Agent";
     
@@ -502,7 +477,6 @@ TEST_F(ConfigTest, CompleteYamlConfigurationTest) {
     EXPECT_EQ(config->http.client.rec_response_header.size(), 1) << "Should have 1 client response header";
     EXPECT_EQ(config->http.client.rec_response_header[0], "headers-all") << "Client response header should be headers-all";
     
-    // Test SQL configuration
     EXPECT_EQ(config->sql.max_bind_args_size, 2048) << "Max bind args size should match YAML";
     EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
     EXPECT_TRUE(config->sql.enable_raw_sql_cache) << "Raw SQL cache should be enabled as per YAML";
@@ -513,7 +487,6 @@ TEST_F(ConfigTest, PartialYamlConfigurationTest) {
     set_config_string(partial_config_yaml_);
     auto config = make_config();
     
-    // Test overridden values
     EXPECT_EQ(config->app_name_, "PartialApp") << "App name should match partial YAML";
     EXPECT_EQ(config->collector.host, "partial.host") << "Collector host should match partial YAML";
     EXPECT_EQ(config->collector.agent_port, 8000) << "Agent port should match partial YAML";
@@ -523,14 +496,12 @@ TEST_F(ConfigTest, PartialYamlConfigurationTest) {
     EXPECT_EQ(config->http.server.status_errors.size(), 1) << "Should have 1 status error from partial YAML";
     EXPECT_EQ(config->http.server.status_errors[0], "4xx") << "Status error should be 4xx from partial YAML";
     
-    // Test values that should remain default
     EXPECT_EQ(config->collector.span_port, 9993) << "Span port should remain default";
     EXPECT_EQ(config->collector.stat_port, 9992) << "Stat port should remain default";
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 100) << "Percent rate should remain default";
     EXPECT_EQ(config->log.level, "info") << "Log level should remain default";
     EXPECT_EQ(config->span.queue_size, 1024) << "Queue size should remain default";
     
-    // Test SQL configuration from partial YAML
     EXPECT_EQ(config->sql.max_bind_args_size, 512) << "Max bind args size should match partial YAML";
     EXPECT_FALSE(config->sql.enable_sql_stats) << "SQL stats should be disabled as per partial YAML";
     EXPECT_TRUE(config->sql.trace_bind_value) << "SQL bind value tracing should remain enabled by default";
@@ -594,7 +565,6 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
 
     auto config = make_config();
     
-    // Test environment variable values
     EXPECT_EQ(config->app_name_, "EnvApp") << "App name should match environment variable";
     EXPECT_EQ(config->agent_name_, "env-agent-456") << "Agent name should match environment variable";
     EXPECT_EQ(config->agent_id_.size(), 22u)
@@ -606,13 +576,11 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 25.5) << "Percent rate should match environment variable";
     EXPECT_TRUE(config->is_container) << "IsContainer should match environment variable";
     
-    // Test SQL environment variable values
     EXPECT_EQ(config->sql.max_bind_args_size, 4096) << "Max bind args size should match environment variable";
     EXPECT_TRUE(config->sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
     EXPECT_TRUE(config->sql.enable_raw_sql_cache) << "Raw SQL cache should be enabled as per environment variable";
     EXPECT_TRUE(config->sql.trace_bind_value) << "SQL bind value tracing should be enabled as per environment variable";
     
-    // Test HTTP environment variable values
     EXPECT_FALSE(config->http.url_stat.enable_trim_path) << "URL stat enable trim path should match environment variable";
     EXPECT_EQ(config->http.url_stat.queue_size, 333) << "URL stat queue size should match environment variable";
 
@@ -620,7 +588,6 @@ TEST_F(ConfigTest, EnvironmentVariableConfigurationTest) {
     EXPECT_EQ(config->collector.agent_info.send_retry_interval_ms, 50) << "AgentInfo retry interval should match environment variable";
     EXPECT_EQ(config->collector.agent_info.max_try_per_attempt, 4) << "AgentInfo max try count should match environment variable";
 
-    // Test gRPC environment variable values
     EXPECT_EQ(config->collector.grpc.ssl.trust_cert_file_path, "/env/trust.pem") << "Trust cert path should match environment variable";
     EXPECT_TRUE(config->collector.grpc.ssl.enable) << "gRPC SSL enable should match environment variable";
     EXPECT_EQ(config->collector.grpc.channel.keepalive_time_ms, 22222) << "gRPC keepalive time should match environment variable";
@@ -802,7 +769,6 @@ TEST_F(ConfigTest, ActiveProfileAppliesOnReload) {
     unsetenv(full_env(env::SAMPLING_COUNTER_RATE).c_str());
 }
 
-// Test the preferred COLLECTOR_* environment variables
 TEST_F(ConfigTest, CollectorEnvironmentVariableTest) {
     setenv(full_env(env::COLLECTOR_HOST).c_str(), "collector.env.host", 1);
     setenv(full_env(env::COLLECTOR_AGENT_PORT).c_str(), "7001", 1);
@@ -817,7 +783,6 @@ TEST_F(ConfigTest, CollectorEnvironmentVariableTest) {
     EXPECT_EQ(config->collector.stat_port, 7003) << "Stat port should match COLLECTOR_STAT_PORT";
 }
 
-// Test COLLECTOR_* takes precedence over the deprecated GRPC_* variables
 TEST_F(ConfigTest, CollectorEnvironmentVariableOverridesDeprecatedTest) {
     setenv(full_env(env::GRPC_HOST).c_str(), "deprecated.host", 1);
     setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "8001", 1);
@@ -832,7 +797,6 @@ TEST_F(ConfigTest, CollectorEnvironmentVariableOverridesDeprecatedTest) {
         << "COLLECTOR_AGENT_PORT should take precedence over deprecated GRPC_AGENT_PORT";
 }
 
-// Test the preferred Collector.* YAML keys
 TEST_F(ConfigTest, CollectorYamlKeyTest) {
     set_config_string(R"(
 ApplicationName: "MyApp"
@@ -851,7 +815,6 @@ Collector:
     EXPECT_EQ(config->collector.stat_port, 7103) << "Stat port should match Collector.StatPort";
 }
 
-// Test Collector.Host takes precedence over the deprecated Collector.GrpcHost
 TEST_F(ConfigTest, CollectorYamlKeyOverridesDeprecatedTest) {
     set_config_string(R"(
 ApplicationName: "MyApp"
@@ -1106,18 +1069,15 @@ TEST_F(ConfigTest, MissingConfigurationFileTest) {
 
 // ========== Validation Logic Tests ==========
 
-// Test value validation and correction
 TEST_F(ConfigTest, ValueValidationTest) {
     set_config_string(extreme_values_yaml_);
     auto config = make_config();
     
-    // Test sampling value corrections
     EXPECT_EQ(config->sampling.counter_rate, 0) << "Negative counter rate should be corrected to 0";
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 100) << "Percent rate > 100 should be corrected to 100";
     EXPECT_EQ(config->sampling.new_throughput, 0) << "Negative new throughput should be corrected to 0";
     EXPECT_EQ(config->sampling.cont_throughput, 0) << "Negative continue throughput should be corrected to 0";
     
-    // Test span value corrections
     EXPECT_EQ(config->span.queue_size, 1024) << "Queue size < 1 should be corrected to default (1024)";
     EXPECT_EQ(config->span.max_event_depth, INT32_MAX) << "Max event depth -1 should be corrected to INT32_MAX";
     EXPECT_EQ(config->span.max_event_sequence, INT32_MAX) << "Max event sequence -1 should be corrected to INT32_MAX";
@@ -1129,7 +1089,6 @@ TEST_F(ConfigTest, ValueValidationTest) {
     EXPECT_EQ(config->http.url_stat.queue_size, 1024) << "URL stat queue size < 1 should be corrected to default (1024)";
 }
 
-// Test edge case percent rates
 TEST_F(ConfigTest, PercentRateEdgeCasesTest) {
     std::string small_percent_yaml = R"(
 Sampling:
@@ -1139,7 +1098,6 @@ Sampling:
     auto config = make_config();
     EXPECT_DOUBLE_EQ(config->sampling.percent_rate, 0.005) << "A sub-0.01 percent rate should be left as configured";
 
-    // Test negative percent rate
     std::string negative_percent_yaml = R"(
 Sampling:
   PercentRate: -5.0
@@ -1252,7 +1210,7 @@ TEST_F(ConfigTest, InvalidYamlHandlingTest) {
     EXPECT_EQ(config->log.level, "info") << "Log level should be default when YAML is invalid";
 }
 
-// Test invalid YAML still allows environment overrides and post-load validation.
+// Invalid YAML still admits environment overrides and post-load validation.
 TEST_F(ConfigTest, InvalidYamlEnvironmentOverrideAndValidationTest) {
     set_config_string(invalid_yaml_);
     setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvRecoveredApp", 1);
@@ -1290,14 +1248,12 @@ TEST_F(ConfigTest, InvalidYamlEnvironmentOverrideAndValidationTest) {
 
 // ========== Configuration String Generation Tests ==========
 
-// Test configuration to string conversion
 TEST_F(ConfigTest, ConfigurationToStringTest) {
     set_config_string(complete_config_yaml_);
     auto config = make_config();
     
     std::string config_string = to_config_string(*config);
     
-    // Check that generated string contains expected values
     EXPECT_TRUE(config_string.find("ApplicationName: MyTestApp") != std::string::npos)
         << "Config string should contain application name";
     EXPECT_TRUE(config_string.find("UidVersion:") != std::string::npos)
@@ -1310,7 +1266,6 @@ TEST_F(ConfigTest, ConfigurationToStringTest) {
         << "Config string should contain log level";
 }
 
-// Test round-trip configuration (string -> config -> string)
 TEST_F(ConfigTest, ConfigurationRoundTripTest) {
     set_config_string(complete_config_yaml_);
     auto config = make_config();
@@ -1368,7 +1323,6 @@ Collector:
         << "Default AgentName must follow the new process's AgentId";
 }
 
-// Test empty configuration string generation
 TEST_F(ConfigTest, EmptyConfigurationStringTest) {
     set_config_string("");
     auto config = make_config();
@@ -1602,7 +1556,6 @@ Span:
 
 // ========== Environment Variable Validation Tests ==========
 
-// Test environment variable validation for invalid values
 TEST_F(ConfigTest, EnvironmentVariableValidationTest) {
     // Set invalid environment variables
     setenv(full_env(env::ENABLE).c_str(), "invalid_bool", 1);                  // Invalid bool
@@ -1639,7 +1592,6 @@ TEST_F(ConfigTest, EnvironmentVariableValidValuesTest) {
     EXPECT_EQ(config->span.queue_size, 2048) << "Valid int should be parsed correctly";
 }
 
-// Test environment variable validation for negative values
 TEST_F(ConfigTest, EnvironmentVariableNegativeValuesTest) {
     // Set valid negative values where applicable
     setenv(full_env(env::SPAN_MAX_EVENT_DEPTH).c_str(), "-1", 1);       // Valid -1 (should be processed by make_config validation)
@@ -1654,13 +1606,10 @@ TEST_F(ConfigTest, EnvironmentVariableNegativeValuesTest) {
 
 // ========== SQL Configuration Specific Tests ==========
 
-// Test SQL configuration with various bind args sizes
 TEST_F(ConfigTest, SqlMaxBindArgsSizeValidationTest) {
-    // Test default
     auto config1 = make_config();
     EXPECT_EQ(config1->sql.max_bind_args_size, 1024) << "Default max bind args size should be 1024";
     
-    // Test YAML configuration with different values
     set_config_string(R"(
 Sql:
   MaxBindArgsSize: 256
@@ -1670,19 +1619,15 @@ Sql:
     EXPECT_EQ(config2->sql.max_bind_args_size, 256) << "Max bind args size should match YAML";
     EXPECT_TRUE(config2->sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
     
-    // Test environment variable override
     setenv(full_env(env::SQL_MAX_BIND_ARGS_SIZE).c_str(), "16384", 1);
     auto config3 = make_config();
     EXPECT_EQ(config3->sql.max_bind_args_size, 16384) << "Environment variable should override YAML";
 }
 
-// Test SQL stats enable/disable configurations  
 TEST_F(ConfigTest, SqlStatsEnableTest) {
-    // Test default (disabled)
     auto config1 = make_config();
     EXPECT_FALSE(config1->sql.enable_sql_stats) << "SQL stats should be disabled by default";
     
-    // Test enabling via YAML
     set_config_string(R"(
 Sql:
   EnableSqlStats: true
@@ -1690,13 +1635,11 @@ Sql:
     auto config2 = make_config();
     EXPECT_TRUE(config2->sql.enable_sql_stats) << "SQL stats should be enabled as per YAML";
     
-    // Test enabling via environment variable
     set_config_string("");
     setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "true", 1);
     auto config3 = make_config();
     EXPECT_TRUE(config3->sql.enable_sql_stats) << "SQL stats should be enabled as per environment variable";
     
-    // Test disabling via environment variable  
     setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "false", 1);
     auto config4 = make_config();
     EXPECT_FALSE(config4->sql.enable_sql_stats) << "SQL stats should be disabled as per environment variable";
@@ -1875,7 +1818,6 @@ Sql:
 }
 
 TEST_F(ConfigTest, SqlConfigurationEdgeCasesTest) {
-    // Test negative bind args size
     set_config_string(R"(
 Sql:
   MaxBindArgsSize: -1
@@ -1884,7 +1826,6 @@ Sql:
     EXPECT_EQ(negative_config->sql.max_bind_args_size, 0)
         << "Negative bind args size should be clamped to zero";
 
-    // Test zero bind args size
     set_config_string(R"(
 Sql:
   MaxBindArgsSize: 0
@@ -1894,7 +1835,6 @@ Sql:
     EXPECT_EQ(config1->sql.max_bind_args_size, 0) << "Zero bind args size should be allowed";
     EXPECT_FALSE(config1->sql.enable_sql_stats) << "SQL stats should be disabled";
     
-    // Test very large bind args size
     set_config_string(R"(
 Sql:
   MaxBindArgsSize: 1048576
@@ -1904,7 +1844,6 @@ Sql:
     EXPECT_EQ(config2->sql.max_bind_args_size, 1048576) << "Large bind args size should be allowed";
     EXPECT_TRUE(config2->sql.enable_sql_stats) << "SQL stats should be enabled";
 
-    // Test negative bind args size from the environment
     set_config_string("");
     setenv(full_env(env::SQL_MAX_BIND_ARGS_SIZE).c_str(), "-1", 1);
     auto negative_env_config = make_config();
@@ -1912,7 +1851,6 @@ Sql:
         << "Negative bind args size from the environment should be clamped to zero";
 }
 
-// Test SQL configuration string generation
 TEST_F(ConfigTest, SqlConfigurationToStringTest) {
     set_config_string(R"(
 Sql:
@@ -1925,7 +1863,6 @@ Sql:
     
     std::string config_string = to_config_string(*config);
     
-    // Check that SQL configuration is included in generated string
     EXPECT_TRUE(config_string.find("MaxBindArgsSize: 2048") != std::string::npos) 
         << "Config string should contain SQL max bind args size";
     EXPECT_TRUE(config_string.find("EnableSqlStats: true") != std::string::npos) 
@@ -1936,9 +1873,7 @@ Sql:
         << "Config string should contain SQL bind value tracing setting";
 }
 
-// Test invalid SQL environment variable values
 TEST_F(ConfigTest, SqlInvalidEnvironmentVariableTest) {
-    // Test invalid max bind args size (should fallback to default)
     setenv(full_env(env::SQL_MAX_BIND_ARGS_SIZE).c_str(), "invalid", 1);
     setenv(full_env(env::SQL_ENABLE_SQL_STATS).c_str(), "invalid", 1);
     setenv(full_env(env::SQL_TRACE_BIND_VALUE).c_str(), "invalid", 1);
@@ -2280,7 +2215,7 @@ TEST_F(ConfigTest, CheckFailsEmptyAppNameTest) {
     EXPECT_FALSE(config.check()) << "Empty app name should fail check";
 }
 
-// Test check() fails when agent identity resolution failed.
+// check() fails when agent identity resolution failed.
 // Per-version identity length/charset validation now lives in
 // resolve_object_name() (version-aware: e.g. applicationName <=24 for v1 vs
 // <=254 for v3); make_config() records the outcome in identity_resolved_.
@@ -2298,7 +2233,7 @@ TEST_F(ConfigTest, CheckFailsWhenIdentityUnresolvedTest) {
     EXPECT_TRUE(config.check()) << "Resolved identity should pass check";
 }
 
-// Test make_config() flags an over-length v1 application name as unresolved so
+// make_config() flags an over-length v1 application name as unresolved so
 // that check() (and therefore agent startup) fails.
 TEST_F(ConfigTest, MakeConfigV1RejectsLongApplicationNameTest) {
     const std::string yaml =
@@ -2315,7 +2250,7 @@ TEST_F(ConfigTest, MakeConfigV1RejectsLongApplicationNameTest) {
     EXPECT_FALSE(config->check());
 }
 
-// Test make_config() accepts a long application name under the v3 default (<=254).
+// The v3 default allows an application name up to 254 bytes.
 TEST_F(ConfigTest, MakeConfigV3AllowsLongApplicationNameTest) {
     const std::string yaml =
         "ApplicationName: " + std::string(100, 'A') + "\n"
@@ -2331,7 +2266,7 @@ TEST_F(ConfigTest, MakeConfigV3AllowsLongApplicationNameTest) {
     EXPECT_TRUE(config->check());
 }
 
-// Test make_config() resolves a full v4 identity and rejects missing requirements.
+// v4 resolves a full identity and rejects a missing requirement.
 TEST_F(ConfigTest, MakeConfigV4IdentityTest) {
     const std::string base =
         "ApplicationName: my-app\n"
@@ -2507,7 +2442,6 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenStatOptionsChangeTest) {
         << "Should not be reloadable when stat options change";
 }
 
-// Test isReloadable() returns false when http url_stat options change
 TEST_F(ConfigTest, IsReloadableReturnsFalseWhenUrlStatOptionsChangeTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
@@ -2520,7 +2454,6 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenUrlStatOptionsChangeTest) {
         << "Should not be reloadable when http url_stat options change";
 }
 
-// Test isReloadable() returns false when collector agent_info options change
 TEST_F(ConfigTest, IsReloadableReturnsFalseWhenCollectorAgentInfoChangesTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
@@ -2533,7 +2466,6 @@ TEST_F(ConfigTest, IsReloadableReturnsFalseWhenCollectorAgentInfoChangesTest) {
         << "Should not be reloadable when collector agent_info options change";
 }
 
-// Test isReloadable() returns false when collector span_batch options change
 TEST_F(ConfigTest, IsReloadableReturnsFalseWhenCollectorSpanBatchChangesTest) {
     auto old_config = std::make_shared<Config>();
     old_config->app_name_ = "MyApp";
@@ -2569,7 +2501,7 @@ TEST_F(ConfigTest, IsReloadableReturnsTrueWhenOldConfigIsNullTest) {
 
 // ========== Config::retainNonReloadableFrom() Tests ==========
 
-// Test retainNonReloadableFrom() overwrites every non-reloadable field with the
+// retainNonReloadableFrom() overwrites every non-reloadable field with the
 // running config's value, making the two configs reloadable-equivalent.
 TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
     auto old_config = std::make_shared<Config>();
@@ -2624,7 +2556,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
         << "retainNonReloadableFrom should leave the configs reloadable-equivalent";
 }
 
-// Test retainNonReloadableFrom() leaves reloadable fields untouched, so a reload
+// retainNonReloadableFrom() leaves reloadable fields untouched, so a reload
 // still applies them while only reverting the non-reloadable ones.
 TEST_F(ConfigTest, RetainNonReloadableFromPreservesReloadableFieldsTest) {
     auto old_config = std::make_shared<Config>();
@@ -2651,7 +2583,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromPreservesReloadableFieldsTest) {
     EXPECT_EQ(new_config.collector.host, "old.host");
 }
 
-// Test retainNonReloadableFrom() reverts stat and http url_stat (non-reloadable)
+// retainNonReloadableFrom() reverts stat and http url_stat (non-reloadable)
 // to the running values while leaving http.server (reloadable) changes in place.
 TEST_F(ConfigTest, RetainNonReloadableFromRevertsStatAndUrlStatTest) {
     auto old_config = std::make_shared<Config>();
@@ -2690,7 +2622,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromRevertsStatAndUrlStatTest) {
         << "retainNonReloadableFrom should leave the configs reloadable-equivalent";
 }
 
-// Test retainNonReloadableFrom() reverts span.queue_size (non-reloadable) to the
+// retainNonReloadableFrom() reverts span.queue_size (non-reloadable) to the
 // running value while leaving the other span fields (reloadable) in place.
 TEST_F(ConfigTest, RetainNonReloadableFromRevertsSpanQueueSizeTest) {
     auto old_config = std::make_shared<Config>();
@@ -2714,7 +2646,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromRevertsSpanQueueSizeTest) {
         << "retainNonReloadableFrom should leave the configs reloadable-equivalent";
 }
 
-// Test retainNonReloadableFrom(nullptr) is a no-op (initial-build path has no
+// retainNonReloadableFrom(nullptr) is a no-op (the initial-build path has no
 // running config to retain from).
 TEST_F(ConfigTest, RetainNonReloadableFromNullOldIsNoopTest) {
     Config new_config;
@@ -2731,7 +2663,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromNullOldIsNoopTest) {
 
 // ========== Environment Variable Prefix Tests ==========
 
-// Test a custom prefix makes make_config read <prefix>_<suffix> instead of the
+// A custom prefix makes make_config read <prefix>_<suffix> instead of the
 // default PINPOINT_CPP_ names.
 TEST_F(ConfigTest, EnvVarPrefixCustomTest) {
     set_env_prefix("MYAPP");
@@ -2805,7 +2737,6 @@ ApplicationName: IdentityApp
         << "a missing AgentName must fall back to the agent id";
 }
 
-// Test an empty prefix resets to the default PINPOINT_CPP prefix.
 TEST_F(ConfigTest, EnvVarPrefixEmptyResetsToDefaultTest) {
     set_env_prefix("MYAPP");
     set_env_prefix("");  // reset to default
@@ -2819,7 +2750,6 @@ TEST_F(ConfigTest, EnvVarPrefixEmptyResetsToDefaultTest) {
     EXPECT_EQ(config->app_name_, "default-app");
 }
 
-// Test the default (no override) prefix is PINPOINT_CPP.
 TEST_F(ConfigTest, EnvVarPrefixDefaultIsPinpointCppTest) {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "default-app", 1);
 
@@ -2831,7 +2761,6 @@ TEST_F(ConfigTest, EnvVarPrefixDefaultIsPinpointCppTest) {
 
 // ========== Port Clamping Validation Tests ==========
 
-// Test port clamping for out-of-range values
 TEST_F(ConfigTest, PortClampingOutOfRangeTest) {
     // Port = 0 (below min 1)
     std::string yaml = R"(
@@ -3084,7 +3013,7 @@ Stat:
 
 // ========== Span Min Clamping Tests ==========
 
-// Test span max_event_depth minimum clamping (< 2 → 2, not -1)
+// Below the minimum clamps to 2, not to -1.
 TEST_F(ConfigTest, SpanMaxEventDepthMinClampingTest) {
     set_config_string(R"(
 Span:
@@ -3111,7 +3040,7 @@ Span:
         << "max_event_depth 2 (min boundary) should be valid";
 }
 
-// Test span max_event_sequence minimum clamping (< 4 → 4, not -1)
+// Below the minimum clamps to 4, not to -1.
 TEST_F(ConfigTest, SpanMaxEventSequenceMinClampingTest) {
     set_config_string(R"(
 Span:
@@ -3138,7 +3067,6 @@ Span:
         << "max_event_sequence 4 (min boundary) should be valid";
 }
 
-// Test span queue size max boundary (65536)
 TEST_F(ConfigTest, SpanQueueSizeMaxBoundaryTest) {
     set_config_string(R"(
 Span:
@@ -3159,7 +3087,6 @@ Span:
 
 // ========== HTTP Comma-Separated Environment Variable Tests ==========
 
-// Test HTTP server env vars with comma-separated values
 TEST_F(ConfigTest, HttpServerCommaSeperatedEnvVarsTest) {
     setenv(full_env(env::HTTP_SERVER_STATUS_CODE_ERRORS).c_str(), "5xx,401,403", 1);
     setenv(full_env(env::HTTP_SERVER_EXCLUDE_URL).c_str(), "/health,/metrics,/ready", 1);
@@ -3186,7 +3113,6 @@ TEST_F(ConfigTest, HttpServerCommaSeperatedEnvVarsTest) {
     EXPECT_EQ(config->http.server.rec_response_header.size(), 2);
 }
 
-// Test HTTP client env vars with comma-separated values
 TEST_F(ConfigTest, HttpClientCommaSeparatedEnvVarsTest) {
     setenv(full_env(env::HTTP_CLIENT_RECORD_REQUEST_HEADER).c_str(), "User-Agent,Accept", 1);
     setenv(full_env(env::HTTP_CLIENT_RECORD_REQUEST_COOKIE).c_str(), "session", 1);
@@ -3204,7 +3130,6 @@ TEST_F(ConfigTest, HttpClientCommaSeparatedEnvVarsTest) {
     EXPECT_EQ(config->http.client.rec_response_header.size(), 3);
 }
 
-// Test HTTP env vars override YAML list values
 TEST_F(ConfigTest, HttpEnvVarsOverrideYamlListTest) {
     set_config_string(R"(
 Http:
@@ -3312,6 +3237,123 @@ TEST_F(MakeConfigLogReloadTest, UnchangedFileLoggerIsNotReopened) {
     EXPECT_TRUE(std::filesystem::exists(log_path()))
         << "changed log settings must reopen the file";
     EXPECT_TRUE(read_file(log_path()).find("third") != std::string::npos);
+}
+
+// ========== Wire-Contract Defaults ==========
+//
+// Values the collector and the web tier read by name or by number. They are
+// pinned here so a change to any of them has to be deliberate.
+
+TEST_F(ConfigTest, SpanEventLimitDefaultsTest) {
+    EXPECT_EQ(defaults::SPAN_MAX_EVENT_DEPTH, 64);
+    EXPECT_EQ(defaults::SPAN_MAX_EVENT_SEQUENCE, 5000);
+    EXPECT_EQ(defaults::SPAN_EVENT_CHUNK_SIZE, 20);
+}
+
+TEST_F(ConfigTest, CollectorPortDefaultsTest) {
+    EXPECT_EQ(defaults::AGENT_PORT, 9991);
+    EXPECT_EQ(defaults::STAT_PORT, 9992);
+    EXPECT_EQ(defaults::SPAN_PORT, 9993);
+}
+
+TEST_F(ConfigTest, GrpcChannelDefaultsTest) {
+    EXPECT_EQ(defaults::GRPC_KEEPALIVE_TIME_MS, 30 * 1000);
+    EXPECT_EQ(defaults::GRPC_KEEPALIVE_TIMEOUT_MS, 60 * 1000);
+    EXPECT_EQ(defaults::GRPC_MAX_MESSAGE_SIZE, 4 * 1024 * 1024);
+    EXPECT_EQ(defaults::GRPC_CHANNEL_MAX_AGE_MS, 0) << "connection renewal is opt-in";
+    EXPECT_EQ(defaults::GRPC_STREAM_MAX_AGE_MS, 0) << "stream renewal is opt-in";
+    EXPECT_EQ(defaults::GRPC_IDLE_TIMEOUT_MS, 0) << "the client idle timeout is disabled";
+}
+
+TEST_F(ConfigTest, AgentInfoScheduleDefaultsTest) {
+    EXPECT_EQ(defaults::AGENT_INFO_REFRESH_INTERVAL_MS, 24 * 60 * 60 * 1000);
+    EXPECT_EQ(defaults::AGENT_INFO_MAX_TRY_PER_ATTEMPT, 3);
+    EXPECT_EQ(defaults::AGENT_INFO_SEND_RETRY_INTERVAL_MS, 3000)
+        << "registration gates tracing, so it retries often - see doc/development.md";
+}
+
+TEST_F(ConfigTest, SpanBatchDefaultsTest) {
+    EXPECT_EQ(defaults::SPAN_BATCH_SIZE, 20);
+    EXPECT_EQ(defaults::SPAN_BATCH_FLUSH_INTERVAL_MS, 1000);
+    EXPECT_EQ(defaults::SPAN_BATCH_COLLECT_DEADLINE_MS, 500);
+    EXPECT_EQ(defaults::SPAN_BATCH_MAX_CONCURRENT_REQUESTS, 10);
+}
+
+TEST_F(ConfigTest, StatCollectionDefaultsTest) {
+    EXPECT_EQ(defaults::STAT_INTERVAL_MS, 5000);
+    EXPECT_EQ(defaults::STAT_BATCH_COUNT, 6);
+}
+
+TEST_F(ConfigTest, SqlCacheDefaultsTest) {
+    EXPECT_EQ(defaults::SQL_CACHE_SIZE, 1024);
+    EXPECT_EQ(defaults::SQL_CACHE_LENGTH_LIMIT, 2048);
+    EXPECT_EQ(defaults::SQL_CACHE_EXPIRE_HOURS, 168);
+    EXPECT_EQ(defaults::SQL_MAX_BIND_ARGS_SIZE, 1024);
+    EXPECT_EQ(defaults::SQL_ERROR_COUNT, 100);
+}
+
+// ========== Error Cause Categories ==========
+
+// The bit values travel as PSpan.err, so the collector reads them by number.
+TEST_F(ConfigTest, ErrorCategoryBitValuesTest) {
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kUnknown), 1 << 0);
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kException), 1 << 1);
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kHttpStatus), 1 << 2);
+    EXPECT_EQ(static_cast<int>(ErrorCategory::kSql), 1 << 3);
+    EXPECT_EQ(ALL_ERROR_CATEGORIES, 15) << "kUnknown|kException|kHttpStatus|kSql";
+}
+
+TEST_F(ConfigTest, ErrorMarkMaskResolutionTest) {
+    constexpr int kUnknown = static_cast<int>(ErrorCategory::kUnknown);
+    constexpr int kException = static_cast<int>(ErrorCategory::kException);
+    constexpr int kHttpStatus = static_cast<int>(ErrorCategory::kHttpStatus);
+    constexpr int kSql = static_cast<int>(ErrorCategory::kSql);
+
+    EXPECT_EQ(error_mark_mask({}, {}), ALL_ERROR_CATEGORIES)
+        << "an unset mark enables every category";
+    EXPECT_EQ(error_mark_mask({"exception"}, {}), kUnknown | kException)
+        << "a non-empty mark is the whole allow-list";
+    EXPECT_EQ(error_mark_mask({}, {"http-status"}), ALL_ERROR_CATEGORIES & ~kHttpStatus)
+        << "exclude subtracts from the default everything";
+    EXPECT_EQ(error_mark_mask({"exception", "sql"}, {"sql"}), kUnknown | kException)
+        << "exclude wins over mark";
+
+    // kUnknown survives every combination, including one that names it: it has
+    // no spelling of its own, so the token is simply unrecognized and ignored,
+    // and the bit is OR-ed back in afterwards.
+    EXPECT_EQ(error_mark_mask({"exception"}, {"exception"}), kUnknown)
+        << "kUnknown is re-added after the exclusions are applied";
+    EXPECT_EQ(error_mark_mask({}, {"unknown"}), ALL_ERROR_CATEGORIES)
+        << "UNKNOWN is not selectable and cannot be excluded";
+    EXPECT_EQ(error_mark_mask({""}, {}), kUnknown)
+        << "an empty token is skipped, leaving an empty (not default) set";
+
+    EXPECT_EQ(error_mark_mask({"EXCEPTION", " Http-Status ", "sQl"}, {}), ALL_ERROR_CATEGORIES);
+    EXPECT_EQ(error_mark_mask({"exception,sql"}, {}), kUnknown | kException | kSql);
+
+    EXPECT_EQ(error_mark_mask({"exception", "nonsense"}, {}), kUnknown | kException);
+    EXPECT_EQ(error_mark_mask({}, {"nonsense"}), ALL_ERROR_CATEGORIES);
+
+    // Every category excluded still leaves kUnknown, which is what stops the
+    // two keys from adding up to "never fail a transaction".
+    EXPECT_EQ(error_mark_mask({}, {"exception", "http-status", "sql"}), kUnknown);
+}
+
+TEST_F(ConfigTest, LogRotationDefaultsTest) {
+    EXPECT_EQ(defaults::LOG_MAX_BACKUPS, 1);
+    EXPECT_EQ(defaults::LOG_MAX_FILE_SIZE_MB, 10) << "10 MB before rotation";
+
+    set_config_string(R"(
+ApplicationName: RotationDefaultsApp
+Log:
+  MaxBackups: 0
+)");
+    const auto config = make_config();
+    ASSERT_NE(config, nullptr);
+    EXPECT_EQ(config->log.max_backups, defaults::LOG_MAX_BACKUPS)
+        << "a value below 1 is restored to the default, not honoured";
+    EXPECT_EQ(config->log.max_file_size, defaults::LOG_MAX_FILE_SIZE_MB)
+        << "and an unset MaxFileSize stays at 10 MB";
 }
 
 } // namespace pinpoint

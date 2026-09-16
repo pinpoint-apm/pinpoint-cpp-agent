@@ -273,7 +273,7 @@ namespace pinpoint {
         std::unique_lock<std::mutex> lock(channel_mutex_);
         // Idempotent on the channel, not the transport: a test-injected bare
         // stub (null channel) still lets this build the channel and run
-        // create_stub(), exactly as before the transport bundling.
+        // create_stub().
         if (const auto transport = transport_.load(); transport && transport->channel) {
             return;
         }
@@ -668,9 +668,9 @@ namespace pinpoint {
 
     namespace {
         // Whether a failed metadata RPC is worth sending again. Every other
-        // code is a verdict the same request earns again,
-        // so retrying it only burns permits and retry-schedule slots while a
-        // schema mismatch or an auth failure rejects every item.
+        // code is a verdict the same request earns again, so retrying it only
+        // burns permits and retry-schedule slots while a schema mismatch or an
+        // auth failure rejects every item.
         //
         //   UNAVAILABLE       - collector restarting, LB draining, connection
         //                       dropped. The next attempt sees a new state.
@@ -953,11 +953,11 @@ namespace pinpoint {
             std::unique_lock<std::mutex> lock(pipeline_->mutex);
 
             // Only the new queue is charged: the retry schedule is bounded
-            // separately (tuning_.meta_retry_queue_size). One shared budget
-            // let a collector outage migrate items into retry_queue and
-            // shrink the room for new metadata, and since every drop here
-            // releases the cache entry, the same metadata came back from the
-            // next span — drops feeding their own inflow.
+            // separately (tuning_.meta_retry_queue_size). With one shared budget
+            // a collector outage migrates items into retry_queue and shrinks the
+            // room for new metadata, and since every drop here releases the
+            // cache entry, the same metadata comes back from the next span —
+            // drops feeding their own inflow.
             if (pipeline_->queue.size() < max_queue_size) {
                 // deque::push_back gives the strong guarantee and PendingMeta's
                 // move cannot throw, so `pending` still owns the metadata
@@ -1169,9 +1169,8 @@ namespace pinpoint {
             // rejected payload), and the retry would replay the same bytes for
             // the same verdict, so this is dropped like a non-retryable status
             // rather than retried. Releasing the cache entry keeps the recovery
-            // path: a later span re-registers the id and
-            // sends a *new* request, which is the only thing that can produce
-            // a different answer.
+            // path: a later span re-registers the id and sends a *new* request,
+            // which is the only thing that can produce a different answer.
             if (const auto rejected = meta_reject_reporter_.record()) {
                 LOG_ERROR("drop {} metadata: collector rejected it "
                           "(PResult.success=false), {} ({} rejected in total)",
@@ -1318,8 +1317,8 @@ namespace pinpoint {
             }
 
             // Non-waiting probe, never readyChannel(): this is the pipeline's
-            // only thread and it holds a permit and the item, so waiting out
-            // a collector outage here froze the pipeline while enqueueMeta
+            // only thread and it holds a permit and the item, so waiting out a
+            // collector outage here would freeze the pipeline while enqueueMeta
             // overflowed, released cache entries and the next span re-enqueued
             // the same metadata (see channelReadyNow()). An unready channel
             // is a failed attempt: the item takes the retry schedule and the
@@ -1337,10 +1336,9 @@ namespace pinpoint {
                 LOG_ERROR("metadata channel readiness threw an unknown exception");
             }
             if (!channel_ready) {
-                // Channel unavailable (or stop requested): hand the permit
-                // back and treat this attempt as failed, exactly like the old
-                // blocking sender did, so the item re-enters the retry path
-                // instead of being lost.
+                // Channel unavailable (or stop requested): hand the permit back
+                // and treat this attempt as failed, so the item re-enters the
+                // retry path instead of being lost.
                 {
                     std::lock_guard<std::mutex> lock(pipeline_->mutex);
                     ++pipeline_->permits;
@@ -2898,8 +2896,7 @@ namespace pinpoint {
         // while serializing a batch) drops that batch but must not kill the
         // worker for the process lifetime — no spans would ever be reported
         // again. Only agent exit ends the worker, and the shutdown flush runs
-        // on every path, including exception unwinds that previously skipped
-        // it and silently dropped the queued chunks.
+        // on every path, including exception unwinds.
         std::vector<std::unique_ptr<SpanChunk>> pending_batch;
         while (!stopping()) {
             try {
@@ -2908,8 +2905,8 @@ namespace pinpoint {
             } CATCH_AND_LOG("grpc span worker")
 
             if (!stopping()) {
-                // run_span_worker previously owned its batch as a local, so an
-                // exception dropped those chunks before the supervisor restart.
+                // Owned by the caller, not by run_span_worker: a local batch
+                // would be dropped by an exception before the supervisor restart.
                 pending_batch.clear();
             }
             std::unique_lock<std::mutex> lock(span_wait_mutex_);
@@ -3182,7 +3179,7 @@ namespace pinpoint {
 
     GrpcStreamStatus GrpcStats::next_write() try {
         LOG_DEBUG("stats - next_write");
-        // should be hold stream_mutex_
+        // Caller must hold stream_mutex_.
         release_written_message_locked();
 
         StatsType stats;
@@ -3259,7 +3256,7 @@ namespace pinpoint {
 
     GrpcStreamStatus GrpcStats::build_shutdown_url_stat_write() try {
         LOG_DEBUG("stats - build_shutdown_url_stat_write");
-        // should be hold stream_mutex_
+        // Caller must hold stream_mutex_.
 
         // Shutdown also sends the partial tick because no later record can complete it.
         const auto snapshot = agent_->getUrlStats().takeSnapshot(true);
@@ -3296,16 +3293,11 @@ namespace pinpoint {
         // Include the tick in progress so up to 30 seconds of traffic and
         // completed snapshots are not lost on clean shutdown.
         //
-        // An explicit one-shot flush rather than narrowing next_write()'s
-        // stopping() gate to stop_requested_ alone: that gate is not what
-        // makes the old attempt unreachable. run_stats_worker's own
-        // `if (stop)` returns first, and it must — the token-driven loop has
-        // no business running after a stop request. Narrowing next_write()
-        // would have to be paired with letting the loop keep serving tokens
-        // while exiting, which is a larger change to the shutdown contract
-        // for a strictly worse result: the flush is one message, and only a
-        // dedicated call site can bound it, probe the channel and count what
-        // it could not send.
+        // An explicit one-shot flush rather than a relaxed next_write() gate:
+        // run_stats_worker's own `if (stop)` returns first, and it must — the
+        // token-driven loop has no business running after a stop request. Only a
+        // dedicated call site can bound this one message, probe the channel and
+        // count what it could not send.
         std::unique_lock<std::mutex> lock(stream_mutex_);
 
         // No live stream to carry the flush: either one was never started
@@ -3472,7 +3464,7 @@ namespace pinpoint {
             // on stats_queue_cv_ and about to run its one shutdown
             // URL-stat flush over exactly this stream. A cancelled context
             // fails that write (OnWriteDone(false)) and the flush is
-            // unrepeatable, so a clean shutdown lost the tick it exists to
+            // unrepeatable, so a clean shutdown would lose the tick it exists to
             // save. stream_mutex_ makes the test exact rather than a guess:
             // write_and_await_stats_stream holds this lock for its whole
             // body and releases it only inside the write wait, where

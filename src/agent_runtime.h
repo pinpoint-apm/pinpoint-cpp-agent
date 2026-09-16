@@ -60,17 +60,13 @@ namespace pinpoint {
         // Not config-derived: the agent's stats sinks, carried unchanged into
         // every generation (build_runtime), so spans admitted under different
         // generations aggregate into the same place. They are here so a span
-        // holding this snapshot can reach them WITHOUT keeping the whole
-        // agent alive: UnsampledSpan drops its per-request selfRef() — a CAS
-        // on the agent's single control block, measured at half the
-        // four-thread cost of the unsampled path (span_lifecycle_benchmark) —
-        // because everything its EndSpan and destructor touch is owned right
-        // here. Deliberately NOT handed to spans as shared_ptr copies: a
-        // per-span copy would do its refcount RMW on these objects' one
-        // control block and recreate the same contention one object over.
-        // Spans ride the runtime snapshot's thread-localized control block
-        // instead (AtomicSharedPtr's ThreadCached mode) and use these as
-        // plain pointers.
+        // holding this snapshot can reach them WITHOUT keeping the whole agent
+        // alive, which lets UnsampledSpan drop its per-request selfRef() CAS.
+        // Deliberately NOT handed to spans as shared_ptr copies: a per-span
+        // copy would put its refcount RMW on these objects' one control block
+        // and recreate the same contention one object over. Spans ride the
+        // runtime snapshot's thread-localized control block instead
+        // (AtomicSharedPtr's ThreadCached mode) and use these as plain pointers.
         std::shared_ptr<AgentStats> stats;
         std::shared_ptr<UrlStats> url_stats;
     };

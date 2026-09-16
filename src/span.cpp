@@ -32,9 +32,8 @@ namespace pinpoint {
         app_type_{app_type},
         // Kept only as the fallback for a span with no api id: whenever the id
         // is positive the builders send it and never read the name (see
-        // build_grpc_span), so storing it would allocate once per span (an
-        // operation name usually exceeds libstdc++'s 15-char SSO threshold)
-        // for bytes nothing looks at.
+        // build_grpc_span), so storing it would allocate once per span for
+        // bytes nothing looks at.
         operation_{api_id > 0 ? std::string_view{} : operation},
         api_id_{api_id},
         start_time_{to_milli_seconds(std::chrono::system_clock::now())},
@@ -246,10 +245,9 @@ namespace pinpoint {
     }
 
     // retval unparenthesized so an empty argument yields a plain `return;`.
-    // Throttled, and per expansion rather than per macro: LOG_WARN_THROTTLED
-    // owns a static reporter in each expansion, so every guarded method keeps
-    // its own 60s window and a misinstrumented host still learns which call it
-    // is getting wrong — just once, instead of once per request.
+    // Throttled per expansion: LOG_WARN_THROTTLED owns a static reporter in
+    // each expansion, so every guarded method keeps its own 60s window and a
+    // misinstrumented host still learns which call it is getting wrong.
     #define CHECK_FINISHED_WITH_RETURN(retval) \
         do { \
             if (finished_.load(std::memory_order_relaxed)) { \
@@ -499,10 +497,9 @@ namespace pinpoint {
         // would let two concurrent EndSpan calls both pass the guard and run
         // record_chunk / dropActiveSpan / collectResponseTime twice.
         // Relaxed: an idempotency guard on a single-threaded object, not a
-        // synchronization point. The cross-thread handoff of the span's data
-        // to the gRPC worker is ordered by the span queue's shard mutex, so a
-        // full barrier here (dmb ish on arm64, locked xchg on x86) per
-        // EndSpan bought nothing.
+        // synchronization point. The cross-thread handoff of the span's data to
+        // the gRPC worker is ordered by the span queue's shard mutex, so a full
+        // barrier here would buy nothing.
         if (finished_.exchange(true, std::memory_order_relaxed)) {
             LOG_WARN_THROTTLED("span is already finished");
             return;
@@ -790,11 +787,10 @@ namespace pinpoint {
                                            int32_t async_id) try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
         // No checkOwnerThread(): batch replay is driven by a language binding
-        // that already serializes access to this span (the Python agent holds
-        // a per-span lock across the whole flush). A binding may legitimately
+        // that already serializes access to this span, and may legitimately
         // replay from a thread other than the one that flushed an earlier
-        // chunk, and asserting there would turn a documented "may be
-        // inaccurate" case into a process abort. See doc/api_contracts.md.
+        // chunk. Asserting here would turn a documented "may be inaccurate"
+        // case into a process abort. See doc/api_contracts.md.
 
         // Backstop only: a wrapper batching events enforces these limits at
         // event-creation time with its own copy of the config. Dropping here
@@ -944,12 +940,11 @@ namespace pinpoint {
     void SpanImpl::RecordHeader(HeaderType which, HeaderReader& reader) try {
         CHECK_FINISHED();
         // Through the span's own runtime snapshot, not the agent's live one:
-        // AgentImpl::recordHttpHeader re-loads runtime_ and copies the
-        // recorder shared_ptr (two RMWs on a control block every request
-        // thread shares) on each of the up-to-three calls per request, and it
-        // records under whatever generation is live rather than the one this
-        // span captured. runtime_ is owned by this span, so no re-entrant
-        // load during reader.Get() can free the recorder mid-call.
+        // AgentImpl::recordHttpHeader would re-load runtime_ and copy the
+        // recorder shared_ptr on each of the up-to-three calls per request, and
+        // record under whatever generation is live rather than the one this
+        // span captured. runtime_ is owned by this span, so no re-entrant load
+        // during reader.Get() can free the recorder mid-call.
         if (runtime_) {
             if (which >= HTTP_REQUEST && which <= HTTP_COOKIE) {
                 if (const auto& recorder = runtime_->http_srv_header_recorder[which]) {
@@ -985,10 +980,10 @@ namespace pinpoint {
         }
         url_stat_->end_time_ = data_->getEndTime();
         url_stat_->elapsed_ = data_->getElapsed();
-        // A span-event exception (DB/external call) fails the transaction too,
-        // Read through the trace root — only spans that own a url_stat_ get here, so this is
-        // data_ itself, but the flag's home is the root either way and an
-        // async child that ended first has already marked it.
+        // A span-event exception (DB/external call) fails the entry too. Read
+        // through the trace root: only spans that own a url_stat_ get here, so
+        // this is data_ itself, but the flag's home is the root either way and
+        // an async child that ended first has already marked it.
         url_stat_->failed_ = isStatusFail(url_stat_->status_code_) ||
                              traceRootData().getErr() != SPAN_ERR_NONE;
         agent_->recordUrlStat(std::move(*url_stat_), *config_);

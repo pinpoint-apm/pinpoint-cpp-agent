@@ -48,8 +48,7 @@ namespace pinpoint {
 
         // strVal2 by value so a caller-owned bind-value string (see
         // SpanEventImpl::SetSqlQuery) moves in without copying up to
-        // max_bind_args_size bytes; a literal still builds one std::string as
-        // before.
+        // max_bind_args_size bytes.
         IntStringStringValue(const int32_t intVal,
                              std::shared_ptr<const std::string> strVal1,
                              std::string strVal2)
@@ -162,19 +161,9 @@ namespace pinpoint {
         PinpointAnnotation() {}
         ~PinpointAnnotation() = default;
 
-        /**
-         * @brief Appends an integer value annotation.
-         *
-         * @param key Annotation identifier.
-         * @param i Integer value to store.
-         */
+        /// @brief Appends an integer value annotation.
         void AppendInt(int32_t key, int32_t i);
-        /**
-         * @brief Appends a long value annotation.
-         *
-         * @param key Annotation identifier.
-         * @param l Long value to store.
-         */
+        /// @brief Appends a long value annotation.
         void AppendLong(int32_t key, int64_t l);
         /// @brief Appends an annotation containing two strings.
         void AppendStringString(int32_t key, std::string_view s1, std::string_view s2);
@@ -196,13 +185,10 @@ namespace pinpoint {
          * guard (e.g. the proxy-header recording through SpanData) is
          * rejected the same way a late SetAnnotation is.
          *
-         * This is a misuse guard, not a synchronization: the flag is checked
-         * and the vector grown without a lock, so it only holds under the
-         * Span single-thread contract (pinpoint/tracer.h) — every Append
-         * and the seal() run on the span's owning thread, and the gRPC
-         * worker reads the list only after the finished event is published
-         * to it through the chunk queue. An Append racing seal() from
-         * another thread is a contract violation SpanImpl::checkOwnerThread
+         * This is a misuse guard, not synchronization: the flag is checked and
+         * the vector grown without a lock, so it only holds under the Span
+         * single-thread contract (pinpoint/tracer.h). An Append racing seal()
+         * from another thread is a contract violation SpanImpl::checkOwnerThread
          * reports; nothing here makes it safe.
          */
         void seal() noexcept { sealed_.store(true, std::memory_order_release); }
@@ -220,11 +206,7 @@ namespace pinpoint {
             std::vector<std::pair<int32_t,AnnotationData>>{}.swap(annotation_list_);
         }
 
-        /**
-         * @brief Returns the internal annotation list for serialization.
-         *
-         * @return Reference to the stored annotations.
-         */
+        /// @brief Returns the internal annotation list for serialization.
         std::vector<std::pair<int32_t,AnnotationData>>& getAnnotations() { return annotation_list_; }
         /// @brief Const overload for read-only consumers (the gRPC serializer).
         const std::vector<std::pair<int32_t,AnnotationData>>& getAnnotations() const { return annotation_list_; }

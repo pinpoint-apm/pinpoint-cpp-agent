@@ -191,14 +191,13 @@ namespace pinpoint {
         // plus once per named span event, so a single rwlock's cache line
         // would ping-pong across all request threads.
         //
-        // Sql.CacheLengthLimit additionally caps what the SQL caches may
-        // retain (see kNoCacheLengthLimit): the normalizer admits statements
-        // up to kMaxNormalizedSqlLength, so without it a 1024-entry cache is
-        // ~1GB in the worst case, twice over. Startup-only,
-        // like the cache sizes themselves. Deliberately not applied to
-        // sql_cache_: its ids come from a sequence, so a bypassed statement
-        // would burn a fresh id — and a fresh StringMeta — on every single
-        // use.
+        // Sql.CacheLengthLimit additionally caps what the SQL caches may retain
+        // (see kNoCacheLengthLimit): the normalizer admits statements up to
+        // kMaxNormalizedSqlLength, so without it a 1024-entry cache is ~1GB in
+        // the worst case, twice over. Startup-only, like the cache sizes
+        // themselves. Deliberately not applied to sql_cache_: its ids come from
+        // a sequence, so a bypassed statement would burn a fresh id — and a
+        // fresh StringMeta — on every single use.
         //
         // Sql.CacheSize sizes the three SQL caches only (see kDefaultCacheSize
         // for why api/error keep the ctor parameter). make_config() has
@@ -459,13 +458,13 @@ namespace pinpoint {
         rt->url_stats = url_stats_;
         const Config& c = *rt->config;
 
-        // Carried over when every Sampling.* key is unchanged. Rebuilding restarts the
-        // sampler's counter at 0, and the counter is tested pre-increment, so
-        // `CounterRate: 100` would sample the very next request after any
-        // unrelated config edit; the throughput buckets would likewise start
-        // empty and hand out a fresh second of burst. Type is compared
-        // case-insensitively, the way it is resolved below; swapping the
-        // COUNTER/COUNTING aliases still rebuilds, which is rare and harmless.
+        // Carried over when every Sampling.* key is unchanged. Rebuilding
+        // restarts the sampler's counter at 0, and the counter is tested
+        // pre-increment, so `CounterRate: 100` would sample the very next
+        // request after any unrelated config edit; the throughput buckets would
+        // likewise start empty and hand out a fresh second of burst. Type is
+        // compared case-insensitively, the way it is resolved below; swapping
+        // the COUNTER/COUNTING aliases still rebuilds, which is harmless.
         const bool same_sampling =
             prev_cfg != nullptr &&
             absl::EqualsIgnoreCase(prev_cfg->sampling.type, c.sampling.type) &&
@@ -491,14 +490,13 @@ namespace pinpoint {
         }
 
         // An error storm produces one exception metadata per errored span, so
-        // new chains are admitted at most
-        // CallstackTraceNewThroughput per second and the rest are recorded as
-        // plain errors without a call stack. Non-positive is unlimited, null.
+        // new chains are admitted at most CallstackTraceNewThroughput per second
+        // and the rest are recorded as plain errors without a call stack.
+        // Non-positive is unlimited, null.
         //
         // Carried over on an unchanged throughput for the same reason as the
         // sampler: a rebuilt bucket is a full second of exception chains, so a
-        // reload during an error storm would lift the
-        // cap it exists to enforce.
+        // reload during an error storm would lift the cap it exists to enforce.
         if (prev_cfg != nullptr &&
             prev_cfg->callstack_trace_new_throughput == c.callstack_trace_new_throughput) {
             rt->exception_chain_limiter = prev->exception_chain_limiter;
@@ -1020,8 +1018,8 @@ namespace pinpoint {
         }
         // One pid read per span creation, only on the enabled path — served
         // from current_pid()'s fork-hooked cache, so a relaxed atomic load
-        // rather than the syscall getpid() is on Linux (see utility.h). An
-        // agent inherited across fork() carries the parent's enabled_ == true,
+        // rather than the syscall getpid() is on Linux (see utility.h). An agent
+        // inherited across fork() carries the parent's enabled_ == true,
         // but its worker threads do not exist here: recording would enqueue
         // spans into queues nothing drains, silently, since even the drop
         // reporter runs on the missing worker. Race-free: owner_pid_ is
@@ -1206,8 +1204,8 @@ namespace pinpoint {
         // Wait for an in-flight Start() to finish publishing owner_pid_ and
         // init_thread_ before reading them below; Start() calls arriving
         // after this point observe shutting_down_ under the same lock and
-        // refuse. try/catch keeps the noexcept contract if locking ever
-        // fails — proceeding unserialized then matches the old behavior.
+        // refuse. try/catch keeps the noexcept contract if locking ever fails;
+        // the teardown then proceeds unserialized.
         std::unique_lock<std::mutex> lifecycle_lock(lifecycle_mutex_, std::defer_lock);
         try { lifecycle_lock.lock(); } catch (...) {}
 
@@ -1270,9 +1268,9 @@ namespace pinpoint {
     }
 
     namespace {
-        // Strict Long.parseLong: optional leading '+'/'-', then ASCII digits only,
-        // no whitespace, range-checked. stoll_ (absl::SimpleAtoi) is not used
-        // here because it tolerates surrounding whitespace.
+        // Strict: an optional leading '+'/'-', then ASCII digits only, no
+        // whitespace, range-checked. stoll_ (absl::SimpleAtoi) is not used here
+        // because it tolerates surrounding whitespace.
         std::optional<int64_t> parseLongStrict(std::string_view s) noexcept {
             const char* first = s.data();
             const char* const last = first + s.size();
@@ -1289,8 +1287,8 @@ namespace pinpoint {
     }
 
     // Transaction ids are agentId^startTime^sequence. The agent id is checked
-    // for charset only (the 24-char limit applies to self
-    // registration, not to inbound ids), a fourth field ignored. Warnings are
+    // for charset only (the 24-char limit applies to self registration, not to
+    // inbound ids), and anything after the third field is ignored. Warnings are
     // throttled per reason: a malformed header is peer-controlled input that can
     // recur once per request.
     TraceId TraceId::parseTraceId(std::string_view txid) noexcept try {
@@ -1407,9 +1405,9 @@ namespace pinpoint {
         // (agent instance), the shared cache's invalidation count (bumped on
         // every eviction or remove, so an id that left the shared cache is
         // never served from here — the collector must see the fresh id's
-        // metadata), hash, type and the key bytes. Direct-mapped: an application cycling through more
-        // distinct names than slots on one thread falls back to the shared
-        // cache and pays one extra hash per lookup.
+        // metadata), hash, type and the key bytes. Direct-mapped: an application
+        // cycling through more distinct names than slots on one thread falls
+        // back to the shared cache and pays one extra hash per lookup.
         struct ApiFrontCacheEntry {
             uint64_t owner{0};
             uint64_t generation{0};

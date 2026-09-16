@@ -355,9 +355,9 @@ TEST_F(AgentImplTest, NewSpanWithLowercaseSampledHeaderIsHonored) {
     EXPECT_FALSE(span->IsSampled()) << "a lowercase Pinpoint-Sampled: s0 must still be honored";
 }
 
-// A map holding only keys the agent does not know starts a fresh transaction,
-// as before, but now leaves a throttled warning behind so the operator can see
-// why every request became its own trace.
+// A map holding only keys the agent does not know starts a fresh transaction
+// and leaves a throttled warning behind, so the operator can see why every
+// request became its own trace.
 TEST_F(AgentImplTest, NewSpanWithUnrecognizedHeaderMapKeysStartsFreshTraceAndWarns) {
     struct LoggerGuard {
         ~LoggerGuard() { Logger::getInstance().setSink({}); }

@@ -78,10 +78,8 @@ protected:
 TEST_F(StatTest, CollectAgentStatTest) {
     AgentStatsSnapshot snapshot;
     
-    // Test that collectAgentStat() fills the snapshot
     agent_stats_->collectAgentStat(snapshot);
     
-    // Verify that sample_time is set (should be > 0 after collection)
     EXPECT_GT(snapshot.sample_time_, 0) << "Sample time should be set";
     
     // CPU times might be NaN on some systems (like macOS), so check if they're valid or NaN
@@ -267,7 +265,6 @@ TEST_F(StatTest, CollectResponseTimeTest) {
 }
 
 TEST_F(StatTest, SamplingCountersTest) {
-    // Test sample counting functions
     agent_stats_->incrSampleNew();
     agent_stats_->incrSampleNew();
     agent_stats_->incrUnsampleNew();
@@ -279,7 +276,6 @@ TEST_F(StatTest, SamplingCountersTest) {
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
     
-    // Verify counters are incremented
     EXPECT_EQ(snapshot.num_sample_new_, 2) << "Sample new counter should be 2";
     EXPECT_EQ(snapshot.num_unsample_new_, 1) << "Unsample new counter should be 1";
     EXPECT_EQ(snapshot.num_sample_cont_, 1) << "Sample cont counter should be 1";
@@ -535,8 +531,7 @@ TEST_F(StatTest, ResetCollectionBaselineRetakesCpuBaselineAndKeepsBatchState) {
 // ========== AgentStats Class Tests ==========
 
 TEST_F(StatTest, AgentStatsConstructorTest) {
-    // AgentStats instance is already created in SetUp
-    // Test that we can create another one (though singleton might get overwritten)
+    // A second instance alongside SetUp's must construct cleanly.
     AgentStats another_stats(mock_agent_service_.get());
     SUCCEED();
 }
@@ -651,7 +646,6 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
     AgentStatsSnapshot snapshot;
     agent_stats_->collectAgentStat(snapshot);
     
-    // Verify that we have added 4 more spans
     int final_total = snapshot.active_requests_[0] + snapshot.active_requests_[1] + 
                      snapshot.active_requests_[2] + snapshot.active_requests_[3];
     EXPECT_EQ(final_total, initial_total + 4) << "Should have 4 more active spans than initially";
@@ -675,7 +669,6 @@ TEST_F(StatTest, ActiveSpanTimeDistributionTest) {
 
 // ========== Additional Edge Case Tests ==========
 
-// Test resetAgentStats clears all counters
 TEST_F(StatTest, ResetAgentStatsTest) {
     agent_stats_->incrSampleNew();
     agent_stats_->incrSampleNew();
@@ -728,14 +721,14 @@ TEST_F(StatTest, CollectResetsCountersBetweenCallsTest) {
     EXPECT_EQ(snapshot2.response_time_max_, 0);
 }
 
-// Test dropping a never-linked node (async/noop spans; should not crash)
+// Dropping a never-linked node (async/noop spans) must not crash.
 TEST_F(StatTest, DropNonExistentSpanTest) {
     ActiveSpanNode node;
     agent_stats_->dropActiveSpan(node);
     SUCCEED();
 }
 
-// Test adding the same node twice (re-link guard)
+// Adding the same node twice is refused by the re-link guard.
 TEST_F(StatTest, DuplicateSpanIdTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -757,7 +750,6 @@ TEST_F(StatTest, DuplicateSpanIdTest) {
     agent_stats_->dropActiveSpan(node);
 }
 
-// Test all active spans in a single bucket
 TEST_F(StatTest, AllSpansInOneBucketTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -836,7 +828,6 @@ TEST_F(StatTest, EmptyActiveSpanMapTest) {
     }
 }
 
-// Test add and then drop all spans
 TEST_F(StatTest, AddAndDropAllSpansTest) {
     auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -858,7 +849,6 @@ TEST_F(StatTest, AddAndDropAllSpansTest) {
     EXPECT_EQ(total, 0) << "All spans dropped, should have 0 active";
 }
 
-// Test concurrent sampling counter increments
 TEST_F(StatTest, ConcurrentSamplingCounterTest) {
     const int increments_per_thread = 1000;
     const int num_threads = 4;
@@ -885,7 +875,6 @@ TEST_F(StatTest, ConcurrentSamplingCounterTest) {
     EXPECT_EQ(snapshot.num_unsample_new_, num_threads * increments_per_thread);
 }
 
-// Test concurrent response time collection
 TEST_F(StatTest, ConcurrentResponseTimeTest) {
     const int count_per_thread = 100;
     const int num_threads = 4;
@@ -912,7 +901,6 @@ TEST_F(StatTest, ConcurrentResponseTimeTest) {
     EXPECT_EQ(snapshot.response_time_max_, 10);
 }
 
-// Test concurrent active span collection
 TEST_F(StatTest, ConcurrentActiveSpanTest) {
     const int spans_per_thread = 50;
     const int num_threads = 4;
@@ -965,7 +953,7 @@ TEST_F(StatTest, ConcurrentActiveSpanTest) {
     EXPECT_EQ(total, 0);
 }
 
-// Test sample_time is set to current time in milliseconds
+// sample_time is stamped in epoch milliseconds.
 TEST_F(StatTest, SampleTimeIsCurrentTest) {
     auto before = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -1004,7 +992,6 @@ TEST_F(StatTest, SnapshotDefaultInitTest) {
     }
 }
 
-// Test initAgentStats resets batch counter
 TEST_F(StatTest, InitAgentStatsResetsBatchTest) {
     // Collect some stats first
     agent_stats_->incrSampleNew();
@@ -1022,7 +1009,6 @@ TEST_F(StatTest, InitAgentStatsResetsBatchTest) {
     EXPECT_EQ(snapshot.response_time_max_, 0);
 }
 
-// Test mixed increment patterns across all counters
 TEST_F(StatTest, AllCountersMixedIncrementTest) {
     for (int i = 0; i < 10; i++) agent_stats_->incrSampleNew();
     for (int i = 0; i < 20; i++) agent_stats_->incrUnsampleNew();
@@ -1176,6 +1162,40 @@ TEST_F(StatTest, ActiveSpanCountAtThresholdDoesNotWarn) {
 
     for (size_t i = 0; i < total; i++) {
         agent_stats_->dropActiveSpan(nodes[i]);
+    }
+}
+
+// ========== Active Trace Histogram Layout ==========
+
+// The four slots the agent stat carries, with inclusive upper bounds at 1s,
+// 3s and 5s.
+TEST_F(StatTest, ActiveTraceHistogramSlotBoundariesTest) {
+    constexpr int64_t kSampleTimeMs = 100000;
+
+    struct Case {
+        int64_t elapsed_ms;
+        int slot;
+    };
+    const Case cases[] = {
+        {0, 0},     {1000, 0},
+        {1001, 1},  {3000, 1},
+        {3001, 2},  {5000, 2},
+        {5001, 3},  {60000, 3},
+    };
+
+    for (const auto& c : cases) {
+        ActiveSpanRegistry registry;
+        ActiveSpanNode node;
+        registry.add(node, /*span_id=*/1, kSampleTimeMs - c.elapsed_ms);
+
+        int32_t buckets[4]{};
+        registry.collect(buckets, kSampleTimeMs);
+        for (int i = 0; i < 4; ++i) {
+            EXPECT_EQ(buckets[i], i == c.slot ? 1 : 0)
+                << "an active span of " << c.elapsed_ms << "ms belongs in slot " << c.slot;
+        }
+
+        registry.drop(node);
     }
 }
 

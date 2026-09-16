@@ -627,7 +627,6 @@ TEST_F(NoopTest, GlobalNoopFunctionsTest) {
     auto agent = noopAgent();
     EXPECT_NE(agent, nullptr) << "noopAgent should return a valid Agent";
 
-    // Test that the same instances are returned (singleton behavior)
     auto span_event2 = noopSpanEvent();
     auto span2 = noopSpan();
     auto agent2 = noopAgent();
@@ -906,9 +905,8 @@ TEST_F(NoopTest, NoopSpanEventIgnoresEveryCallTest) {
     SUCCEED() << "every noop event call is a no-op that must not crash";
 }
 
-// The event of an unsampled request drops every error, so no SetError
-// overload may reach the span — one that still did would fail the URL stat on
-// a path Java and the Go agent leave untouched.
+// The event of an unsampled request drops every error, so no SetError overload
+// may reach the span — one that still did would fail the URL stat entry.
 TEST_F(NoopTest, UnsampledSpanEventNoErrorOverloadFailsTheUrlStatTest) {
     MockCallStackReader stack;
     stack.AddFrame("/lib/app.so", "f", "/src/f.cpp", 1);

@@ -50,18 +50,10 @@ namespace pinpoint {
      */
     class Logger {
     public:
-        /// Deleted copy-constructor to enforce the singleton contract.
         Logger(const Logger &) = delete;
-        /// Deleted assignment operator to enforce the singleton contract.
         Logger &operator=(const Logger &) = delete;
 
-        /**
-         * @brief Returns the lazily-constructed global logger instance.
-         *
-         * The first call creates the underlying logger and subsequent calls reuse it.
-         *
-         * @return Reference to the global `Logger`.
-         */
+        /// @brief Returns the lazily-constructed global logger instance.
         static Logger& getInstance() {
             // Intentionally heap-allocated and never destroyed. Background
             // threads (gRPC workers, config watcher, async RPC callbacks) may
@@ -88,8 +80,7 @@ namespace pinpoint {
          *        disables rotation.
          * @param max_backups Rotated files kept beside the live one
          *        (`<path>.1` .. `<path>.max_backups`, newest first). Values
-         *        < 1 are treated as 1, the behaviour from before the setting
-         *        existed.
+         *        < 1 are treated as 1.
          */
         void setFileLogger(const std::string& log_file_path, const int max_size,
                            const int max_backups = 1);
@@ -181,9 +172,8 @@ namespace pinpoint {
                 return;
             }
             try {
-                // Inline storage for typical lines: the previous std::string
-                // heap-allocated once per emitted line before write() copied
-                // it into the line buffer.
+                // Inline storage, so a typical line is formatted without a
+                // heap allocation.
                 fmt::memory_buffer message;
                 try {
                     fmt::vformat_to(std::back_inserter(message), format,
@@ -239,8 +229,8 @@ namespace pinpoint {
         // The pointer is guarded by mutex_; the CALL is not made under it.
         // write() copies the shared_ptr under mutex_ and invokes the sink
         // holding only a shared lock on sink_gate_, so a sink that logs back
-        // into the agent (any pt_*/pinpoint call can) no longer re-locks the
-        // non-recursive mutex_ — that was UB, in practice a self-deadlock.
+        // into the agent (any pt_*/pinpoint call can) cannot re-lock the
+        // non-recursive mutex_ and deadlock on itself.
         // setSink()/shutdown() swap the pointer and then take sink_gate_
         // exclusively, so once they return no call into the old sink is in
         // flight and the host may free its userdata. A reentrant line (logged
@@ -292,14 +282,12 @@ namespace pinpoint {
 
     // LOG_WARN variant rate-limited per call site (each expansion owns a
     // static QueueDropReporter in its acquire() mode): at most one line per
-    // QueueDropReporter::kDefaultReportInterval, with suppressed repeats
-    // folded into the next granted line's count. Use for warnings that can
-    // recur once per request on application threads — API misuse
-    // (already-finished span touched again, depth/sequence overflow) and
-    // malformed peer input (unparseable trace headers) — where an unthrottled
-    // line per request would serialize the host's request threads on the
-    // logger mutex and its per-line write+flush. Suppressed calls cost one
-    // relaxed increment, one clock read and one relaxed load.
+    // QueueDropReporter::kDefaultReportInterval, with suppressed repeats folded
+    // into the next granted line's count. Use for warnings that can recur once
+    // per request on application threads — API misuse (already-finished span
+    // touched again, depth/sequence overflow) and malformed peer input
+    // (unparseable trace headers) — where an unthrottled line per request would
+    // serialize the host's request threads on the logger mutex.
     #define LOG_WARN_THROTTLED(...) \
         do { \
             ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \

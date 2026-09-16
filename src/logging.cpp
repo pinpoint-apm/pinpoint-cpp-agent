@@ -64,8 +64,8 @@ namespace pinpoint {
         max_file_size_ = max_size > 0
             ? static_cast<std::uint64_t>(max_size) * 1024 * 1024
             : 0;
-        // < 1 means the one backup the agent kept before this was settable;
-        // make_config() already clamps, this covers direct callers.
+        // < 1 normalizes to a single backup. make_config() already clamps;
+        // this covers direct callers.
         max_backups_ = max_backups > 0 ? max_backups : 1;
         current_file_size_ = 0;
         file_enabled_ = false;
@@ -227,8 +227,7 @@ namespace pinpoint {
 
         // Build the whole line in one formatting pass. fmt::memory_buffer uses
         // inline storage for typical lines and grows on the heap for longer
-        // ones; this still avoids the ostringstream plus the chain of
-        // temporary strings used previously. Output format is unchanged:
+        // ones, so a typical line costs no allocation. Output format:
         // [YYYY-MM-DD HH:MM:SS.mmm][level][pinpoint][file:line] message
         fmt::memory_buffer buf;
         fmt::format_to(std::back_inserter(buf),
@@ -285,7 +284,7 @@ namespace pinpoint {
         // takes .1 below. The shifts are best effort — a missing .i is the
         // normal case before the ring has filled, and a failed one costs a
         // generation of history, nothing more — so only the live file's rename
-        // is checked, exactly as when there was a single backup.
+        // is checked.
         std::error_code shift_ec;
         std::filesystem::remove(file_path_ + "." + std::to_string(max_backups_), shift_ec);
         for (int i = max_backups_ - 1; i >= 1; --i) {

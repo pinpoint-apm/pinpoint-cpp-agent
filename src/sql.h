@@ -38,10 +38,10 @@ namespace pinpoint {
     * @brief Hard memory cap on the SQL text the normalizer will process.
     *
     * This is not the metadata cap: the whole statement is normalized and the
-    * result is the SQL id/UID cache key in full; only the copy that travels
-    * in PSqlMetaData.sql is abbreviated
-    * (kMaxSqlMetaLength). This cap exists purely so a pathological
-    * multi-megabyte statement cannot make one span allocate without bound.
+    * result is the SQL id/UID cache key in full; only the copy that travels in
+    * PSqlMetaData.sql is abbreviated (kMaxSqlMetaLength). This cap exists purely
+    * so a pathological multi-megabyte statement cannot make one span allocate
+    * without bound.
     *
     * A statement over the cap is dropped whole (no annotation, no SQL count),
     * never cut: a cut landing inside a literal changes the normalized text,
@@ -81,11 +81,10 @@ namespace pinpoint {
 
         /**
         * Recomputes the "number token start enabled" flag after a regular
-        * character. A
-        * digit counts as a numeric literal only while the flag is enabled, so
-        * a digit following an identifier character (the '1' in "col1") is left
-        * alone. @p next_c covers the '$' positional-placeholder case, for which
-        * @p current is returned unchanged when it is not a digit.
+        * character. A digit counts as a numeric literal only while the flag is
+        * enabled, so a digit following an identifier character (the '1' in
+        * "col1") is left alone. @p next_c covers the '$' positional-placeholder
+        * case, for which @p current is returned unchanged when it is not a digit.
         */
         static bool updateNumberTokenStartEnable(char c, char next_c, bool current);
 

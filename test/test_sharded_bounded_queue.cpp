@@ -565,5 +565,36 @@ namespace {
             << "every value must be destroyed once dequeued or overwritten";
     }
 
+    // The span queue's overflow policy: a full queue discards the OLDEST
+    // value, never the arrival, so the newest telemetry always survives.
+    TEST(ShardedBoundedQueueTest, HeadDropsTheOldestOnOverflow) {
+        constexpr size_t kCapacity = 4;
+        constexpr int kEnqueued = 10;
+
+        ShardedBoundedQueue<std::unique_ptr<int>> queue(kCapacity, /*requested_shards=*/1);
+        ASSERT_EQ(queue.capacity(), kCapacity);
+        ASSERT_EQ(queue.shard_count(), 1u) << "one shard, so retention order is the global one";
+
+        for (int value = 0; value < kEnqueued; ++value) {
+            auto item = std::make_unique<int>(value);
+            queue.enqueue(item);
+            EXPECT_EQ(item, nullptr) << "enqueue always takes the value: nothing is refused";
+        }
+
+        EXPECT_EQ(queue.dropped_oldest(), static_cast<uint64_t>(kEnqueued) - kCapacity)
+            << "every overflow is counted";
+
+        std::vector<std::unique_ptr<int>> drained;
+        EXPECT_EQ(queue.try_dequeue_batch(drained, 2 * kCapacity), kCapacity);
+
+        std::vector<int> survivors;
+        survivors.reserve(drained.size());
+        for (const auto& value : drained) {
+            survivors.push_back(*value);
+        }
+        EXPECT_EQ(survivors, (std::vector<int>{6, 7, 8, 9}))
+            << "the newest survive; head-drop discards the oldest, never the arrival";
+    }
+
 } // namespace
 } // namespace pinpoint

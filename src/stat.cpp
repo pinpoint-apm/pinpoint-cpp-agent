@@ -182,10 +182,8 @@ namespace pinpoint {
 
     // heap_max comes from VmHWM (peak *resident* set), not VmPeak (peak
     // *virtual* address space): heap_alloc is VmRSS, and pairing a resident
-    // current with a virtual peak reported a max the used value could never
-    // approach — a process that merely reserves address space looked like it
-    // used almost no memory. macOS reads resident_size/resident_size_max for
-    // the same reason.
+    // current with a virtual peak reports a max the used value can never
+    // approach. macOS reads resident_size/resident_size_max for the same reason.
     AgentStats::ProcessStatus AgentStats::parseProcStatus(std::string_view status_text) {
         ProcessStatus status{};
 
@@ -230,12 +228,11 @@ namespace pinpoint {
 #else
         // This linear scan runs only on the periodic stats worker.
         //
-        // ponytail: an fd-exhausted process cannot open this directory, so
-        // the reading it most wants comes back as the sentinel. Left alone —
-        // the ramp up to the ceiling is already on the chart, and the fix
-        // (hold a dirfd for the agent's lifetime and re-walk it) has to
-        // handle fork, since an inherited dirfd still points at the parent's
-        // /proc/<pid>/fd.
+        // Known limitation: an fd-exhausted process cannot open this directory,
+        // so the reading it most wants comes back as the sentinel. The ramp up
+        // to the ceiling is already on the chart, and holding a dirfd for the
+        // agent's lifetime instead would have to handle fork — an inherited
+        // dirfd still points at the parent's /proc/<pid>/fd.
         DIR* dir = opendir("/proc/self/fd");
         if (dir == nullptr) {
             return -1;
@@ -405,12 +402,10 @@ namespace pinpoint {
         }
     }
 
-    // The registry's own fork guard. It lives here rather than in the
-    // registry because active_span.h is header-only so the benchmark can
-    // include it against nothing but <thread> — reaching current_pid() from
-    // there would drag utility.cpp into that target. One relaxed atomic load
-    // per call, the same price AgentImpl::tracing_active already pays once
-    // per NewSpan (see utility.h on why current_pid() is not getpid()).
+    // The registry's own fork guard. It lives here rather than in the registry
+    // because active_span.h is header-only, and reaching current_pid() from
+    // there would drag utility.cpp into the benchmark target. One relaxed
+    // atomic load per call (see utility.h on why current_pid() is not getpid()).
     bool AgentStats::inheritedAcrossFork() const noexcept {
         return owner_pid_ != current_pid();
     }
@@ -471,14 +466,11 @@ namespace pinpoint {
         }
 
         std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
-        // Clamped to 1ms because this is wall time: an NTP correction or an
-        // operator setting the date backwards between two collections makes
-        // the gap negative, and it goes on the wire as the window this row's
-        // counters cover — where the collector divides by it
-        // (AvgUsingIntervalPostProcessor's count/(intervalMs/1000)), so 0 is
-        // as unusable as a negative. system_clock is still the right source —
-        // sample_time_ has to be wall time, so the gap comes off the same
-        // reading rather than a second, monotonic one.
+        // Clamped to 1ms because this is wall time: an NTP correction between
+        // two collections makes the gap negative, and it travels as the window
+        // this row's counters cover — the collector divides by it, so 0 is as
+        // unusable as a negative. system_clock is still the right source, since
+        // sample_time_ has to be wall time and the gap comes off that reading.
         const auto period = std::max(
             std::chrono::duration_cast<std::chrono::milliseconds>(now - last_collect_time_),
             std::chrono::milliseconds{1});
@@ -546,7 +538,6 @@ namespace pinpoint {
         }
 
         {
-            // Resize vector safely
             std::lock_guard<std::mutex> lock(mutex_);
             agent_stats_snapshots_.resize(config.stat.batch_count);
         }
@@ -556,11 +547,7 @@ namespace pinpoint {
 
         while (!agent_->isExiting()) {
             if (!cond_var_.wait_for(lock, timeout, [this]{ return agent_->isExiting(); })) {
-                // Period elapsed, collect stats
-                // Unlock while collecting to not block other operations?
-                // collectAgentStat locks its own internal mutexes, so it's fine to hold outer lock or not.
-                // But 'agent_stats_snapshots_' is protected by 'mutex_'.
-
+                // Period elapsed: collect stats.
                 if (static_cast<size_t>(batch_) < agent_stats_snapshots_.size()) {
                     // Collect into a local, not into the slot under mutex_:
                     // collectAgentStat reads /proc (the fd walk alone is
@@ -571,12 +558,11 @@ namespace pinpoint {
                     // needs no lock.
                     lock.unlock();
                     AgentStatsSnapshot collected;
-                    // First line of defense: a collection failure (a transient /proc read error, an
+                    // A collection failure (a transient /proc read error, an
                     // allocation failure while walking fds) costs this one
-                    // snapshot, not the partial batch. The batch cursor is
-                    // left alone, so the next cycle fills the same slot.
-                    // superviseWorker remains the backstop for anything
-                    // thrown outside this call.
+                    // snapshot, not the partial batch: the batch cursor is left
+                    // alone, so the next cycle fills the same slot.
+                    // superviseWorker backstops anything thrown outside this call.
                     bool collected_ok = true;
                     try {
                         collectAgentStat(collected);

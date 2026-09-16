@@ -47,8 +47,8 @@ namespace pinpoint {
     int64_t generate_next_span_id(const int64_t span_id, const int64_t parent_span_id,
                                   const std::function<int64_t()>& rand_source) {
         // Redraw instead of masking the value, so the result stays a uniform
-        // 64-bit draw. A redraw is a
-        // 3-in-2^64 event, so this is a loop only in principle.
+        // 64-bit draw. A redraw is a 3-in-2^64 event, so this is a loop only in
+        // principle.
         while (true) {
             const auto id = rand_source();
             if (id != kNullSpanId && id != span_id && id != parent_span_id) {

@@ -1506,14 +1506,13 @@ TEST_F(AgentIntegrationTest, HttpHelpersPopulateServerAndClientWireData) {
                   .stringvalue2().value(), "client-response-5");
 }
 
-// The uid cache stores whatever the normalizer produced, and the normalizer
-// produces an empty string for all-comment SQL (src/sql.cpp:69-71 returns the
-// empty result, src/span_event.cpp:400-403 does not filter it). An empty key
-// is below Sql.CacheLengthLimit, so src/cache.h:792 bypasses() says false and
-// the entry really is cached under "". Eviction on send failure must therefore
-// key off the meta's `cached_` flag, not the key's shape: keying off emptiness
-// both skipped this entry and, symmetrically, would have let a bypassed
-// statement's release evict it.
+// The uid cache stores whatever the normalizer produced, and SqlNormalizer
+// produces an empty string for all-comment SQL that SetSqlQuery does not filter
+// out. An empty key is below Sql.CacheLengthLimit, so SqlUidCache::bypasses()
+// says false and the entry really is cached under "". Eviction on send failure
+// must therefore key off the meta's `cached_` flag, not the key's shape: keying
+// off emptiness would skip this entry and, symmetrically, would let a bypassed
+// statement's release evict one.
 TEST_F(AgentIntegrationTest, SqlUidEvictionFollowsCacheMembershipNotKeyShape) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
@@ -1872,9 +1871,9 @@ TEST_F(AgentIntegrationTest,
 // the retention queue, the snapshot swap on the send token, the protobuf
 // encoding and the stream itself — is the production path.
 //
-// Before tick-boundary snapshots, one limit-capped map absorbed the whole
-// outage: the collector would have received url_stat_limit entries in total
-// and every tick after the first would have been starved.
+// Without tick-boundary snapshots one limit-capped map would absorb the whole
+// outage: the collector would receive url_stat_limit entries in total and every
+// tick after the first would be starved.
 TEST_F(AgentIntegrationTest, KeepsPerTickUrlStatisticsThroughAStatStreamOutage) {
     constexpr int kLimit = 3;
     constexpr int kUrlsPerTick = 5;   // more than kLimit, so each tick overflows

@@ -129,11 +129,8 @@ namespace pinpoint {
                 }
                 break;
             case PatternKind::Ant: {
-                // Fetched per Ant pattern, not once per call: reuse the
-                // per-thread DP rows across calls (matching avoids further
-                // vector growth while the URL fits the retained capacity),
-                // without paying the slot's one heap allocation on threads
-                // whose patterns never reach an Ant match.
+                // Fetched per Ant pattern, not once per call, so threads whose
+                // patterns never reach an Ant match never allocate the slot.
                 if (ant_match(pattern, url, match_scratch())) {
                     return true;
                 }
@@ -272,8 +269,8 @@ namespace pinpoint {
         }
 
         const bool matched = scratch.next[0] != 0;
-        // ponytail: one huge URL must not pin its buffers in this thread's TLS
-        // for the thread's lifetime; ordinary URLs keep the retained capacity.
+        // One huge URL must not pin its buffers in this thread's TLS for the
+        // thread's lifetime; ordinary URLs keep the retained capacity.
         constexpr size_t kMaxRetainedScratch = 4096;
         if (scratch.next.capacity() > kMaxRetainedScratch) {
             scratch = MatchScratch{};
@@ -326,8 +323,8 @@ namespace pinpoint {
             return addr.substr(0, colon_pos);
         }
 
-        // Java RealIpHeaderResolver: `(?i:for)="?([^;,"]+)"?`, group 1, hand
-        // parsed. Returns empty when there is no for= token.
+        // Hand-parsed `(?i:for)="?([^;,"]+)"?`, group 1, out of an RFC 7239
+        // Forwarded value. Returns empty when there is no for= token.
         std::string_view forwardedFor(std::string_view value) {
             for (size_t i = 0; i + 4 <= value.size(); ++i) {
                 if (!absl::EqualsIgnoreCase(value.substr(i, 3), "for") || value[i + 3] != '=') {
@@ -576,11 +573,9 @@ namespace pinpoint {
         // through both an Apache and an Nginx proxy records two. Hence
         // independent ifs below rather than a first-match if/else chain.
         //
-        // Each block also reproduces its parser's `t=` gate: with no `t=`, or
-        // one that is not positive, the parser calls setValid(false) and the
-        // recorder records nothing. An annotation whose received time is 0 is
-        // worse than no annotation — the web UI charts the proxy-to-agent gap
-        // from that field, and 0 renders as a gap of five decades.
+        // Each block also reproduces its parser's `t=` gate: a missing or
+        // non-positive `t=` records nothing, because the web UI charts the
+        // proxy-to-agent gap from that field and 0 renders as five decades.
         //
         // Every block finishes (append included) before the next Get(): a
         // HeaderReader only guarantees a returned view until the next Get() on
@@ -677,16 +672,13 @@ namespace pinpoint {
 
     namespace helper {
         namespace {
-            // Shared request-recording body taken by const ref so the two
-            // public overloads (which take SpanPtr by value — API-fixed) each
-            // pay exactly one shared_ptr copy from their caller, instead of
-            // the cookie overload copying a second time to forward.
+            // Taken by const ref so the public overloads (which take SpanPtr
+            // by value — API-fixed) do not copy the shared_ptr again to forward.
             void traceServerRequest(const SpanPtr& span, std::string_view remote_addr,
                                     std::string_view endpoint, HeaderReader& request_reader,
                                     std::string_view query_string = {}) {
-                // recordingSpanImpl() is non-null for SpanImpl only, without
-                // the RTTI walk a dynamic_cast per request would cost — and,
-                // unlike IsSampled(), a third-party Span cannot answer it.
+                // Non-null for SpanImpl only, without the RTTI walk a
+                // per-request dynamic_cast would cost.
                 auto* impl = span->recordingSpanImpl();
 
                 // View into the reader or remote_addr; consumed before the
@@ -703,9 +695,9 @@ namespace pinpoint {
                 span->SetEndPoint(endpoint);
 
                 // The proxy-header annotation uses an internal-only payload
-                // format, so it is recorded straight into the recording
-                // span's annotation container; noop/unsampled spans have
-                // none and record nothing, as before.
+                // format, so it is recorded straight into the recording span's
+                // annotation container; noop/unsampled spans have none and
+                // record nothing.
                 if (impl) {
                     // Pinpoint-Host takes precedence; this endpoint only fills
                     // the gap when the peer sent none.
@@ -755,7 +747,7 @@ namespace pinpoint {
             span->RecordHeader(HTTP_COOKIE, cookie_reader);
         }
 
-        // Java HttpServletParameterExtractor / StringUtils.abbreviate limits.
+        // Decoded parameters are abbreviated per value and capped in total.
         std::string FormatRequestParams(std::string_view query_string) try {
             constexpr size_t kEachLimit = 64;
             constexpr size_t kTotalLimit = 512;
@@ -833,7 +825,7 @@ namespace pinpoint {
             span_event->SetEndPoint(host);
             span_event->SetDestination(host);
             // Query strings carry tokens and ids: stripped unless the span's
-            // generation opted in (Java ClientRequestRecorder / getHttpUrl).
+            // generation opted in.
             auto* impl = span_event->recordingSpanImpl();
             if (!impl || !impl->getConfig().http.client.record_url_query) {
                 url = url.substr(0, url.find('?'));

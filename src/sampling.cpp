@@ -29,17 +29,13 @@ namespace pinpoint {
 
         // The pre-increment value is what gets tested, so the counter starts at
         // 0 and the first request after startup is sampled, then every rate_-th
-        // one after it. Testing the post-increment value instead would sample
-        // requests N, 2N, ... and hide the first request on
-        // low-traffic or test deployments.
+        // one after it; testing the post-increment value would hide the first
+        // request on low-traffic or test deployments. A config reload restarts
+        // this phase only when it actually changes Sampling.* — build_runtime()
+        // carries the sampler over otherwise.
         //
-        // A config reload restarts this phase only when it actually changes
-        // Sampling.*: build_runtime() carries the sampler over otherwise,
-        // precisely so an unrelated edit does not re-sample the next request.
-        //
-        // Pure counter with no cross-thread ordering requirement: relaxed
-        // avoids the full barrier the default seq_cst RMW costs on every
-        // sampling decision (this runs once per incoming request).
+        // Pure counter with no cross-thread ordering requirement, so relaxed
+        // avoids the seq_cst barrier on every sampling decision.
         const auto count = sampling_count_.fetch_add(1, std::memory_order_relaxed);
         const uint64_t r = count % rate_;
         return r == 0;
@@ -61,12 +57,10 @@ namespace pinpoint {
         // Relaxed for the same reason as CounterSampler: only the counter
         // value itself matters, not its ordering against other memory.
         //
-        // The admission window is (0, rate_]. Testing [0, rate_) instead samples
-        // just as often but shifts the phase by one, so the first
-        // transaction after startup (or a Sampling.* reload) is never sampled:
-        // `PercentRate: 50` would admit the 2nd, 4th, ... request instead of
-        // the 1st, 3rd, ... Same reasoning as CounterSampler testing the
-        // pre-increment value.
+        // The admission window is (0, rate_]. Testing [0, rate_) samples just as
+        // often but shifts the phase by one, so `PercentRate: 50` would admit
+        // the 2nd, 4th, ... request instead of the 1st, 3rd, ... and never
+        // sample the first transaction after startup.
         const auto count = sampling_count_.fetch_add(rate_, std::memory_order_relaxed) + rate_;
         const uint64_t r = count % MAX_PERCENT_RATE;
         return r > 0 && r <= static_cast<uint64_t>(rate_);

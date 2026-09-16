@@ -37,9 +37,8 @@ namespace pinpoint {
     NameVersion parse_name_version(std::string_view value);
 
     namespace object_name {
-        // Length limits. Lengths are measured
-        // in bytes; since the allowed charset is ASCII-only ([a-zA-Z0-9._-]), byte
-        // length always equals character count for any valid id.
+        // Length limits, measured in bytes. The allowed charset is ASCII-only
+        // ([a-zA-Z0-9._-]), so byte length equals character count for a valid id.
         constexpr size_t AGENT_ID_MAX_LEN = 24;
         constexpr size_t AGENT_NAME_MAX_LEN = 255;
         constexpr size_t SERVICE_NAME_MAX_LEN = 254;

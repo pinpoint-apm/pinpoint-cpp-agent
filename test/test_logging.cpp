@@ -300,7 +300,7 @@ TEST_F(LoggingTest, WriteOutputContainsTimestamp) {
     Logger::getInstance().shutdown();
 
     auto content = read_file(log_file_.string());
-    // Should contain date pattern like [2026-
+    // Every line is stamped with a [YYYY-... timestamp.
     EXPECT_TRUE(content.find("[20") != std::string::npos);
 }
 
@@ -809,8 +809,8 @@ TEST_F(LoggingTest, ClearingTheSinkRestoresTheFile) {
 }
 
 // The sink runs without the logger mutex held, so a sink that logs back into
-// the agent (any pt_*/pinpoint call can) no longer self-deadlocks; the line it
-// would log from inside itself is dropped rather than delivered recursively.
+// the agent (any pt_*/pinpoint call can) cannot self-deadlock; the line it would
+// log from inside itself is dropped rather than delivered recursively.
 TEST_F(LoggingTest, SinkMayReenterTheLoggerWithoutDeadlock) {
     std::atomic<int> calls{0};
     Logger::getInstance().setSink([&](const char*, const char* message) {
@@ -924,6 +924,38 @@ TEST_F(LoggingTest, MaxBackupsBelowOneKeepsOneBackup) {
     EXPECT_TRUE(std::filesystem::exists(rotated_file_));
     EXPECT_FALSE(std::filesystem::exists(log_file_.string() + ".2"));
     EXPECT_NE(read_file(rotated_file_).find("GENERATION-2-MARKER"), std::string::npos);
+}
+
+TEST_F(LoggingTest, UnsupportedLogLevelKeepsTheCurrentLevel) {
+    auto& logger = Logger::getInstance();
+
+    logger.setLogLevel("error");
+    ASSERT_TRUE(logger.errorEnabled());
+    ASSERT_FALSE(logger.warnEnabled()) << "error suppresses warn";
+
+    // Matching is case-insensitive but NOT trimmed, so "WARN " is unsupported
+    // where "WARN" would be a level change.
+    for (const char* unsupported : {"warnign", "trace", "fatal", "", "WARN ", "2"}) {
+        logger.setLogLevel(unsupported);
+        EXPECT_TRUE(logger.errorEnabled());
+        EXPECT_FALSE(logger.warnEnabled())
+            << "'" << unsupported << "' must leave the level where it was";
+    }
+
+    // Both spellings of warn are accepted, and each is a real level change.
+    logger.setLogLevel("warn");
+    EXPECT_TRUE(logger.warnEnabled()) << "'warn' is accepted";
+    EXPECT_FALSE(logger.infoEnabled());
+
+    logger.setLogLevel("error");
+    ASSERT_FALSE(logger.warnEnabled());
+    logger.setLogLevel("warning");
+    EXPECT_TRUE(logger.warnEnabled()) << "'warning' is accepted";
+    EXPECT_FALSE(logger.infoEnabled());
+
+    logger.setLogLevel("info");  // back to the agent default for the rest of the suite
+    EXPECT_TRUE(logger.infoEnabled());
+    EXPECT_FALSE(logger.debugEnabled());
 }
 
 } // namespace pinpoint

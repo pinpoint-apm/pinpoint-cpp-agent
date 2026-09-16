@@ -224,7 +224,6 @@ TEST_F(SqlTest, EmptySqlTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test simple SQL normalization
 TEST_F(SqlTest, SimpleSqlTest) {
     auto result = normalizer_->normalize("SELECT * FROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users");
@@ -233,7 +232,6 @@ TEST_F(SqlTest, SimpleSqlTest) {
 
 // ========== Parameter Replacement Tests ==========
 
-// Test numeric parameter replacement with indexing
 TEST_F(SqlTest, NumericParameterReplacementTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE id = 123");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE id = 0#");
@@ -244,14 +242,12 @@ TEST_F(SqlTest, NumericParameterReplacementTest) {
     EXPECT_EQ(result.parameters, "123,25");
 }
 
-// Test negative numbers
 TEST_F(SqlTest, NegativeNumberParameterTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE balance = -100.50");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE balance = -0#");
     EXPECT_EQ(result.parameters, "100.50");
 }
 
-// Test decimal numbers
 TEST_F(SqlTest, DecimalNumberParameterTest) {
     auto result = normalizer_->normalize("SELECT * FROM products WHERE price = 99.99");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM products WHERE price = 0#");
@@ -269,14 +265,12 @@ TEST_F(SqlTest, NonAsciiIdentifierDigitMatchesJavaAgentTest) {
     EXPECT_EQ(result.parameters, "1");
 }
 
-// Test multiple numbers with proper indexing
 TEST_F(SqlTest, MultipleNumbersTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE age > 18 AND balance < 1000.0 AND score = 95");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE age > 0# AND balance < 1# AND score = 2#");
     EXPECT_EQ(result.parameters, "18,1000.0,95");
 }
 
-// Test string literals are replaced with indexed placeholders
 TEST_F(SqlTest, StringLiteralReplacementTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'John Doe'");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'");
@@ -289,7 +283,6 @@ TEST_F(SqlTest, StringLiteralReplacementTest) {
 
 
 
-// Test mixed numeric and string literals
 TEST_F(SqlTest, MixedParametersTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE id = 123 AND name = 'John' AND age > 25 AND status = 'active'");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE id = 0# AND name = '1$' AND age > 2# AND status = '3$'");
@@ -339,7 +332,7 @@ TEST_F(SqlTest, SlashSlashLineCommentRemovalTest) {
     EXPECT_EQ(result.parameters, "1");
 }
 
-// Test that a lone '/' (division operator) is preserved as a normal character
+// A lone '/' is the division operator, kept as a normal character.
 TEST_F(SqlTest, DivisionOperatorPreservedTest) {
     auto result = normalizer_->normalize("SELECT a/b FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT a/b FROM t");
@@ -386,7 +379,6 @@ TEST_F(SqlTest, CommentRemovalLeavesNoSeparatorTest) {
 
 // ========== Whitespace Preservation Tests ==========
 
-// Test basic SQL with preserved whitespace
 TEST_F(SqlTest, WhitespacePreservationTest) {
     auto result = normalizer_->normalize("SELECT   *    FROM\n\n  users   WHERE\tid   =   123");
     EXPECT_EQ(result.normalized_sql, "SELECT   *    FROM\n\n  users   WHERE\tid   =   0#");
@@ -399,7 +391,6 @@ TEST_F(SqlTest, WhitespacePreservationTest) {
 
 // ========== String Literal Handling Tests ==========
 
-// Test string literals with different quote types
 TEST_F(SqlTest, StringLiteralHandlingTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'John''s Company'");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'");
@@ -410,14 +401,14 @@ TEST_F(SqlTest, StringLiteralHandlingTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test string literals with escaped quotes (backslash escape not handled, so string ends at backslash)
+// A backslash escape is not handled, so the string literal ends at it.
 TEST_F(SqlTest, EscapedQuotesTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'John\\'s Company'");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE name = '0$'s Company'");
     EXPECT_EQ(result.parameters, "John\\,");
 }
 
-// Test string literals with numbers inside (string literal replaced, numbers in string protected)
+// The whole literal is replaced, so numbers inside it are protected.
 TEST_F(SqlTest, StringLiteralWithNumbersTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE phone = '123-456-7890' AND age > 25");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users WHERE phone = '0$' AND age > 1#");
@@ -426,7 +417,6 @@ TEST_F(SqlTest, StringLiteralWithNumbersTest) {
 
 // ========== Complex SQL Tests ==========
 
-// Test complex SELECT query with one-pass processing
 TEST_F(SqlTest, ComplexSelectQueryTest) {
     std::string complex_sql = R"(
         SELECT u.id, u.name, COUNT(o.id) as order_count
@@ -451,7 +441,6 @@ TEST_F(SqlTest, ComplexSelectQueryTest) {
     EXPECT_EQ(result.parameters, "2023-01-01,active,18,5,100");
 }
 
-// Test complex INSERT with mixed parameters
 TEST_F(SqlTest, ComplexInsertQueryTest) {
     std::string complex_sql = R"(
         INSERT INTO user_activity_log (user_id, action, timestamp, score, metadata)
@@ -508,14 +497,12 @@ TEST_F(SqlTest, DropsAtHardCap) {
     EXPECT_TRUE(result.normalized_sql.empty());
 }
 
-// Test SQL with only comments
 TEST_F(SqlTest, OnlyCommentsTest) {
     auto result = normalizer_->normalize("/* This is only a comment */");
     EXPECT_EQ(result.normalized_sql, "");
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test SQL with malformed quotes
 TEST_F(SqlTest, MalformedQuotesTest) {
     auto result = normalizer_->normalize("SELECT * FROM users WHERE name = 'unclosed quote AND id = 123");
     // Should still work even with malformed quotes
@@ -551,7 +538,6 @@ TEST_F(SqlTest, UnterminatedStringLiteralNoPlaceholderTest) {
 
 // ========== One-Pass Integration Tests ==========
 
-// Test complete one-pass normalization flow
 TEST_F(SqlTest, OnePassNormalizationFlowTest) {
     std::string original_sql = R"(
         /* Get user data with filters */
@@ -567,7 +553,6 @@ TEST_F(SqlTest, OnePassNormalizationFlowTest) {
     
     auto result = normalizer_->normalize(original_sql);
     
-    // Verify all transformations in one pass - whitespace is now preserved, comments removed
     EXPECT_TRUE(result.normalized_sql.find("u.age  >  0#") != std::string::npos);
     EXPECT_TRUE(result.normalized_sql.find("u.balance  =  1#") != std::string::npos);
     EXPECT_TRUE(result.normalized_sql.find("u.status  =  '2$'") != std::string::npos);
@@ -633,14 +618,13 @@ TEST_F(SqlTest, WhitespaceOnlySqlTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test subtraction operator (minus not followed by digit should not be treated as negative number)
+// A '-' not followed by a digit is an operator, not a negative literal.
 TEST_F(SqlTest, SubtractionOperatorTest) {
     auto result = normalizer_->normalize("SELECT a - b FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT a - b FROM t");
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test minus between two numbers
 TEST_F(SqlTest, MinusBetweenNumbersTest) {
     auto result = normalizer_->normalize("SELECT 10 - 3 FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT 0# - 1# FROM t");
@@ -657,8 +641,8 @@ TEST_F(SqlTest, StringWithCommaParameterTest) {
     EXPECT_EQ(result.parameters, "Doe,, John");
 }
 
-// Test multiple string parameters where one contains a comma. The embedded comma is
-// escaped (",,") while the separator between the two parameters stays a single ','.
+// With several string parameters, a comma inside one is escaped (",,") while
+// the separator between parameters stays a single ','.
 TEST_F(SqlTest, StringWithCommaAmongMultipleParametersTest) {
     auto result = normalizer_->normalize(
         "INSERT INTO t (a, b) VALUES ('Doe, John', 'plain')");
@@ -672,28 +656,24 @@ TEST_F(SqlTest, ConsecutiveBlockCommentsTest) {
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test block comment immediately followed by string literal
 TEST_F(SqlTest, BlockCommentFollowedByStringTest) {
     auto result = normalizer_->normalize("SELECT /* comment */'hello' FROM t");
     EXPECT_EQ(result.normalized_sql, "SELECT '0$' FROM t");
     EXPECT_EQ(result.parameters, "hello");
 }
 
-// Test number at very end of SQL
 TEST_F(SqlTest, NumberAtEndOfSqlTest) {
     auto result = normalizer_->normalize("SELECT 42");
     EXPECT_EQ(result.normalized_sql, "SELECT 0#");
     EXPECT_EQ(result.parameters, "42");
 }
 
-// Test line comment with \r\n line endings
 TEST_F(SqlTest, LineCommentCRLFTest) {
     auto result = normalizer_->normalize("SELECT * -- comment\r\nFROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM users");
     EXPECT_EQ(result.parameters, "");
 }
 
-// Test line comment with only \r (carriage return)
 TEST_F(SqlTest, LineCommentCROnlyTest) {
     auto result = normalizer_->normalize("SELECT * -- comment\rFROM users");
     EXPECT_EQ(result.normalized_sql, "SELECT * ");
@@ -707,7 +687,7 @@ TEST_F(SqlTest, NumbersInIdentifiersTest) {
     EXPECT_EQ(result.parameters, "5");
 }
 
-// Test identifiers ending in a digit with no standalone numeric literal present.
+// An identifier ending in a digit holds no standalone numeric literal.
 TEST_F(SqlTest, IdentifierEndingInDigitTest) {
     auto result = normalizer_->normalize("SELECT col1 FROM t1");
     EXPECT_EQ(result.normalized_sql, "SELECT col1 FROM t1");
@@ -746,13 +726,12 @@ TEST_F(SqlTest, CapNeverAltersTheKey) {
     }
 }
 
-// Test SQL with many parameters (verify indexing stays correct)
+// Parameter indexing stays correct across many parameters.
 TEST_F(SqlTest, ManyParametersIndexingTest) {
     auto result = normalizer_->normalize(
         "INSERT INTO t VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 'a', 'b')");
     EXPECT_EQ(result.normalized_sql,
         "INSERT INTO t VALUES (0#, 1#, 2#, 3#, 4#, 5#, 6#, 7#, 8#, 9#, '10$', '11$')");
-    // Verify double-digit indices work
     EXPECT_TRUE(result.normalized_sql.find("'10$'") != std::string::npos);
     EXPECT_TRUE(result.normalized_sql.find("'11$'") != std::string::npos);
     EXPECT_EQ(result.parameters, "1,2,3,4,5,6,7,8,9,10,a,b");
@@ -774,7 +753,6 @@ TEST_F(SqlTest, DeleteStatementTest) {
     EXPECT_EQ(result.parameters, "42,inactive");
 }
 
-// Test IN clause with multiple values
 TEST_F(SqlTest, InClauseTest) {
     auto result = normalizer_->normalize(
         "SELECT * FROM users WHERE id IN (1, 2, 3) AND name IN ('a', 'b')");
@@ -791,7 +769,6 @@ TEST_F(SqlTest, BetweenClauseTest) {
     EXPECT_EQ(result.parameters, "100.0,500.0");
 }
 
-// Test string literal containing comment-like patterns
 TEST_F(SqlTest, StringWithCommentPatternsTest) {
     auto result = normalizer_->normalize("SELECT * FROM t WHERE v = 'has -- dash'");
     EXPECT_EQ(result.normalized_sql, "SELECT * FROM t WHERE v = '0$'");
@@ -802,7 +779,7 @@ TEST_F(SqlTest, StringWithCommentPatternsTest) {
     EXPECT_EQ(result.parameters, "has // slash");
 }
 
-// Test number with multiple decimal points (e.g., IP-like pattern)
+// A number with several decimal points, e.g. an IP-like pattern.
 TEST_F(SqlTest, MultipleDecimalPointsTest) {
     // "1.2.3" - the normalizer reads digits and dots, so it will consume "1.2.3" as one token
     auto result = normalizer_->normalize("SELECT * FROM t WHERE v = 1.2.3");
@@ -1004,6 +981,115 @@ TEST_F(SqlTest, JavaPostgresPositionalParameterCases) {
     ExpectJavaCombine("$; 123", "$; 0#", "123");
     ExpectJavaCombine("$(123); 123", "$(0#); 1#", "123,123");
     ExpectJavaCombine("'$''123'", "'0$'", "$''123");
+}
+
+// ========== Placeholder Index Invariants ==========
+
+namespace {
+
+// Placeholder indices of a normalized statement, in order. `<n>#` marks a
+// number and `<n>$` a character literal; both draw from one shared counter,
+// which is what lets the server refill them from a single comma-separated
+// parameter string.
+std::vector<int> scanPlaceholderIndices(std::string_view normalized) {
+    std::vector<int> out;
+    std::string digits;
+    for (const char ch : normalized) {
+        if (ch >= '0' && ch <= '9') {
+            digits.push_back(ch);
+            continue;
+        }
+        if ((ch == '#' || ch == '$') && !digits.empty()) {
+            out.push_back(std::stoi(digits));
+        }
+        digits.clear();
+    }
+    return out;
+}
+
+}  // namespace
+
+// The placeholder indices must run 0..n-1 in order, there must be exactly as
+// many of them as there are parameters, and param_index must agree. This is
+// the property that breaks first if numbers and literals ever start counting
+// separately, and it breaks silently: every statement still normalizes, the
+// server just refills the wrong values.
+TEST_F(SqlTest, PlaceholdersShareOneIndexCounter) {
+    const char* statements[] = {
+        R"(select * from t where a = 1.5e3 and b = 'it''s' and c = "col1" -- comment)",
+        R"(a = -1 and b = 1e-3 and c = 0x1F)",
+        R"(select t1.col2, t1.5 from t where id = 10 and name = 'a,b' and n2 = 'x''y')",
+        R"(select /*+ INDEX(t idx) */ 1, "2", '' , 'z' from t /* multi
+ line 42 */ where x = ?)",
+        R"(SELECT/*c*/1 FROM t WHERE table1 = 2 and name2 = 'v')",
+        R"(select $1, $2 from t where a=$3 and b = 4)",
+        R"(insert into t values (1,2,3), ('a','b','c') // trailing)",
+        R"(select '''' from t where a = 1)",
+        R"($'x'1)",
+        R"(1.4e-10)",
+        R"(select #1 from t)",
+        R"(select * from t where a in (1,2,3))",
+        R"(select * from t where a in (?, ?, ?))",
+        R"(/*/)",
+        R"(V$SESSION1)",
+        R"(test.123)",
+        R"(test_ 123)",
+    };
+
+    for (const char* sql : statements) {
+        const auto result = keep_comments_->normalize(sql);
+        const auto indices = scanPlaceholderIndices(result.normalized_sql);
+        const auto params = ParseOutputParameter(result.parameters);
+
+        for (size_t i = 0; i < indices.size(); ++i) {
+            EXPECT_EQ(indices[i], static_cast<int>(i))
+                << "placeholder indices must run 0..n-1 in order: " << sql;
+        }
+        EXPECT_EQ(params.size(), indices.size())
+            << "one parameter per placeholder: " << sql;
+        EXPECT_EQ(result.param_index, static_cast<int>(indices.size()))
+            << "param_index is the number of placeholders emitted: " << sql;
+    }
+}
+
+TEST_F(SqlTest, NormalizationIsNotIdempotentTest) {
+    const auto once = keep_comments_->normalize("select 1");
+    EXPECT_EQ(once.normalized_sql, "select 0#");
+
+    const auto twice = keep_comments_->normalize(once.normalized_sql);
+    EXPECT_EQ(twice.normalized_sql, "select 0##")
+        << "normalizing an already-normalized statement replaces its placeholder digit";
+}
+
+// Runs of whitespace survive verbatim, so two statements differing only in
+// spacing are two SQL ids.
+TEST_F(SqlTest, WhitespaceRunsAreNotCollapsedTest) {
+    const auto result = keep_comments_->normalize("select   *\n\tfrom  t");
+    EXPECT_EQ(result.normalized_sql, "select   *\n\tfrom  t");
+}
+
+TEST_F(SqlTest, EmptyLiteralConsumesNoIndexTest) {
+    const auto result = keep_comments_->normalize("select '', 1 from t");
+    EXPECT_EQ(result.normalized_sql, "select '', 0# from t");
+    EXPECT_EQ(result.parameters, "1");
+    EXPECT_EQ(result.param_index, 1);
+}
+
+TEST_F(SqlTest, OversizeStatementIsDroppedWholeTest) {
+    EXPECT_EQ(kMaxNormalizedSqlLength, 1024u * 1024u) << "the hard memory cap is 1 MiB";
+
+    std::string at_cap = "select ";
+    at_cap.append(kMaxNormalizedSqlLength - at_cap.size(), 'a');
+    ASSERT_EQ(at_cap.size(), kMaxNormalizedSqlLength);
+    // EXPECT_TRUE, not EXPECT_EQ: a failure here must not print a megabyte.
+    EXPECT_TRUE(keep_comments_->normalize(at_cap).normalized_sql == at_cap)
+        << "exactly at the cap is still normalized, whole";
+
+    const std::string over_cap = at_cap + "a";
+    const auto dropped = keep_comments_->normalize(over_cap);
+    EXPECT_TRUE(dropped.normalized_sql.empty()) << "one byte over the cap drops the statement";
+    EXPECT_TRUE(dropped.parameters.empty()) << "and its parameters with it";
+    EXPECT_EQ(dropped.param_index, 0);
 }
 
 } // namespace pinpoint

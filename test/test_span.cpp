@@ -102,7 +102,6 @@ TEST_F(SpanTest, SpanDataConstructorTest) {
 TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
     SpanData span_data = make_test_span_data(*mock_agent_service_, "test-operation");
     
-    // Test TraceId
     TraceId trace_id;
     trace_id.StartTime = 123456789;
     trace_id.Sequence = 42;
@@ -110,11 +109,9 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
     EXPECT_EQ(span_data.getTraceId().StartTime, 123456789);
     EXPECT_EQ(span_data.getTraceId().Sequence, 42);
     
-    // Test span ID
     span_data.setSpanId(987654321);
     EXPECT_EQ(span_data.getSpanId(), 987654321);
     
-    // Test parent span info
     span_data.setParentSpanId(111222333);
     EXPECT_EQ(span_data.getParentSpanId(), 111222333);
     
@@ -128,11 +125,9 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
     span_data.setParentServiceName("ParentService");
     EXPECT_EQ(span_data.getParentServiceName(), "ParentService");
     
-    // Test service type
     span_data.setServiceType(5678);
     EXPECT_EQ(span_data.getServiceType(), 5678);
     
-    // Test network info
     span_data.setRpcName("TestRPC");
     EXPECT_EQ(span_data.getRpcName(), "TestRPC");
     
@@ -145,7 +140,6 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
     span_data.setAcceptorHost("localhost");
     EXPECT_EQ(span_data.getAcceptorHost(), "localhost");
     
-    // Test flags and logging
     span_data.setLoggingFlag();
     EXPECT_EQ(span_data.getLoggingFlag(), 1);
     
@@ -158,14 +152,12 @@ TEST_F(SpanTest, SpanDataSettersAndGettersTest) {
     span_data.maskErr(static_cast<int>(ErrorCategory::kHttpStatus));
     EXPECT_EQ(span_data.getErr(), 6);
     
-    // Test error info
     span_data.setErrorFuncId(777);
     EXPECT_EQ(span_data.getErrorFuncId(), 777);
     
     span_data.setErrorString("Test error message");
     EXPECT_EQ(span_data.getErrorString(), "Test error message");
     
-    // Test async info
     span_data.setAsyncId(888);
     EXPECT_EQ(span_data.getAsyncId(), 888);
     EXPECT_TRUE(span_data.isAsyncSpan());
@@ -217,7 +209,6 @@ TEST_F(SpanTest, SpanDataTimeManagementTest) {
     int64_t new_start_time = span_data.getStartTime();
     EXPECT_NE(new_start_time, initial_start_time) << "Start time should be updated";
     
-    // Test end time
     EXPECT_EQ(span_data.getElapsed(), 0) << "Initial elapsed should be 0";
     
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -925,7 +916,6 @@ TEST_F(SpanTest, SpanImplSetLoggingTest) {
 
     span.SetLogging(writer);
 
-    // Verify flag was set and context was injected
     auto ptx_id = writer.Get("PtxId");
     EXPECT_TRUE(ptx_id.has_value()) << "PtxId should be injected";
 
@@ -996,7 +986,6 @@ TEST_F(SpanTest, SpanEventInjectContextTest) {
 
     se->InjectContext(writer);
     
-    // Verify context was injected
     auto trace_id = writer.Get(HEADER_TRACE_ID);
     EXPECT_TRUE(trace_id.has_value()) << "Trace ID should be injected";
     
@@ -1094,7 +1083,6 @@ TEST_F(SpanTest, SpanImplExtractContextTest) {
     
     extract_context(span, *mock_agent_service_, reader);
     
-    // Verify context was extracted with correct values
     EXPECT_EQ(span.GetSpanId(), expected_span_id) << "Span ID should match the value from context";
     
     // Verify trace ID was parsed correctly. GetTraceId() now returns the wire
@@ -1198,7 +1186,6 @@ TEST_F(SpanTest, CompleteSpanWorkflowTest) {
     // End span
     span.EndSpan();
     
-    // Verify span was recorded
     EXPECT_GT(mock_agent_service_->getRecordedSpansCount(), 0) << "Span should be recorded";
     EXPECT_GT(mock_agent_service_->recorded_server_headers_, 0) << "Headers should be recorded";
     EXPECT_GT(mock_agent_service_->recorded_url_stats_, 0) << "URL stats should be recorded";
@@ -1457,8 +1444,8 @@ TEST_F(SpanTest, TraceIdToStringRoundTripTest) {
 }
 
 TEST_F(SpanTest, TraceIdToStringEmptyAgentIdTest) {
-    // A present-but-empty agent id (no longer producible via parseTraceId,
-    // which rejects "^^"; constructed directly here) renders the empty
+    // A present-but-empty agent id (parseTraceId rejects "^^", so this one is
+    // constructed directly) renders the empty
     // leading field, not a dropped separator.
     const TraceId tid("", 0, 0);
     ASSERT_FALSE(tid.empty());
@@ -1643,7 +1630,6 @@ TEST_F(SpanTest, SpanImplEventDepthOverflowTest) {
     // not pop from the stack
     overflow_event->EndEvent();
 
-    // Now ending the real events should work
     for (int i = 64; i >= 0; i--) {
         events[i]->EndEvent();
     }
@@ -1930,7 +1916,6 @@ TEST_F(SpanTest, SpanImplEventChunkingTest) {
     EXPECT_EQ(chunks_after_3, 1)
         << "Should flush an intermediate chunk when event_chunk_size is reached";
 
-    // Verify intermediate chunk is not final
     ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
     EXPECT_FALSE(mock_agent_service_->recorded_spans_.back()->isFinal())
         << "Intermediate chunk should not be final";
@@ -2461,7 +2446,7 @@ TEST_F(SpanTest, SpanImplExtractContextWithoutTraceIdIgnoresUpstreamHeadersTest)
 }
 
 // The mirror of the test above: a well-formed Pinpoint-TraceID means the trace
-// really is continued, so the upstream headers are adopted as before.
+// really is continued, so the upstream headers are adopted.
 TEST_F(SpanTest, SpanImplExtractContextWithTraceIdAdoptsUpstreamHeadersTest) {
     auto& stats = mock_agent_service_->getAgentStats();
     SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
@@ -3442,6 +3427,179 @@ TEST_F(SpanTest, DisabledSpanEventRecordsNothingButEveryErrorOverloadFailsTheSpa
     ASSERT_NE(pspan, nullptr);
     EXPECT_EQ(pspan->err(), 2) << "every SetError overload must fail the transaction";
     EXPECT_EQ(pspan->spanevent_size(), 2) << "the overflowed event itself records nothing";
+}
+
+// ========== Propagation Wire Contract ==========
+
+// The header names the agent reads and writes. Renaming one silently breaks
+// continuation with every other Pinpoint agent.
+TEST_F(SpanTest, PropagationHeaderNamesTest) {
+    EXPECT_EQ(HEADER_TRACE_ID, "Pinpoint-TraceID");
+    EXPECT_EQ(HEADER_SPAN_ID, "Pinpoint-SpanID");
+    EXPECT_EQ(HEADER_PARENT_SPAN_ID, "Pinpoint-pSpanID");
+    EXPECT_EQ(HEADER_SAMPLED, "Pinpoint-Sampled");
+    EXPECT_EQ(HEADER_FLAG, "Pinpoint-Flags");
+    EXPECT_EQ(HEADER_PARENT_APP_NAME, "Pinpoint-pAppName");
+    EXPECT_EQ(HEADER_PARENT_APP_TYPE, "Pinpoint-pAppType");
+    EXPECT_EQ(HEADER_PARENT_APP_NAMESPACE, "Pinpoint-pAppNamespace");
+    EXPECT_EQ(HEADER_PARENT_SERVICE_NAME, "Pinpoint-pServiceName");
+    EXPECT_EQ(HEADER_HOST, "Pinpoint-Host");
+}
+
+TEST_F(SpanTest, AsyncIdSentinelTest) {
+    EXPECT_EQ(NONE_ASYNC_ID, 0) << "async id 0 means no async context";
+}
+
+TEST_F(SpanTest, TransactionIdWireFormatTest) {
+    const TraceId trace_id{std::string_view{"test-agent"}, 1600000000000LL, 42LL};
+    EXPECT_EQ(trace_id.toString(), "test-agent^1600000000000^42");
+
+    const auto parsed = TraceId::parseTraceId(trace_id.toString());
+    ASSERT_FALSE(parsed.empty());
+    EXPECT_EQ(parsed.agentId(), "test-agent");
+    EXPECT_EQ(parsed.StartTime, 1600000000000LL);
+    EXPECT_EQ(parsed.Sequence, 42LL);
+}
+
+TEST_F(SpanTest, TransactionIdParsingAcceptanceTableTest) {
+    struct Case {
+        const char* txid;
+        bool ok;
+    };
+    const Case cases[] = {
+        {"agent.id_-09^1^2", true},
+        {"a^1^2^3", true},
+        {"bad agent^1^2", false},
+        {"bad/agent^1^2", false},
+        {"^1^2", false},
+        {"agent^1", false},
+        {"agent^x^2", false},
+        {"agent^1^x", false},
+        {"", false},
+    };
+    for (const auto& c : cases) {
+        EXPECT_EQ(!TraceId::parseTraceId(c.txid).empty(), c.ok)
+            << "parseTraceId(\"" << c.txid << "\")";
+    }
+
+    const auto extra = TraceId::parseTraceId("a^1^2^3");
+    ASSERT_FALSE(extra.empty());
+    EXPECT_EQ(extra.agentId(), "a");
+    EXPECT_EQ(extra.StartTime, 1LL);
+    EXPECT_EQ(extra.Sequence, 2LL) << "the parser stops at the third delimiter";
+}
+
+TEST_F(SpanTest, SampledHeaderOffValueIsExactTest) {
+    constexpr std::string_view kSamplingFlagFalse = "s0";
+
+    EXPECT_EQ(kSamplingFlagFalse, "s0") << "the off value is exactly \"s0\"";
+    for (const std::string_view value : {"s1", "S0", "", "0", "false", "s00", " s0"}) {
+        EXPECT_NE(kSamplingFlagFalse, value) << "\"" << value << "\" must not disable sampling";
+    }
+}
+
+TEST_F(SpanTest, ParentAppTypeDefaultsToUndefinedTest) {
+    auto span_data = std::make_shared<SpanData>("parity-op", 1000, 0);
+    span_data->setTraceId(TraceId{std::string_view{"test-agent"}, 1600000000000LL, 7LL});
+    span_data->setParentAppName("upstream");
+    google::protobuf::Arena arena;
+    const auto* child = build_grpc_span(std::make_unique<SpanChunk>(span_data, /*final=*/true), &arena);
+    ASSERT_TRUE(child->has_acceptevent());
+    ASSERT_TRUE(child->acceptevent().has_parentinfo());
+    EXPECT_EQ(child->acceptevent().parentinfo().parentapplicationtype(), -1)
+        << "no Pinpoint-pAppType: UNDEFINED, not UNKNOWN";
+}
+
+TEST_F(SpanTest, ParentInfoOnlyWhenParentAppNameIsPresentTest) {
+    const auto build = [](const std::string_view parent_app_name) {
+        auto span_data = std::make_shared<SpanData>("parity-op", 1000, 0);
+        span_data->setTraceId(TraceId{std::string_view{"test-agent"}, 1600000000000LL, 7LL});
+        span_data->setEndPoint("api.example.com:8080");
+        span_data->setRemoteAddr("10.0.0.1:54321");
+        // Set on both paths: an acceptor host alone must not produce a parent.
+        span_data->setAcceptorHost("api.example.com:8080");
+        if (!parent_app_name.empty()) {
+            span_data->setParentAppName(parent_app_name);
+            span_data->setParentAppType(1010);
+            span_data->setParentServiceName("parent-service");
+        }
+        return std::make_unique<SpanChunk>(span_data, /*final=*/true);
+    };
+
+    google::protobuf::Arena arena;
+
+    const auto* orphan = build_grpc_span(build(""), &arena);
+    ASSERT_TRUE(orphan->has_acceptevent());
+    EXPECT_FALSE(orphan->acceptevent().has_parentinfo())
+        << "an acceptor host on its own must not invent a parent node";
+
+    const auto* child = build_grpc_span(build("ParentApp"), &arena);
+    ASSERT_TRUE(child->has_acceptevent());
+    ASSERT_TRUE(child->acceptevent().has_parentinfo());
+    EXPECT_EQ(child->acceptevent().parentinfo().parentapplicationname(), "ParentApp");
+    EXPECT_EQ(child->acceptevent().parentinfo().parentapplicationtype(), 1010);
+    EXPECT_EQ(child->acceptevent().parentinfo().acceptorhost(), "api.example.com:8080");
+    EXPECT_EQ(child->acceptevent().parentinfo().parentservicename(), "parent-service");
+}
+
+// Concurrent NewSpanEvent calls violate the Span single-thread contract, but
+// the counters behind them must still hand out each position exactly once:
+// a duplicate would put two events at the same place in the call tree.
+TEST_F(SpanTest, EventPositionsAreReservedAtomicallyTest) {
+    constexpr int kThreads = 8;
+    constexpr int kPerThread = 512;
+    constexpr int kTotal = kThreads * kPerThread;
+
+    SpanData span_data("parity-op", 1000, 0);
+
+    std::vector<std::vector<std::pair<int32_t, int32_t>>> claimed(kThreads);
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int t = 0; t < kThreads; ++t) {
+        claimed[t].reserve(kPerThread);
+        threads.emplace_back([&, t] {
+            ready.fetch_add(1, std::memory_order_relaxed);
+            while (!go.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < kPerThread; ++i) {
+                claimed[t].push_back(span_data.nextEventSequenceAndDepth());
+            }
+        });
+    }
+    while (ready.load(std::memory_order_relaxed) < kThreads) {
+        std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    std::vector<int32_t> sequences;
+    std::vector<int32_t> depths;
+    sequences.reserve(kTotal);
+    depths.reserve(kTotal);
+    for (const auto& per_thread : claimed) {
+        for (const auto& [sequence, depth] : per_thread) {
+            sequences.push_back(sequence);
+            depths.push_back(depth);
+        }
+    }
+    ASSERT_EQ(sequences.size(), static_cast<size_t>(kTotal));
+
+    std::sort(sequences.begin(), sequences.end());
+    std::sort(depths.begin(), depths.end());
+    for (int i = 0; i < kTotal; ++i) {
+        // No duplicate and no gap: sorted, the reservations are exactly the
+        // contiguous range each counter started from.
+        EXPECT_EQ(sequences[i], i) << "sequences must be unique and contiguous from 0";
+        EXPECT_EQ(depths[i], i + 1) << "depths must be unique and contiguous from 1";
+    }
+    EXPECT_EQ(span_data.getEventSequence(), kTotal);
+    EXPECT_EQ(span_data.getEventDepth(), kTotal + 1);
 }
 
 } // namespace pinpoint

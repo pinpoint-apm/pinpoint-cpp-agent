@@ -78,7 +78,6 @@ TEST_F(UrlStatTest, TickClockTickTest) {
     
     EXPECT_GT(tick_value, 0) << "Tick value should be positive";
     
-    // Test that tick values are consistent for the same time period
     int64_t tick_value2 = clock.tick(now);
     EXPECT_EQ(tick_value, tick_value2) << "Tick values should be same for same time";
 }
@@ -120,7 +119,6 @@ TEST_F(UrlStatTest, UrlStatHistogramAddTest) {
     EXPECT_EQ(histogram.total(), 1500) << "Total should be sum of elapsed times (50+250+450+750=1500)";
     EXPECT_EQ(histogram.max(), 750) << "Max should be 750";
     
-    // Check bucket distribution
     EXPECT_GT(histogram.histogram(0), 0) << "Bucket 0 should have entries";
     EXPECT_GT(histogram.histogram(1), 0) << "Bucket 1 should have entries";
     EXPECT_GT(histogram.histogram(2), 0) << "Bucket 2 should have entries";
@@ -626,7 +624,6 @@ TEST_F(UrlStatTest, UrlStatsEnqueueWithDisabledConfigTest) {
 TEST_F(UrlStatTest, UrlStatsWorkerStartStopTest) {
     UrlStats url_stats(mock_agent_service_.get());
     
-    // Test add worker
     std::thread add_worker([&url_stats]() {
         url_stats.addUrlStatsWorker();
     });
@@ -641,7 +638,6 @@ TEST_F(UrlStatTest, UrlStatsWorkerStartStopTest) {
     // Reset for send worker test
     mock_agent_service_->setExiting(false);
     
-    // Test send worker
     std::thread send_worker([&url_stats]() {
         url_stats.sendUrlStatsWorker();
     });
@@ -689,7 +685,6 @@ TEST_F(UrlStatTest, UrlStatsWithExitingAgentTest) {
     mock_agent_service_->setExiting(true);
     UrlStats url_stats(mock_agent_service_.get());
     
-    // Test that workers exit quickly when agent is exiting
     std::thread add_worker([&url_stats]() {
         url_stats.addUrlStatsWorker();
     });
@@ -841,7 +836,6 @@ TEST_F(UrlStatTest, SendWorkerRecordsStatsTest) {
 
 // ========== Additional UrlStatHistogram Tests ==========
 
-// Test all 8 histogram buckets with exact boundary values
 TEST_F(UrlStatTest, HistogramAllBucketsTest) {
     UrlStatHistogram histogram;
 
@@ -862,9 +856,8 @@ TEST_F(UrlStatTest, HistogramAllBucketsTest) {
     EXPECT_EQ(histogram.max(), 9000);
 }
 
-// Test histogram bucket boundary exact values
 TEST_F(UrlStatTest, HistogramBucketBoundaryExactTest) {
-    // Test exact boundary values: at boundary goes to the higher bucket
+    // Exact boundary values: a value at the boundary goes to the higher bucket.
     UrlStatHistogram h1;
     h1.add(99);   // bucket 0
     EXPECT_EQ(h1.histogram(0), 1);
@@ -902,7 +895,6 @@ TEST_F(UrlStatTest, HistogramBucketBoundaryExactTest) {
     EXPECT_EQ(h9.histogram(7), 1);
 }
 
-// Test histogram out-of-bounds index returns 0
 TEST_F(UrlStatTest, HistogramOutOfBoundsIndexTest) {
     UrlStatHistogram histogram;
     histogram.add(100);
@@ -921,7 +913,6 @@ TEST_F(UrlStatTest, HistogramZeroElapsedTest) {
     EXPECT_EQ(histogram.max(), 0);
 }
 
-// Test histogram with multiple entries in same bucket
 TEST_F(UrlStatTest, HistogramMultipleSameBucketTest) {
     UrlStatHistogram histogram;
 
@@ -992,7 +983,7 @@ TEST_F(UrlStatTest, SnapshotAggregatesSameUrlAndTickTest) {
     EXPECT_EQ(entry.total.max(), 200);
 }
 
-// Test snapshot fail aggregation honors the precomputed failed_ flag.
+// Fail aggregation honors the precomputed failed_ flag.
 // With the default config (5xx) a 404 is a success; only a 500 is a failure.
 TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
     UrlStatSnapshot snapshot;
@@ -1036,7 +1027,7 @@ TEST_F(UrlStatTest, SnapshotFailStatusAggregationTest) {
     EXPECT_EQ(entry.fail.max(), 200);
 }
 
-// Test that 404 success/500 failure tracks the configurable status-error rule.
+// 404 success / 500 failure tracks the configurable status-error rule.
 // Default config is 5xx: a 404 lands only in the total histogram, a 500 in both.
 TEST_F(UrlStatTest, SnapshotDefaultConfig404SuccessTest) {
     UrlStatSnapshot snapshot;
@@ -1062,7 +1053,6 @@ TEST_F(UrlStatTest, SnapshotDefaultConfig404SuccessTest) {
     EXPECT_EQ(entry.fail.total(), 250) << "Only the 500 should be a failure under 5xx";
 }
 
-// Test that configuring http.server.status_errors to include 4xx makes 404 a failure.
 TEST_F(UrlStatTest, SnapshotConfigurable4xxMakes404FailTest) {
     // Reconfigure the agent's status-error rule to include 4xx.
     mock_agent_service_->mutableConfig()->http.server.status_errors = {"4xx", "5xx"};
@@ -1149,7 +1139,6 @@ TEST_F(UrlStatTest, SnapshotLimitZeroAndOneBoundaryTest) {
     }
 }
 
-// Test snapshot with method_prefix enabled
 TEST_F(UrlStatTest, SnapshotMethodPrefixTest) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -1173,14 +1162,13 @@ TEST_F(UrlStatTest, SnapshotMethodPrefixTest) {
     // GET /api/users and POST /api/users should be different keys
     EXPECT_EQ(stats.size(), 2u) << "Different methods should produce different keys with method_prefix";
 
-    // Verify keys contain method prefix
     for (auto& [key, _] : stats) {
         EXPECT_TRUE(key.url_.find("GET ") == 0 || key.url_.find("POST ") == 0)
             << "Key URL should be prefixed with method: " << key.url_;
     }
 }
 
-// Test snapshot with method_prefix disabled (same URL different methods aggregated)
+// Without the method prefix, one URL aggregates across methods.
 TEST_F(UrlStatTest, SnapshotNoMethodPrefixTest) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -1204,7 +1192,7 @@ TEST_F(UrlStatTest, SnapshotNoMethodPrefixTest) {
     EXPECT_EQ(stats.size(), 1u) << "Same URL without method prefix should aggregate";
 }
 
-// Test snapshot 5xx boundary status codes (499 = success, 500 = fail) under default config.
+// Default config: 499 succeeds, 500 fails.
 TEST_F(UrlStatTest, SnapshotStatusBoundaryTest) {
     UrlStatSnapshot snapshot;
     Config config;
@@ -1245,7 +1233,6 @@ TEST_F(UrlStatTest, TickClockAlignmentTest) {
     EXPECT_EQ(tick % 30000, 0) << "Tick should be aligned to 30-second boundary";
 }
 
-// Test TickClock nearby times produce same tick
 TEST_F(UrlStatTest, TickClockNearbyTimesSameTickTest) {
     TickClock clock(30);
 
@@ -1264,7 +1251,6 @@ TEST_F(UrlStatTest, TickClockNearbyTimesSameTickTest) {
     EXPECT_EQ(tick1, tick2) << "Nearby times within same interval should produce same tick";
 }
 
-// Test TickClock different intervals produce different ticks
 TEST_F(UrlStatTest, TickClockFarTimeDifferentTickTest) {
     TickClock clock(30);
 
@@ -1313,7 +1299,6 @@ TEST_F(UrlStatTest, TakeSnapshotReplacesWithFreshTest) {
     EXPECT_TRUE(snapshot2->getEachStats().empty()) << "Fresh snapshot after take should be empty";
 }
 
-// Test enqueueUrlStats queue overflow behavior
 TEST_F(UrlStatTest, EnqueueOverflowTest) {
     UrlStats url_stats(mock_agent_service_.get());
 
@@ -1328,7 +1313,6 @@ TEST_F(UrlStatTest, EnqueueOverflowTest) {
     SUCCEED();
 }
 
-// Test EachUrlStat separate total and fail histograms
 TEST_F(UrlStatTest, EachUrlStatSeparateHistogramsTest) {
     EachUrlStat stat;
 
@@ -1802,8 +1786,8 @@ TEST_F(UrlStatTest, ClockCutWakesTheSendWorkerOnlyWhenATickWasClosed) {
 }
 
 // The exit signal shares the cond_var with the completed-tick wakeup and must
-// end the worker without a token; a timer expiry with nothing completed keeps
-// the old behavior of a token that finds nothing to send.
+// end the worker without a token; a timer expiry with nothing completed still
+// produces a token that finds nothing to send.
 TEST_F(UrlStatTest, ExitWakeupIsNotATickCompletion) {
     UrlStats url_stats(mock_agent_service_.get(), std::chrono::seconds(1), kNeverOnItsOwn);
     std::thread send_worker([&url_stats]() { url_stats.sendUrlStatsWorker(); });
@@ -1831,6 +1815,100 @@ TEST_F(UrlStatTest, TimerWakeupWithNoCompletedTickHasNothingToSend) {
     mock_agent_service_->setExiting(true);
     url_stats.stopSendUrlStatsWorker();
     send_worker.join();
+}
+
+// ========== Histogram and Tick Layout ==========
+
+// The bucket layout the collector aggregates by: eight buckets with the
+// boundaries below, the last one unbounded.
+TEST_F(UrlStatTest, HistogramBucketLayoutTest) {
+    EXPECT_EQ(URL_STATS_BUCKET_SIZE, 8);
+    EXPECT_EQ(URL_STATS_BUCKET_VERSION, 0) << "the bucket schema version on the wire";
+
+    struct Case {
+        int32_t elapsed;
+        int bucket;
+    };
+    const Case cases[] = {
+        {0, 0},       {99, 0},
+        {100, 1},     {299, 1},
+        {300, 2},     {499, 2},
+        {500, 3},     {999, 3},
+        {1000, 4},    {2999, 4},
+        {3000, 5},    {4999, 5},
+        {5000, 6},    {7999, 6},
+        {8000, 7},    {1000000, 7},
+    };
+    for (const auto& c : cases) {
+        UrlStatHistogram histogram;
+        histogram.add(c.elapsed);
+        for (int i = 0; i < URL_STATS_BUCKET_SIZE; ++i) {
+            EXPECT_EQ(histogram.histogram(i), i == c.bucket ? 1 : 0)
+                << "elapsed " << c.elapsed << " belongs in bucket " << c.bucket;
+        }
+    }
+}
+
+TEST_F(UrlStatTest, TickWindowAndSendCadenceTest) {
+    EXPECT_EQ(URL_STAT_TICK_INTERVAL, std::chrono::seconds(30)) << "the (url, tick) bucket width";
+    EXPECT_EQ(UrlStats(nullptr).sendInterval(), std::chrono::milliseconds(defaults::STAT_INTERVAL_MS))
+        << "URL stats leave on the agent stat cadence";
+    EXPECT_EQ(UrlStats::maxCompletedSnapshots(), 5u)
+        << "completed ticks retained while sending is unavailable";
+    EXPECT_EQ(defaults::HTTP_URL_STAT_LIMIT, 1000) << "distinct URL keys per tick";
+
+    // Two completions 30s apart fall in different ticks; anything inside the
+    // same window shares one.
+    const TickClock clock(std::chrono::duration_cast<std::chrono::seconds>(URL_STAT_TICK_INTERVAL).count());
+    const auto base = std::chrono::system_clock::time_point{std::chrono::milliseconds(1600000020000LL)};
+
+    const auto tick = clock.tick(base);
+    EXPECT_EQ(tick % 30000, 0) << "a tick is aligned to the 30s epoch boundary";
+    EXPECT_EQ(clock.tick(base + std::chrono::milliseconds(29999)), tick);
+    EXPECT_EQ(clock.tick(base + std::chrono::milliseconds(30000)), tick + 30000);
+}
+
+TEST_F(UrlStatTest, UnknownUrlKeyTest) {
+    EXPECT_EQ(URL_STAT_UNKNOWN, "/NULL") << "the stand-in key for a span with no URL";
+}
+
+TEST_F(UrlStatTest, EmptyHistogramIsDistinctFromAZeroSampleTest) {
+    UrlStatHistogram histogram;
+    EXPECT_TRUE(histogram.empty()) << "a fresh histogram is empty";
+
+    histogram.add(0);
+    EXPECT_FALSE(histogram.empty()) << "a 0ms sample lands in bucket 0 and is not empty";
+    EXPECT_EQ(histogram.total(), 0);
+    EXPECT_EQ(histogram.histogram(0), 1);
+}
+
+TEST_F(UrlStatTest, EntryWithoutAnEndTimeIsSkippedTest) {
+    UrlStatSnapshot snapshot;
+    const Config config;
+    TickClock tick_clock(1);
+
+    UrlStatEntry no_end_time("/parity/api", "GET", 200);
+    no_end_time.elapsed_ = 10;
+    ASSERT_EQ(no_end_time.end_time_, std::chrono::system_clock::time_point{})
+        << "a fresh entry carries no end time";
+
+    EXPECT_TRUE(snapshot.add(&no_end_time, config, tick_clock))
+        << "a producer bug is not a capacity drop, so add() reports success";
+    EXPECT_TRUE(snapshot.empty()) << "no key under tick 0";
+    EXPECT_EQ(snapshot.tick(), 0) << "and no watermark pinned in 1970";
+
+    // A real entry alongside it is unaffected, and the skipped one does not
+    // move the watermark back afterwards either.
+    UrlStatEntry recorded("/parity/api", "GET", 200);
+    recorded.elapsed_ = 10;
+    recorded.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(700));
+    EXPECT_TRUE(snapshot.add(&recorded, config, tick_clock));
+    ASSERT_EQ(snapshot.getEachStats().size(), 1u);
+    EXPECT_EQ(snapshot.tick(), tick_clock.tick(recorded.end_time_));
+
+    EXPECT_TRUE(snapshot.add(&no_end_time, config, tick_clock));
+    EXPECT_EQ(snapshot.getEachStats().size(), 1u);
+    EXPECT_EQ(snapshot.tick(), tick_clock.tick(recorded.end_time_));
 }
 
 } // namespace pinpoint

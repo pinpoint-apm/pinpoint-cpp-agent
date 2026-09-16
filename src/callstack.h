@@ -70,11 +70,7 @@ namespace pinpoint {
                                            truncated(file, kMaxFrameStringLength), line});
         }
 
-        /**
-         * @brief Returns the recorded error message.
-         *
-         * @return Mutable reference to the message.
-         */
+        /// @brief Returns the recorded error message.
         const std::string& getErrorMessage() const {
             return error_message_;
         }
@@ -135,8 +131,7 @@ namespace pinpoint {
          *
          * @param callstack Captured frames.
          * @param chain_id Id of the exception chain this call stack continues.
-         *        0 starts a new chain, which
-         *        generates the next id.
+         *        0 starts a new chain, generating the next id.
          * @param depth Position along the chain: 0 for the thrown exception,
          *        1, 2, ... for each cause behind it.
          */

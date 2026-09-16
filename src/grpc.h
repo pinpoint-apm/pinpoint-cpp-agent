@@ -125,12 +125,12 @@ namespace pinpoint {
         int meta_retry_max_attempts{3};
         std::chrono::milliseconds meta_retry_delay{1000};
         /// Cap on the retry schedule, held separately from the new-metadata
-        /// queue's sender_queue_size budget. Sharing one budget let a
-        /// collector outage fill it with retries and starve new metadata,
-        /// whose drop path releases the cache entry and so re-enqueues the
-        /// same item from the next span — a drop-feeds-inflow amplification
-        /// loop. Retries stay off the send queue; two bounds enforce that.
-        /// Overflow policy: see GrpcMetadata::retry_or_drop.
+        /// queue's sender_queue_size budget. With one shared budget a collector
+        /// outage fills it with retries and starves new metadata, whose drop
+        /// path releases the cache entry and so re-enqueues the same item from
+        /// the next span — a drop-feeds-inflow amplification loop. Retries stay
+        /// off the send queue; two bounds enforce that. Overflow policy: see
+        /// GrpcMetadata::retry_or_drop.
         size_t meta_retry_queue_size{1000};
         /// Concurrently in-flight metadata RPCs. Unary sends are pipelined
         /// behind this permit cap instead of serialized one blocking call at
@@ -180,10 +180,10 @@ namespace pinpoint {
         std::chrono::seconds channel_state_log_interval{60};
 
         /// Stream-stall escalation (see GrpcClient::record_stream_stall),
-        /// applied to stream write timeouts. A channel rotation is forced once at least
-        /// `stream_stall_limit_count` consecutive timeouts have been recorded
-        /// AND the first of them is at least `stream_stall_limit_time` old.
-        /// Both must hold, so one timed-out write never costs a working
+        /// applied to stream write timeouts. A channel rotation is forced once
+        /// at least `stream_stall_limit_count` consecutive timeouts have been
+        /// recorded AND the first of them is at least `stream_stall_limit_time`
+        /// old. Both must hold, so one timed-out write never costs a working
         /// channel. Defaults: the ping stream needs ~3 ping intervals of
         /// silence; the stat stream, whose tokens arrive every collect
         /// interval, needs the time window as well. A count <= 0 disables
@@ -347,10 +347,10 @@ namespace pinpoint {
         // callback. Zero for the clients without a long-lived stream.
         int stream_stall_count_{0};
         std::chrono::steady_clock::time_point first_stream_stall_at_{};
-        // Ping/stat renewal deadline: the earlier of the configured stream
-        // max age and the current channel's rotation time. max() while both are
-        // disabled. The command
-        // stream uses the same calculation as a ClientContext deadline.
+        // Ping/stat renewal deadline: the earlier of the configured stream max
+        // age and the current channel's rotation time; max() while both are
+        // disabled. The command stream uses the same calculation as a
+        // ClientContext deadline.
         std::chrono::steady_clock::time_point stream_expires_at_{
             std::chrono::steady_clock::time_point::max()};
 
@@ -502,9 +502,9 @@ namespace pinpoint {
          * worker's cycle boundary: before a span batch or metadata item is
          * sent, and while a ping/stat/command stream is (re)opened.
          *
-         * ponytail: an abandoned attempt waits a full period before retrying;
-         * keep the candidate and poll it per cycle if faster recovery after
-         * a failed successor ever matters.
+         * Known limitation: an abandoned attempt waits a full period before
+         * retrying. Keeping the candidate and polling it per cycle would
+         * recover faster after a failed successor.
          */
         void rotate_channel_if_due() noexcept;
         /// @brief Re-arms channel_rotate_at_ one jittered max age after
@@ -615,13 +615,12 @@ namespace pinpoint {
     /// @brief Metadata describing a SQL UID.
     ///
     /// `sql_` is the transmitted copy, abbreviated to kMaxSqlMetaLength up
-    /// front. `cache_key_` is
-    /// the whole normalized SQL the uid cache stored under, which is what
-    /// removeCacheSqlUid() evicts by; it is left empty when the cache bypassed
-    /// the statement (Sql.CacheLengthLimit), since there is no entry to evict
-    /// then. Either way a queued item holds at most
-    /// max(kMaxSqlMetaLength, Sql.CacheLengthLimit) bytes of SQL instead of
-    /// the normalizer's 1 MiB worth. `cached_` — not the key's emptiness —
+    /// front. `cache_key_` is the whole normalized SQL the uid cache stored
+    /// under, which removeCacheSqlUid() evicts by; it is left empty when the
+    /// cache bypassed the statement (Sql.CacheLengthLimit), since there is no
+    /// entry to evict then. Either way a queued item holds at most
+    /// max(kMaxSqlMetaLength, Sql.CacheLengthLimit) bytes of SQL instead of the
+    /// normalizer's 1 MiB worth. `cached_` — not the key's emptiness —
     /// says whether there is an entry to evict: the normalizer yields an
     /// empty string for input that is all comments (sql.cpp normalize()),
     /// and an empty key is below the bypass limit, so such a statement really
@@ -671,10 +670,10 @@ namespace pinpoint {
      * dropped item releases its cache entry so the id is regenerated and
      * re-sent later — but that release is what feeds the next span's cache
      * miss, so on the rejection path it is scheduled rather than immediate
-     * (see schedule_cache_release): releasing inline turned one permanently
+     * (see schedule_cache_release). Releasing inline would turn one permanently
      * rejecting collector into a re-send per span, bounded only by the
-     * in-flight permits, with an error line each. Parking the id for one
-     * retry delay first makes the recovery probe periodic instead.
+     * in-flight permits, with an error line each; parking the id for one retry
+     * delay makes the recovery probe periodic instead.
      */
     class GrpcMetadata : public GrpcClient {
     public:
@@ -995,8 +994,8 @@ namespace pinpoint {
         // Raised only while collect_batch accumulates a batch, where producer
         // wakeups are otherwise off. A producer takes the wait mutex on this
         // flag just when its own shard has reached the wake watermark, so an
-        // ordinary enqueue still pays nothing and a burst no longer has to sit
-        // out the rest of a collect slice while the queue head-drops.
+        // ordinary enqueue still pays nothing while a burst does not have to sit
+        // out the rest of a collect slice with the queue head-dropping.
         std::atomic<bool> span_consumer_accumulating_{false};
         // Rate-limited drop reporting, fed the queue's own drop counter plus
         // the send-side count via report_if_due() — see maybe_log_span_drops().

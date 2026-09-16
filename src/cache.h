@@ -752,7 +752,6 @@ namespace pinpoint {
             : cache_(max_size, shard_count) {}
         ~IdCacheImpl() = default;
 
-        // Delete copy and move operations
         IdCacheImpl(const IdCacheImpl&) = delete;
         IdCacheImpl& operator=(const IdCacheImpl&) = delete;
         IdCacheImpl(IdCacheImpl&&) = delete;
@@ -862,7 +861,6 @@ namespace pinpoint {
               cache_length_limit_(cache_length_limit) {}
         ~SqlUidCache() = default;
 
-        // Delete copy and move operations
         SqlUidCache(const SqlUidCache&) = delete;
         SqlUidCache& operator=(const SqlUidCache&) = delete;
         SqlUidCache(SqlUidCache&&) = delete;

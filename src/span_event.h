@@ -179,12 +179,11 @@ namespace pinpoint {
          * unguarded from such a late call would be a use-after-free, so no
          * new method may reach the span any other way.
          *
-         * agent_ goes through the same gate because it has no pin of its
-         * own: SpanImpl::agent_ref_ is what keeps the agent alive, so the
-         * agent is guaranteed only while this returns non-null. Pinning it
-         * per event instead would put a shared_ptr copy on the hot path of
-         * the most numerous object in a trace, for a window the span already
-         * covers.
+         * agent_ goes through the same gate because it has no pin of its own:
+         * SpanImpl::agent_ref_ is what keeps the agent alive, so the agent is
+         * guaranteed only while this returns non-null. Pinning it per event
+         * would put a shared_ptr copy on the hot path of the most numerous
+         * object in a trace, for a window the span already covers.
          */
         SpanImpl* spanIfAlive() const;
 
@@ -210,7 +209,7 @@ namespace pinpoint {
         int32_t depth_{0};
         int64_t start_time_;
         // Caller-preset end timestamp (epoch ms) for batch-replayed events;
-        // 0 means finish() stamps the wall clock as before.
+        // 0 means finish() stamps the wall clock.
         int64_t end_time_{0};
         int32_t start_elapsed_{0};
         int32_t elapsed_{0};
@@ -236,17 +235,16 @@ namespace pinpoint {
 
     /**
      * @brief Span event handed out when the span's event stack has overflowed
-     *        (max depth/sequence reached): nothing is recorded locally, but InjectContext
-     *        still writes the full trace context so the distributed trace is
-     *        not cut at the overflow point — overflow is a profiling depth
-     *        limit, not a sampling decision.
+     *        (max depth/sequence reached): nothing is recorded locally, but
+     *        InjectContext still writes the full trace context so the
+     *        distributed trace is not cut at the overflow point — overflow is a
+     *        profiling depth limit, not a sampling decision.
      *
-     * One instance per span, created lazily on first overflow and owned by the
-     * span's SpanData — not by the SpanImpl — so a user-held pointer to it has
-     * exactly the lifetime of a real span event's (see SpanData::getOwner).
-     * Since every overflowed event of the span shares it, the kept destination
-     * reflects the most recent SetDestination call (used only for the
-     * Pinpoint-Host header).
+     * One instance per span, held by value in the span's SpanData — not by the
+     * SpanImpl — so a user-held pointer to it has exactly the lifetime of a
+     * real span event's (see SpanData::getOwner). Since every overflowed event
+     * of the span shares it, the kept destination reflects the most recent
+     * SetDestination call (used only for the Pinpoint-Host header).
      */
     class DisabledSpanEvent final : public SpanEvent {
     public:

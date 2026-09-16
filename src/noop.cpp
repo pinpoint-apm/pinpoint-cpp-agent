@@ -43,26 +43,23 @@ namespace pinpoint {
     }
 
     SpanPtr noopSpan() {
-        // Per-thread localized owner of the one noop span. noopSpan() is
-        // returned on every filtered / disabled-agent / failed-admission
-        // request, and copying one process-wide shared_ptr there would put an
-        // increment and decrement on a single control block per request — the
-        // cache-line ping-pong ThreadCached exists to remove. localize_shared()
-        // keeps the pointee identical (so `.get()` and `==` against the
-        // singleton still hold) while giving each thread its own control block.
-        // thread_local_lazy keeps this callable during the thread's own TLS
-        // teardown; a re-entry there leaks one aliased owner of an immortal
-        // object.
+        // Per-thread localized owner of the one noop span: this is returned on
+        // every filtered / disabled-agent / failed-admission request, and one
+        // process-wide shared_ptr would put per-request refcount traffic on a
+        // single control block. localize_shared() keeps the pointee identical
+        // (so `.get()` and `==` against the singleton still hold) while giving
+        // each thread its own control block. thread_local_lazy keeps this
+        // callable during the thread's own TLS teardown; a re-entry there leaks
+        // one aliased owner of an immortal object.
         try {
             return thread_local_lazy<SpanPtr>(
                 [] { return new SpanPtr(localize_shared(noopSpanHolder())); });
         } catch (...) {
             // Localizing is a pure optimization, so a failure to set it up
             // (realistically only bad_alloc) must not change what the caller
-            // gets. Fall back to a copy of the shared holder: contended, but
-            // correct, and identical to the behavior before this thread-local
-            // owner existed — including that the holder's own first-call
-            // allocation is the one remaining path that can throw from here.
+            // gets: fall back to a copy of the shared holder — contended, but
+            // correct. The holder's own first-call allocation is the one
+            // remaining path that can throw from here.
             return noopSpanHolder();
         }
     }
@@ -80,13 +77,10 @@ namespace pinpoint {
         // With a runtime snapshot carrying the stats sinks (every
         // build_runtime() snapshot does), this span never touches the agent
         // after construction: AgentStats, the url-stat sink and the
-        // status-error set all belong to runtime_, which the span holds through
-        // a thread-localized control block. Skipping selfRef() removes a
-        // per-request CAS on the agent's single shared control block —
-        // unsampled spans are the majority path when sampling is on, and that
-        // CAS measured as half this path's four-thread cost
-        // (span_lifecycle_benchmark). Without the sinks (tests, hand-built
-        // runtimes), agent_ref_ protects the fallback paths below.
+        // status-error set all belong to runtime_. Skipping selfRef() removes a
+        // per-request CAS on the agent's single shared control block, which
+        // dominated this path's multi-threaded cost. Without the sinks (tests,
+        // hand-built runtimes), agent_ref_ protects the fallback paths below.
         agent_ref_(runtime_ && runtime_->stats && runtime_->url_stats
                        ? nullptr
                        : (agent != nullptr ? agent->selfRef() : nullptr)),
@@ -99,13 +93,12 @@ namespace pinpoint {
     }
 
     void UnsampledSpan::markError(std::string_view error_name, std::string_view error_message) try {
-        // Span.IgnoreErrors must apply here too: an error the operator has
-        // excluded would otherwise fail the URL stat of unsampled requests
-        // while sparing sampled ones. The same goes for Span.ErrorMark /
-        // Span.ErrorMarkExclude — the only category reachable here is
-        // kException, since an unsampled span records neither a status code
-        // nor SQL. Without a runtime snapshot (tests) there is no config to
-        // filter against, so the error stands.
+        // Span.IgnoreErrors and Span.ErrorMark must apply here too, or an
+        // error the operator excluded would fail the URL stat of unsampled
+        // requests while sparing sampled ones. The only category reachable
+        // here is kException, since an unsampled span records neither a status
+        // code nor SQL. Without a runtime snapshot (tests) there is no config
+        // to filter against, so the error stands.
         if (runtime_) {
             const auto& span_config = runtime_->config->span;
             if (is_ignored_error(span_config.ignore_errors, error_name, error_message) ||
@@ -135,14 +128,12 @@ namespace pinpoint {
     }
 
     UnsampledSpan::~UnsampledSpan() {
-        // Self-heals spans dropped without EndSpan, mirroring ~SpanImpl, and is
-        // the hard backstop for the intrusive node: a still-linked node here
-        // would leave dangling pointers in its shard list. Checking the node
-        // rather than finished_ still covers an EndSpan failure before its
-        // drop, while a normally ended span returns after one atomic load
-        // without resolving the sink, so a non-owning test agent_ is never
-        // touched. The registry outlives this unlink either way: runtime_ owns
-        // the AgentStats, or the fallback's agent_ref_ keeps the agent alive.
+        // Self-heals spans dropped without EndSpan, and is the hard backstop
+        // for the intrusive node: a still-linked node here would leave dangling
+        // pointers in its shard list. Checking the node rather than finished_
+        // also covers an EndSpan that failed before its drop. The registry
+        // outlives this unlink either way: runtime_ owns the AgentStats, or the
+        // fallback's agent_ref_ keeps the agent alive.
         if (active_node_.isLinked()) {
             if (auto* stats = statsSink()) {
                 try {
@@ -186,14 +177,10 @@ namespace pinpoint {
         if (url_stat_) {
             url_stat_->end_time_ = end_time_;
             url_stat_->elapsed_ = elapsed_;
-            // Mirror SpanImpl::sendUrlStat: unsampled requests are the
-            // majority when sampling is on, so missing this here would skew
-            // the URL-stat failure rate toward zero. With a runtime snapshot
-            // both the status check and the record skip the atomic runtime
-            // loads agent_->isStatusFail()/getConfig() would pay.
-            //
-            // A recorded error fails the entry as well, for the same reason
-            // and the same way SpanImpl::sendUrlStat ORs in PSpan.err.
+            // As in SpanImpl::sendUrlStat, an error status code or a recorded
+            // error fails the entry; unsampled requests are the majority when
+            // sampling is on, so skipping this would skew the URL-stat failure
+            // rate toward zero.
             const bool err = err_.load(std::memory_order_relaxed);
             if (runtime_) {
                 const auto& status_errors = runtime_->http_status_errors;
@@ -215,9 +202,7 @@ namespace pinpoint {
             url_stat_.reset();
         }
     } catch (const std::exception& e) {
-        // Mirror SpanImpl::EndSpan: EndSpan runs in host destructors, so the
-        // exception must not escape — this is the majority path when
-        // sampling is on (every unsampled request ends here).
+        // EndSpan runs in host destructors, so the exception must not escape.
         LOG_ERROR("end span exception = {}", e.what());
         releaseActiveSpanOnError();
     } catch (...) {
@@ -226,11 +211,10 @@ namespace pinpoint {
     }
 
     void UnsampledSpan::releaseActiveSpanOnError() noexcept {
-        // Shared by EndSpan's catch handlers. The destructor would unlink
-        // the node anyway, but user code may hold the span handle long after
-        // a failed EndSpan — unlink now so the span stops counting as an
-        // active request immediately. Idempotent (unlinked node → no-op).
-        // Same shape as SpanImpl::releaseActiveSpanOnError.
+        // The destructor would unlink the node anyway, but user code may hold
+        // the span handle long after a failed EndSpan — unlink now so the span
+        // stops counting as an active request immediately. Idempotent
+        // (unlinked node → no-op).
         try {
             if (auto* stats = statsSink()) {
                 stats->dropActiveSpan(active_node_);
@@ -249,9 +233,8 @@ namespace pinpoint {
 
     void UnsampledSpan::recordUrlStat(std::string_view url_pattern, std::string_view method, int status_code, bool force) {
         // Gate at entry creation (see SpanImpl::SetUrlStat): with URL stats
-        // disabled the entry's two heap string copies were built only to be
-        // dropped in enqueueUrlStats(). Unlike SpanImpl there is no exception
-        // url_template to preserve. Tests without a snapshot retain the
+        // disabled the entry's two heap string copies would be built only to be
+        // dropped in enqueueUrlStats(). Tests without a snapshot retain the
         // direct path.
         if (runtime_ && !runtime_->config->http.url_stat.enable) {
             return;

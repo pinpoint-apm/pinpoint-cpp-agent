@@ -55,8 +55,7 @@ private:
     std::map<std::string, std::string> headers_;
 };
 
-// Test helpers that read back what http.cpp recorded into a concrete
-// PinpointAnnotation (the public Annotation interface no longer exists).
+// Helpers that read back what http.cpp recorded into a PinpointAnnotation.
 
 // Returns the recorded string-string annotation values grouped by key.
 std::map<int32_t, std::vector<std::pair<std::string, std::string> > >
@@ -181,7 +180,6 @@ TEST_F(HttpTest, HttpStatusErrorsTest) {
 
 // ========== HttpUrlFilter Class Tests ==========
 
-// Test HttpUrlFilter with simple exact patterns
 TEST_F(HttpTest, HttpUrlFilterSimplePatternsTest) {
     std::vector<std::string> cfg = {"/api/users", "/admin/dashboard", "/headers*"};
     HttpUrlFilter filter(cfg);
@@ -200,7 +198,6 @@ TEST_F(HttpTest, HttpUrlFilterSimplePatternsTest) {
     EXPECT_FALSE(filter.isFiltered("/api/users/123")) << "Should not match longer path";
 }
 
-// Test HttpUrlFilter with single wildcard patterns
 TEST_F(HttpTest, HttpUrlFilterSingleWildcardTest) {
     std::vector<std::string> cfg = {"/api/*", "/admin/*/settings"};
     HttpUrlFilter filter(cfg);
@@ -222,7 +219,6 @@ TEST_F(HttpTest, HttpUrlFilterSingleWildcardTest) {
     EXPECT_FALSE(filter.isFiltered("/other/path")) << "Should not match unrelated path";
 }
 
-// Test HttpUrlFilter with double wildcard patterns
 TEST_F(HttpTest, HttpUrlFilterDoubleWildcardTest) {
     std::vector<std::string> cfg = {"/api/**", "/static/**"};
     HttpUrlFilter filter(cfg);
@@ -243,7 +239,6 @@ TEST_F(HttpTest, HttpUrlFilterDoubleWildcardTest) {
     EXPECT_FALSE(filter.isFiltered("/css/main.css")) << "Should not match without /static prefix";
 }
 
-// Test HttpUrlFilter with mixed wildcard patterns
 TEST_F(HttpTest, HttpUrlFilterMixedWildcardTest) {
     std::vector<std::string> cfg = {"/api/*/users", "/files/*/download/**"};
     HttpUrlFilter filter(cfg);
@@ -264,7 +259,6 @@ TEST_F(HttpTest, HttpUrlFilterMixedWildcardTest) {
     EXPECT_FALSE(filter.isFiltered("/files/public/upload/file.txt")) << "Should not match with wrong middle part";
 }
 
-// Test HttpUrlFilter with special regex characters
 TEST_F(HttpTest, HttpUrlFilterSpecialCharactersTest) {
     std::vector<std::string> cfg = {"/api/v1.0/users", "/path+with+plus", "/path[with]brackets", "/path{with}braces"};
     HttpUrlFilter filter(cfg);
@@ -282,7 +276,6 @@ TEST_F(HttpTest, HttpUrlFilterSpecialCharactersTest) {
     EXPECT_FALSE(filter.isFiltered("/pathXwithXbraces")) << "Braces should not be quantifier";
 }
 
-// Test HttpUrlFilter with complex realistic patterns
 TEST_F(HttpTest, HttpUrlFilterRealisticPatternsTest) {
     std::vector<std::string> cfg = {
         "/api/v*/users/**",
@@ -331,7 +324,6 @@ TEST_F(HttpTest, HttpUrlFilterEmptyConfigTest) {
     EXPECT_FALSE(filter.isFiltered("/any/path/here")) << "Should not filter any path with empty config";
 }
 
-// Test HttpUrlFilter with root and subpath patterns
 TEST_F(HttpTest, HttpUrlFilterRootAndSubpathTest) {
     std::vector<std::string> cfg = {"/*", "/api", "/api/*"};
     HttpUrlFilter filter(cfg);
@@ -356,7 +348,6 @@ TEST_F(HttpTest, HttpUrlFilterEdgeCasesTest) {
     std::vector<std::string> cfg = {"", "/", "//", "/**/", "/*/", "**"};
     HttpUrlFilter filter(cfg);
     
-    // Test various edge case patterns
     EXPECT_TRUE(filter.isFiltered("")) << "Should handle empty pattern";
     EXPECT_TRUE(filter.isFiltered("/")) << "Should handle root pattern";
     
@@ -377,17 +368,15 @@ TEST_F(HttpTest, HttpUrlFilterDuplicatePatternsTest) {
 }
 
 namespace {
-    // Drives HttpUrlFilter::isFiltered from a thread_local destructor,
-    // mimicking a host whose own thread_local destructor records a final
-    // span during thread exit (AgentImpl::NewSpan runs the URL filter).
-    // Constructed BEFORE the filter's first use on the thread, so TLS
-    // destruction (reverse construction order) runs this destructor AFTER
-    // the filter's per-thread match scratch has been reclaimed — the filter
-    // must still be safe to call at that point (see thread_local_lazy in
-    // utility.h). The pre-fix use-after-destruction ordering materializes on
-    // glibc, whose __cxa_thread_atexit runs TLS destructors strictly LIFO;
-    // Apple's runtime happens not to produce it, so on macOS this test
-    // documents the contract rather than reproducing the crash.
+    // Drives HttpUrlFilter::isFiltered from a thread_local destructor, mimicking
+    // a host whose own thread_local destructor records a final span during thread
+    // exit (AgentImpl::NewSpan runs the URL filter). Constructed BEFORE the
+    // filter's first use on the thread, so TLS destruction (reverse construction
+    // order) runs this destructor AFTER the filter's per-thread match scratch has
+    // been reclaimed — the filter must still be safe to call there (see
+    // thread_local_lazy in utility.h). Only glibc orders TLS destructors strictly
+    // LIFO, so on macOS this documents the contract rather than reproducing a
+    // crash.
     struct TeardownFilterCaller {
         const HttpUrlFilter* filter = nullptr;
         bool* matched = nullptr;
@@ -400,7 +389,7 @@ namespace {
     thread_local TeardownFilterCaller teardown_filter_caller;
 }
 
-// Test HttpUrlFilter called during thread TLS teardown (Ant pattern path)
+// The Ant-pattern path runs during the calling thread's TLS teardown.
 TEST_F(HttpTest, HttpUrlFilterUsableDuringThreadTeardownTest) {
     // Mid-pattern '*' keeps the compiled kind Ant, which is the only kind
     // that uses the per-thread DP scratch.
@@ -442,7 +431,6 @@ TEST_F(HttpTest, HttpHeaderRecorderEmptyConfigTest) {
     EXPECT_EQ(string_string_count_of(*annotation), 0) << "Should not record headers with empty config";
 }
 
-// Test HttpHeaderRecorder with specific header configuration
 TEST_F(HttpTest, HttpHeaderRecorderSpecificHeadersTest) {
     std::vector<std::string> cfg = {"Content-Type", "Authorization"};
     HttpHeaderRecorder recorder(200, cfg);
@@ -461,7 +449,6 @@ TEST_F(HttpTest, HttpHeaderRecorderSpecificHeadersTest) {
     // Should record only configured headers
     EXPECT_EQ(string_string_count_of(*annotation), 2) << "Should record exactly 2 headers";
     
-    // Check that annotations were recorded with the correct key
     const auto stringStringValues = string_string_values_of(*annotation);
     auto it = stringStringValues.find(200);
     EXPECT_NE(it, stringStringValues.end()) << "Should have annotation with key 200";
@@ -472,7 +459,6 @@ TEST_F(HttpTest, HttpHeaderRecorderSpecificHeadersTest) {
     // We need to check if the recorded values are correct
 }
 
-// Test HttpHeaderRecorder with single header configuration
 TEST_F(HttpTest, HttpHeaderRecorderSingleHeaderTest) {
     std::vector<std::string> cfg = {"Content-Type"};
     HttpHeaderRecorder recorder(300, cfg);
@@ -516,7 +502,6 @@ TEST_F(HttpTest, HttpHeaderRecorderMissingHeadersTest) {
     EXPECT_EQ(it->second.size(), 1) << "Should have 1 header recorded with key 400";
 }
 
-// Test HttpHeaderRecorder with HEADERS-ALL configuration
 TEST_F(HttpTest, HttpHeaderRecorderAllHeadersTest) {
     std::vector<std::string> cfg = {"HEADERS-ALL"};
     HttpHeaderRecorder recorder(500, cfg);
@@ -603,7 +588,6 @@ TEST_F(HttpTest, HttpHeaderRecorderSpecialCharactersTest) {
     EXPECT_EQ(it->second.size(), 1) << "Should have 1 header recorded with key 800";
 }
 
-// Test HttpHeaderRecorder with multiple configurations including HEADERS-ALL (edge case)
 TEST_F(HttpTest, HttpHeaderRecorderMultipleAllConfigTest) {
     std::vector<std::string> cfg = {"HEADERS-ALL", "Content-Type"}; // Mixed config
     HttpHeaderRecorder recorder(900, cfg);
@@ -660,7 +644,6 @@ TEST_F(HttpTest, HttpHeaderRecorderRealisticHeadersTest) {
     EXPECT_EQ(it->second.size(), 6) << "Should have 6 headers recorded with key 1000";
 }
 
-// Test HttpHeaderRecorder with no headers available
 TEST_F(HttpTest, HttpHeaderRecorderNoHeadersTest) {
     std::vector<std::string> cfg = {"Content-Type", "Authorization"};
     HttpHeaderRecorder recorder(1100, cfg);
@@ -705,7 +688,6 @@ TEST_F(HttpTest, HttpMethodFilterMultipleMethodsTest) {
     EXPECT_FALSE(filter.isFiltered("HEAD")) << "Should not filter HEAD method";
 }
 
-// Test HttpMethodFilter with case sensitivity
 TEST_F(HttpTest, HttpMethodFilterCaseInsensitiveTest) {
     std::vector<std::string> cfg = {"POST"};
     HttpMethodFilter filter(cfg);
@@ -728,7 +710,6 @@ TEST_F(HttpTest, HttpMethodFilterEmptyConfigTest) {
 
 // ========== HttpTracerUtil Tests ==========
 
-// Test getRemoteAddr with X-Forwarded-For header (single IP)
 TEST_F(HttpTest, GetRemoteAddrXForwardedForSingleTest) {
     std::map<std::string, std::string> headers = {
         {"X-Forwarded-For", "203.0.113.45"}
@@ -739,7 +720,6 @@ TEST_F(HttpTest, GetRemoteAddrXForwardedForSingleTest) {
     EXPECT_EQ(addr, "203.0.113.45") << "Should extract first IP from X-Forwarded-For";
 }
 
-// Test getRemoteAddr with X-Forwarded-For header (multiple IPs)
 TEST_F(HttpTest, GetRemoteAddrXForwardedForMultipleTest) {
     std::map<std::string, std::string> headers = {
         {"X-Forwarded-For", "203.0.113.45, 198.51.100.1, 192.0.2.1"}
@@ -750,7 +730,6 @@ TEST_F(HttpTest, GetRemoteAddrXForwardedForMultipleTest) {
     EXPECT_EQ(addr, "203.0.113.45") << "Should extract first IP from comma-separated list";
 }
 
-// Test getRemoteAddr with X-Forwarded-For header (with spaces)
 TEST_F(HttpTest, GetRemoteAddrXForwardedForWithSpacesTest) {
     std::map<std::string, std::string> headers = {
         {"X-Forwarded-For", "  203.0.113.45  , 198.51.100.1"}
@@ -774,7 +753,6 @@ TEST_F(HttpTest, GetRemoteAddrXForwardedForStripsLineTerminatorTest) {
     EXPECT_EQ(addr, "203.0.113.45") << "Should trim CR/LF from IP";
 }
 
-// Test getRemoteAddr with X-Real-Ip header
 TEST_F(HttpTest, GetRemoteAddrXRealIpTest) {
     std::map<std::string, std::string> headers = {
         {"X-Real-Ip", "203.0.113.45"}
@@ -785,7 +763,7 @@ TEST_F(HttpTest, GetRemoteAddrXRealIpTest) {
     EXPECT_EQ(addr, "203.0.113.45") << "Should extract IP from X-Real-Ip";
 }
 
-// Test getRemoteAddr with both headers (X-Forwarded-For has priority)
+// X-Forwarded-For is consulted before X-Real-Ip.
 TEST_F(HttpTest, GetRemoteAddrBothHeadersTest) {
     std::map<std::string, std::string> headers = {
         {"X-Forwarded-For", "203.0.113.45"},
@@ -797,7 +775,6 @@ TEST_F(HttpTest, GetRemoteAddrBothHeadersTest) {
     EXPECT_EQ(addr, "203.0.113.45") << "X-Forwarded-For should take priority";
 }
 
-// Test getRemoteAddr without proxy headers (with port)
 TEST_F(HttpTest, GetRemoteAddrNoProxyWithPortTest) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
@@ -806,7 +783,6 @@ TEST_F(HttpTest, GetRemoteAddrNoProxyWithPortTest) {
     EXPECT_EQ(addr, "192.168.1.100") << "Should extract host from host:port";
 }
 
-// Test getRemoteAddr without proxy headers (without port)
 TEST_F(HttpTest, GetRemoteAddrNoProxyWithoutPortTest) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
@@ -823,7 +799,6 @@ TEST_F(HttpTest, GetRemoteAddrIPv6Test) {
     EXPECT_EQ(addr, "[2001:db8::1]") << "Should handle IPv6 addresses";
 }
 
-// Test setProxyHeader with Pinpoint-ProxyApache
 TEST_F(HttpTest, SetProxyHeaderApacheTest) {
     std::map<std::string, std::string> headers = {
         {"Pinpoint-ProxyApache", "t=1234567890000 D=1500 i=10 b=90"}
@@ -835,7 +810,6 @@ TEST_F(HttpTest, SetProxyHeaderApacheTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
-// Test setProxyHeader with Pinpoint-ProxyNginx
 TEST_F(HttpTest, SetProxyHeaderNginxTest) {
     std::map<std::string, std::string> headers = {
         {"Pinpoint-ProxyNginx", "t=1234567.890 D=2000"}
@@ -922,7 +896,6 @@ TEST_F(HttpTest, SetProxyHeaderNginxRejectsMalformedReceivedTime) {
     }
 }
 
-// Test setProxyHeader with Pinpoint-ProxyApp
 TEST_F(HttpTest, SetProxyHeaderAppTest) {
     std::map<std::string, std::string> headers = {
         {"Pinpoint-ProxyApp", "t=1234567890 app=MyApp"}
@@ -966,8 +939,8 @@ TEST_F(HttpTest, SetProxyHeaderAppIsValidatedNotTruncated) {
     EXPECT_EQ(app_of(multibyte), "<discarded>");
 }
 
-// Test setProxyHeader with a malformed token: a token without '=' must be
-// skipped on its own instead of swallowing the following tokens
+// A proxy-header token without '=' must be skipped on its own instead of
+// swallowing the tokens that follow it.
 TEST_F(HttpTest, SetProxyHeaderMalformedTokenTest) {
     std::map<std::string, std::string> headers = {
         {"Pinpoint-ProxyApache", "garbage t=1234567890000 D=1500"}
@@ -978,7 +951,6 @@ TEST_F(HttpTest, SetProxyHeaderMalformedTokenTest) {
     EXPECT_NO_THROW(HttpTracerUtil::setProxyHeader(reader, annotation.get()));
 }
 
-// Test setProxyHeader without proxy headers
 TEST_F(HttpTest, SetProxyHeaderNoProxyTest) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
@@ -990,7 +962,6 @@ TEST_F(HttpTest, SetProxyHeaderNoProxyTest) {
 
 // ========== Edge Case Tests ==========
 
-// Test HttpStatusErrors with empty tokens list
 TEST_F(HttpTest, HttpStatusErrorsEmptyTokensTest) {
     std::vector<std::string> tokens = {};
     HttpStatusErrors errors(tokens);
@@ -1002,7 +973,7 @@ TEST_F(HttpTest, HttpStatusErrorsEmptyTokensTest) {
     EXPECT_FALSE(errors.isErrorCode(0)) << "Empty tokens should not match 0";
 }
 
-// Test HttpStatusErrors with invalid/unrecognized tokens (should be silently ignored)
+// An unrecognized token is silently ignored.
 TEST_F(HttpTest, HttpStatusErrorsInvalidTokensTest) {
     std::vector<std::string> tokens = {"abc", "6xx", "xyz", "500"};
     HttpStatusErrors errors(tokens);
@@ -1014,7 +985,6 @@ TEST_F(HttpTest, HttpStatusErrorsInvalidTokensTest) {
     EXPECT_FALSE(errors.isErrorCode(0)) << "abc is invalid, should not match 0";
 }
 
-// Test HttpStatusErrors with case-insensitive category tokens
 TEST_F(HttpTest, HttpStatusErrorsCaseInsensitiveTokensTest) {
     std::vector<std::string> tokens = {"5XX", "4Xx"};
     HttpStatusErrors errors(tokens);
@@ -1026,7 +996,6 @@ TEST_F(HttpTest, HttpStatusErrorsCaseInsensitiveTokensTest) {
     EXPECT_FALSE(errors.isErrorCode(200)) << "Should not match 200";
 }
 
-// Test HttpUrlFilter with ? single-character wildcard
 TEST_F(HttpTest, HttpUrlFilterQuestionMarkWildcardTest) {
     std::vector<std::string> cfg = {"/api/v?/users", "/file?.txt"};
     HttpUrlFilter filter(cfg);
@@ -1045,7 +1014,7 @@ TEST_F(HttpTest, HttpUrlFilterQuestionMarkWildcardTest) {
     EXPECT_FALSE(filter.isFiltered("/file12.txt")) << "? should not match two chars";
 }
 
-// Test HttpUrlFilter ? matches a single character but never the path separator (Ant semantics)
+// Ant semantics: '?' matches one character but never the path separator.
 TEST_F(HttpTest, HttpUrlFilterQuestionMarkDoesNotMatchSlashTest) {
     std::vector<std::string> cfg = {"/a?b"};
     HttpUrlFilter filter(cfg);
@@ -1056,7 +1025,6 @@ TEST_F(HttpTest, HttpUrlFilterQuestionMarkDoesNotMatchSlashTest) {
     EXPECT_FALSE(filter.isFiltered("/aXXb")) << "? should not match two chars";
 }
 
-// Test HttpMethodFilter with lowercase config values
 TEST_F(HttpTest, HttpMethodFilterLowercaseConfigTest) {
     std::vector<std::string> cfg = {"get", "post"};
     HttpMethodFilter filter(cfg);
@@ -1091,7 +1059,6 @@ TEST_F(HttpTest, GetRemoteAddrEmptyAddressTest) {
     EXPECT_EQ(addr, "") << "Empty remote_addr should return empty string";
 }
 
-// Test getRemoteAddr with IPv6 without brackets (multiple colons)
 TEST_F(HttpTest, GetRemoteAddrIPv6NoBracketsTest) {
     std::map<std::string, std::string> headers = {};
     MockHeaderReader reader(headers);
@@ -1100,7 +1067,6 @@ TEST_F(HttpTest, GetRemoteAddrIPv6NoBracketsTest) {
     EXPECT_EQ(addr, "2001:db8::1") << "IPv6 without brackets should be returned as-is";
 }
 
-// Test getRemoteAddr with empty X-Forwarded-For falls back to X-Real-Ip
 TEST_F(HttpTest, GetRemoteAddrEmptyXFFWithXRealIpTest) {
     std::map<std::string, std::string> headers = {
         {"X-Forwarded-For", ""},
@@ -1112,7 +1078,6 @@ TEST_F(HttpTest, GetRemoteAddrEmptyXFFWithXRealIpTest) {
     EXPECT_EQ(addr, "10.0.0.1") << "Empty XFF should fall back to X-Real-Ip";
 }
 
-// Test getRemoteAddr with empty both proxy headers falls back to remote_addr
 TEST_F(HttpTest, GetRemoteAddrEmptyBothProxyHeadersTest) {
     std::map<std::string, std::string> headers = {
         {"X-Forwarded-For", ""},
@@ -1265,7 +1230,6 @@ TEST_F(HttpTest, SetProxyHeaderUserInfersTheTimeFormat) {
     }
 }
 
-// Test HttpHeaderRecorder with case-insensitive headers-all variant
 TEST_F(HttpTest, HttpHeaderRecorderHeadersAllCaseInsensitiveTest) {
     std::vector<std::string> cfg = {"headers-all"};
     HttpHeaderRecorder recorder(1200, cfg);
@@ -1399,8 +1363,8 @@ TEST_F(HttpTest, TraceHttpHelpersNullHandlesAreSafeTest) {
 
 // ========== getRemoteAddr: configurable real-IP headers ==========
 //
-// Java RealIpHeaderResolver: ordered list, `Forwarded` parsed for its for=
-// token, a value equal to the empty value skipped, else the socket address.
+// Ordered list, `Forwarded` parsed for its for= token, a value equal to the
+// empty value skipped, else the socket address.
 TEST_F(HttpTest, GetRemoteAddrConfigurableHeadersTest) {
     using Headers = std::vector<std::string>;
     const auto resolve = [](std::map<std::string, std::string> headers, Headers names,
@@ -1434,8 +1398,8 @@ TEST_F(HttpTest, GetRemoteAddrConfigurableHeadersTest) {
 
 // ========== helper::FormatRequestParams ==========
 //
-// Java HttpServletParameterExtractor: 64 chars per key/value, 512 total, "..."
-// marks each cut. Malformed escapes pass through untouched.
+// 64 chars per key/value, 512 total, "..." marks each cut. Malformed escapes
+// pass through untouched.
 TEST_F(HttpTest, FormatRequestParamsTest) {
     EXPECT_EQ(helper::FormatRequestParams(""), "");
     EXPECT_EQ(helper::FormatRequestParams("a=1&b=x%20y&empty="), "a=1&b=x y&empty=");
@@ -1459,6 +1423,143 @@ TEST_F(HttpTest, FormatRequestParamsTest) {
     ASSERT_GE(capped.size(), 4u);
     EXPECT_EQ(capped.substr(capped.size() - 4), "&...") << capped;
     EXPECT_EQ(capped.rfind("k0=vvvvvvvvvv", 0), 0u) << capped;
+}
+
+// ========== Proxy Header Pipeline ==========
+
+namespace {
+
+// Runs the whole proxy pipeline over one request and hands back the proxy
+// annotations it recorded, in order.
+std::vector<LongIntIntByteByteStringValue> recordProxyHeaders(
+        std::map<std::string, std::string> headers,
+        const std::vector<std::string>& user_header_names = {}) {
+    const MockHeaderReader reader(headers);
+    PinpointAnnotation annotation;
+    HttpTracerUtil::setProxyHeader(reader, &annotation, user_header_names);
+
+    std::vector<LongIntIntByteByteStringValue> recorded;
+    for (const auto& [key, data] : annotation.getAnnotations()) {
+        if (key == ANNOTATION_HTTP_PROXY_HEADER) {
+            recorded.push_back(std::get<LongIntIntByteByteStringValue>(data.data));
+        }
+    }
+    return recorded;
+}
+
+}  // namespace
+
+TEST_F(HttpTest, ProxyParsersRunIndependentlyTest) {
+    const auto recorded = recordProxyHeaders({
+        {"Pinpoint-ProxyApache", "t=1000000000000 D=100 i=5 b=95"},
+        {"Pinpoint-ProxyNginx", "t=2000000.000 D=0.200"},
+        {"Pinpoint-ProxyApp", "t=3000000000000 app=OtherApp"},
+        {"Pinpoint-ProxyUser", "t=4000000000000 D=300"},
+    }, {"Pinpoint-ProxyUser"});
+
+    std::vector<int32_t> codes;
+    codes.reserve(recorded.size());
+    for (const auto& value : recorded) {
+        codes.push_back(value.intValue1);
+    }
+    std::sort(codes.begin(), codes.end());
+    EXPECT_EQ(codes, (std::vector<int32_t>{1, 2, 3, 4}))
+        << "app=1, nginx=2, apache=3, user=4 - one annotation per valid header";
+}
+
+TEST_F(HttpTest, ProxyHeaderNeedsAPositiveReceivedTimeTest) {
+    struct Case {
+        const char* header;
+        const char* value;
+    };
+    const Case cases[] = {
+        {"Pinpoint-ProxyApache", "D=1500 i=10 b=90"},  // no t= at all
+        {"Pinpoint-ProxyNginx", "t=0.000 D=0.123"},    // t= present, not positive
+        {"Pinpoint-ProxyApp", "t=abc app=MyApp"},      // t= present, unparseable
+        {"Pinpoint-ProxyUser", "t=0000000000000 D=1500"},
+    };
+
+    for (const auto& c : cases) {
+        const auto recorded = recordProxyHeaders({{c.header, c.value}}, {"Pinpoint-ProxyUser"});
+        EXPECT_TRUE(recorded.empty())
+            << c.header << ": '" << c.value << "' must record no annotation";
+    }
+}
+
+TEST_F(HttpTest, ProxyNginxTimestampsAreExactThreeDecimalsTest) {
+    const auto recorded = recordProxyHeaders(
+        {{"Pinpoint-ProxyNginx", "t=1504230492.763 D=0.123"}});
+    ASSERT_EQ(recorded.size(), 1u);
+    EXPECT_EQ(recorded[0].longValue, 1504230492763) << "sec.mmm recorded as milliseconds";
+    EXPECT_EQ(recorded[0].intValue2, 123000) << "0.123s is exactly 123000us, not 122999";
+
+    // Anything but sec.mmm records no duration rather than a guess - the
+    // plain microsecond integer apache sends included, which read as seconds
+    // would inflate the duration a millionfold.
+    for (const char* d_val : {"0.1", "0.12", "0.1234", "123", "-0.123"}) {
+        const auto other = recordProxyHeaders(
+            {{"Pinpoint-ProxyNginx", std::string("t=1504230492.763 D=") + d_val}});
+        ASSERT_EQ(other.size(), 1u) << d_val << " must not discard the header";
+        EXPECT_EQ(other[0].intValue2, -1) << "D=" << d_val << " is not sec.mmm: unset (-1)";
+    }
+
+    // The same format rule on `t=`, where failing it drops the header.
+    for (const char* t_val : {"1504230492.76", "1504230492", "1504230492.7634"}) {
+        EXPECT_TRUE(recordProxyHeaders(
+                        {{"Pinpoint-ProxyNginx", std::string("t=") + t_val + " D=0.123"}})
+                        .empty())
+            << "t=" << t_val << " is not sec.mmm";
+    }
+}
+
+TEST_F(HttpTest, ProxyUserHeaderInfersItsWriterTest) {
+    struct Case {
+        const char* value;
+        int64_t received_time;
+        int32_t duration;
+    };
+    for (const Case c : {
+             Case{"t=1504230492763123 D=1500", 1504230492763LL, 1500},
+             Case{"t=1504230492.763 D=0.123", 1504230492763LL, 123000},
+             Case{"t=1504230492763 D=42", 1504230492763LL, 42},
+             Case{"t=1504230492763 D=-5", 1504230492763LL, -1},
+             Case{"t=1504230492763 D=-0.123", 1504230492763LL, -1},
+             Case{"t=1504230492763 D=3000000.000", 1504230492763LL, -1},
+             Case{"t=1504230492763", 1504230492763LL, -1},
+         }) {
+        const auto recorded = recordProxyHeaders({{"X-Proxy-Time", c.value}}, {"X-Proxy-Time"});
+        ASSERT_EQ(recorded.size(), 1u) << c.value;
+        EXPECT_EQ(recorded[0].longValue, c.received_time) << c.value;
+        EXPECT_EQ(recorded[0].intValue2, c.duration) << c.value;
+        EXPECT_EQ(recorded[0].stringValue, "X-Proxy-Time") << "the header name is the app";
+    }
+
+    for (const char* bad : {"150423049276", "15042304.9276", "1504230492.76", "abc"}) {
+        EXPECT_TRUE(recordProxyHeaders({{"X-Proxy-Time", std::string("t=") + bad}}, {"X-Proxy-Time"}).empty())
+            << "t=" << bad << " fits no proxy's format";
+    }
+}
+
+TEST_F(HttpTest, ProxyDurationAndPercentAreGatedTest) {
+    auto nginx = recordProxyHeaders({{"Pinpoint-ProxyNginx", "t=1504230492.763 D=-0.123"}});
+    ASSERT_EQ(nginx.size(), 1u);
+    EXPECT_EQ(nginx[0].intValue2, -1) << "negative nginx D= is unset";
+
+    nginx = recordProxyHeaders({{"Pinpoint-ProxyNginx", "t=1504230492.763 D=3000000.000"}});
+    ASSERT_EQ(nginx.size(), 1u);
+    EXPECT_EQ(nginx[0].intValue2, -1) << "nginx D= past int32/1000 is unset, not wrapped";
+
+    auto apache = recordProxyHeaders({{"Pinpoint-ProxyApache", "t=1504230492763123 D=-7 i=101 b=-1"}});
+    ASSERT_EQ(apache.size(), 1u);
+    EXPECT_EQ(apache[0].intValue2, -1) << "negative apache D= is unset";
+    EXPECT_EQ(apache[0].byteValue1, -1) << "i= above 100 is unset";
+    EXPECT_EQ(apache[0].byteValue2, -1) << "b= below 0 is unset";
+
+    apache = recordProxyHeaders({{"Pinpoint-ProxyApache", "t=1504230492763123 D=7 i=0 b=100"}});
+    ASSERT_EQ(apache.size(), 1u);
+    EXPECT_EQ(apache[0].intValue2, 7);
+    EXPECT_EQ(apache[0].byteValue1, 0);
+    EXPECT_EQ(apache[0].byteValue2, 100);
 }
 
 } // namespace pinpoint

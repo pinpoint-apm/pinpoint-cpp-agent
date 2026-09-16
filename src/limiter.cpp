@@ -41,11 +41,10 @@ namespace pinpoint {
     RateLimiter::RateLimiter(const uint64_t tps)
         : interval_(tps == 0 ? 0 : kNanosPerSecond / clamped_tps(tps)),
           burst_(interval_ * clamped_tps(tps)),
-          // An empty bucket whose fill starts now, which is where Guava's
-          // setRate() leaves one. Baselining here rather than on the first
-          // allow() is what lets idle time before that first call count: an
-          // agent quiet for a second owes its first caller a second of tokens,
-          // and treating "never used" as "no time has passed" handed out one.
+          // An empty bucket whose fill starts now. Baselining here rather than
+          // on the first allow() is what lets idle time before that first call
+          // count: an agent quiet for a second owes its first caller a second
+          // of tokens, not a single one.
           next_(steady_now_nanos()) {
     }
 

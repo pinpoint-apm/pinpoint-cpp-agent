@@ -607,4 +607,29 @@ TEST(UtilityTest, IsValidUtf8RejectsSequenceBrokenAfterItsSecondByte) {
     EXPECT_FALSE(isValidUtf8("\xf0\x9f\x98\x41")) << "4-byte sequence broken at byte 4";
 }
 
+// ========== Abbreviation Format ==========
+
+TEST(UtilityTest, AbbreviateStringMarkerCarriesTheOriginalLength) {
+    EXPECT_EQ(abbreviateString("short", 10), "short") << "a value within the limit is untouched";
+    EXPECT_EQ(abbreviateString("0123456789", 10), "0123456789") << "exactly at the limit is untouched";
+    EXPECT_EQ(abbreviateString("0123456789A", 10), "0123456789...(11)")
+        << "the marker carries the original length";
+}
+
+TEST(UtilityTest, AbbreviateStringCutsOnAUtf8Boundary) {
+    // U+AC00 is three bytes; a limit of 4 lands inside the second character.
+    const std::string source = "\xEA\xB0\x80\xEA\xB0\x80\xEA\xB0\x80";
+    ASSERT_EQ(source.size(), 9u);
+
+    const auto abbreviated = abbreviateString(source, 4);
+    EXPECT_EQ(abbreviated, "\xEA\xB0\x80...(9)");
+    EXPECT_TRUE(isValidUtf8(abbreviated)) << "the result must stay valid UTF-8 for protobuf";
+}
+
+// The two caps the agent abbreviates against, both collector-facing.
+TEST(UtilityTest, MessageLengthCaps) {
+    EXPECT_EQ(kMaxErrorStringLength, 256u) << "PException.exceptionMessage / span error string";
+    EXPECT_EQ(kMaxSqlMetaLength, 64u * 1024u) << "PSqlMetaData.sql / PSqlUidMetaData.sql";
+}
+
 } // namespace pinpoint

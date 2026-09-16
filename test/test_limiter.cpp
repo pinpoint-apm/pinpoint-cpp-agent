@@ -44,10 +44,9 @@ private:
 
 class RateLimiterTest : public ::testing::Test {};
 
-// Called at once, a fresh bucket is empty: the first call goes through and the
-// next one has to wait a full token interval, exactly like a freshly created
-// Guava RateLimiter (which also lets the first caller borrow against the
-// future). What it accumulates while nobody calls it is the test below.
+// Called at once, a fresh bucket is empty: the first call goes through (it
+// borrows against the future) and the next has to wait a full token interval.
+// What the bucket accumulates while nobody calls it is the test below.
 TEST_F(RateLimiterTest, FirstCallPassesThenPacesAtTps) {
     FakeClockLimiter limiter(10); // one token per 100ms
 
@@ -74,9 +73,9 @@ TEST_F(RateLimiterTest, IdleBeforeTheFirstCallStillFillsTheBucket) {
         }
     }
 
-    // tps stored tokens, plus the one Guava lets through when the bucket is
-    // empty but the clock has reached the next token — the same +1 the
-    // long-idle test below documents.
+    // tps stored tokens, plus the one call let through when the bucket is empty
+    // but the clock has reached the next token — the same +1 the long-idle test
+    // below documents.
     EXPECT_EQ(allowed, 11) << "an idle second before the first call is still a second of tokens";
     EXPECT_FALSE(limiter.allow());
 }
@@ -150,8 +149,8 @@ TEST_F(RateLimiterTest, IdleBurstIsCappedAtTps) {
 }
 
 // Idling for longer does not accumulate: the bucket stops at tps stored tokens,
-// plus the one call Guava lets through when the bucket is empty but the clock
-// has caught up with the next token.
+// plus the one call let through when the bucket is empty but the clock has
+// caught up with the next token.
 TEST_F(RateLimiterTest, LongIdleDoesNotAccumulate) {
     FakeClockLimiter limiter(3);
 
@@ -276,6 +275,54 @@ TEST_F(RateLimiterTest, RepeatedDenyAfterExhaustionTest) {
     for (int i = 0; i < 100; ++i) {
         EXPECT_FALSE(limiter.allow()) << "Request " << i << " after exhaustion should be denied";
     }
+}
+
+namespace {
+
+int countAllowed(RateLimiter& limiter, const int calls) {
+    int allowed = 0;
+    for (int i = 0; i < calls; ++i) {
+        if (limiter.allow()) {
+            ++allowed;
+        }
+    }
+    return allowed;
+}
+
+}  // namespace
+
+// The three states a fresh bucket can be in, in one place: called at once,
+// after one idle second, and after ten.
+TEST_F(RateLimiterTest, InitialStateAcrossIdlePeriods) {
+    constexpr uint64_t kTps = 10;  // one token per 100ms
+
+    // Called at once, the bucket is empty: the first call passes (it borrows
+    // against the future) and the next has to wait a whole token interval.
+    FakeClockLimiter immediate(kTps);
+    EXPECT_TRUE(immediate.allow()) << "the first call passes";
+    EXPECT_FALSE(immediate.allow()) << "and exactly one: no token is due yet";
+    immediate.advance_ms(50);
+    EXPECT_FALSE(immediate.allow()) << "half an interval is not a token";
+    immediate.advance_ms(50);
+    EXPECT_TRUE(immediate.allow()) << "one interval elapsed, one token due";
+
+    // The refill clock starts at construction, not at the first call: an agent
+    // that sits idle for a second owes its first caller a second of tokens.
+    // Were the clock started lazily this would admit 1, the empty-bucket case
+    // above. The +1 on top of the stored second is the token that comes due at
+    // the instant of the call, the one LongIdleDoesNotAccumulate documents.
+    FakeClockLimiter idle_one_second(kTps);
+    idle_one_second.advance_ms(1000);
+    const int after_one_second = countAllowed(idle_one_second, 5 * static_cast<int>(kTps));
+    EXPECT_EQ(after_one_second, static_cast<int>(kTps) + 1)
+        << "one second of stored permits, plus the one due at the baseline";
+
+    // Capacity is one second of permits: idling for ten releases no more than
+    // idling for one.
+    FakeClockLimiter idle_ten_seconds(kTps);
+    idle_ten_seconds.advance_ms(10 * 1000);
+    EXPECT_EQ(countAllowed(idle_ten_seconds, 5 * static_cast<int>(kTps)), after_one_second)
+        << "ten idle seconds are worth no more than one: the bucket caps at a second";
 }
 
 } // namespace pinpoint

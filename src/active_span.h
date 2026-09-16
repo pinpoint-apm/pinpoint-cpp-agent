@@ -33,15 +33,12 @@ namespace pinpoint {
      * Embedded in SpanImpl and UnsampledSpan, so registering with AgentStats
      * (addActiveSpan/dropActiveSpan) links/unlinks this node in a shard's
      * doubly-linked list instead of inserting into a map — no heap allocation
-     * on the per-request hot path. The agent is a guest in the host's process
-     * and cannot choose its allocator, so a malloc/free pair per request has
-     * unpredictable cost across hosts.
+     * on the per-request hot path, whose cost the agent cannot control as a
+     * guest in the host's process.
      *
      * Lifetime contract: a linked node must never outlive its owning span, or
      * it leaves dangling pointers in the shard list. Owners enforce this with a
-     * destructor backstop calling dropActiveSpan only while still linked — one
-     * atomic load after a normal EndSpan, and it avoids touching a non-owning
-     * AgentService once the node no longer needs the registry.
+     * destructor backstop calling dropActiveSpan only while still linked.
      */
     struct ActiveSpanNode {
         // List linkage; guarded by shard_->mutex_ while linked.
@@ -69,10 +66,9 @@ namespace pinpoint {
     };
 
     // Own cache line per shard, like AgentStats::ResponseTimeShard: every
-    // request touches a shard twice — link at span start, unlink at EndSpan —
-    // and the shard is picked by the random span id, so without the padding
-    // two threads holding *different* shard mutexes would still fight over
-    // one straddled line, giving back half of what the sharding bought.
+    // request touches a shard twice (link at span start, unlink at EndSpan),
+    // so without the padding two threads holding *different* shard mutexes
+    // would still fight over one straddled line.
     struct alignas(64) ActiveSpanShard {
         std::mutex mutex_;
         ActiveSpanNode* head_{nullptr};
@@ -91,12 +87,12 @@ namespace pinpoint {
      * production code. AgentStats owns one instance and delegates
      * addActiveSpan/dropActiveSpan/collectActiveRequests to it.
      *
-     * There is deliberately no size cap. Here the nodes are owned by the spans and only
-     * linked into the shard lists: the registry unlinking one on its own
-     * would race the owner's drop and break the linked_ handshake (add's
-     * release / drop's acquire). Refusing an add is not an option either —
-     * drop would then unlink a node that was never linked. The registry only
-     * counts (see size()); the owner (AgentStats) turns a count above
+     * There is deliberately no size cap: the nodes are owned by the spans and
+     * only linked into the shard lists, so the registry unlinking one on its
+     * own would race the owner's drop and break the linked_ handshake (add's
+     * release / drop's acquire), and refusing an add would leave drop
+     * unlinking a node that was never linked. The registry only counts (see
+     * size()); the owner (AgentStats) turns a count above
      * kActiveSpanWarnThreshold into a rate-limited warning.
      */
     class ActiveSpanRegistry {
@@ -107,11 +103,9 @@ namespace pinpoint {
          * @brief Links @p node into the shard picked by @p span_id.
          *
          * @return The number of nodes in that shard after linking, or 0 when
-         *         the call was a no-op. The caller can use it as a cheap
-         *         overflow trigger: when every shard holds at most T/kShardCount
-         *         nodes the registry holds at most T, so a total above T
-         *         implies some shard's count exceeds T/kShardCount — only then
-         *         is the 64-load size() worth computing.
+         *         the call was a no-op. A cheap overflow trigger: a registry
+         *         total above T implies some shard exceeds T/kShardCount, so
+         *         only then is the 64-load size() worth computing.
          */
         size_t add(ActiveSpanNode& node, int64_t span_id, int64_t start_time) {
             // A span registers once. Re-linking a node would corrupt its shard,

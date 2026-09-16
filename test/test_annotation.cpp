@@ -167,7 +167,6 @@ TEST_F(AnnotationTest, AppendStringStringTest) {
 
 // ========== AppendIntStringString Tests ==========
 
-// Test AppendIntStringString with normal values
 TEST_F(AnnotationTest, AppendIntStringStringNormalTest) {
     int32_t key = 500;
     int intValue = 42;
@@ -187,7 +186,6 @@ TEST_F(AnnotationTest, AppendIntStringStringNormalTest) {
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(pair.second.data).stringValue2, string2) << "Second string should match";
 }
 
-// Test AppendIntStringString with negative int and empty strings
 TEST_F(AnnotationTest, AppendIntStringStringEdgeCaseTest) {
     int32_t key = 501;
     int intValue = -999;
@@ -209,7 +207,6 @@ TEST_F(AnnotationTest, AppendIntStringStringEdgeCaseTest) {
 
 // ========== AppendLongIntIntByteByteString Tests ==========
 
-// Test AppendLongIntIntByteByteString with normal values
 TEST_F(AnnotationTest, AppendLongIntIntByteByteStringNormalTest) {
     int32_t key = 600;
     int64_t longValue = 1234567890123456789LL;
@@ -237,7 +234,6 @@ TEST_F(AnnotationTest, AppendLongIntIntByteByteStringNormalTest) {
     EXPECT_EQ(complexData.stringValue, stringValue) << "String value should match";
 }
 
-// Test AppendLongIntIntByteByteString with extreme values
 TEST_F(AnnotationTest, AppendLongIntIntByteByteStringExtremeTest) {
     int32_t key = 601;
     int64_t longValue = INT64_MIN;
@@ -315,7 +311,6 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringTest) {
 
 // ========== Multiple Annotations Tests ==========
 
-// Test adding multiple annotations of different types
 TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     annotation->AppendInt(1, 42);
     annotation->AppendData(2, AnnotationData("Test String"));
@@ -330,25 +325,21 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     
     auto it = annotations.begin();
     
-    // Check first annotation (Int)
     EXPECT_EQ(it->first, 1) << "First annotation key should match";
     EXPECT_EQ(it->second.type(), ANNOTATION_TYPE_INT) << "First annotation should be int type";
     EXPECT_EQ(std::get<int32_t>(it->second.data), 42) << "First annotation value should match";
     
-    // Check second annotation (String)
     ++it;
     EXPECT_EQ(it->first, 2) << "Second annotation key should match";
     EXPECT_EQ(it->second.type(), ANNOTATION_TYPE_STRING) << "Second annotation should be string type";
     EXPECT_EQ(std::get<std::string>(it->second.data), "Test String") << "Second annotation value should match";
     
-    // Check third annotation (StringString)
     ++it;
     EXPECT_EQ(it->first, 3) << "Third annotation key should match";
     EXPECT_EQ(it->second.type(), ANNOTATION_TYPE_STRING_STRING) << "Third annotation should be string-string type";
     EXPECT_EQ(std::get<StringPair>(it->second.data).first, "Key") << "Third annotation first string should match";
     EXPECT_EQ(std::get<StringPair>(it->second.data).second, "Value") << "Third annotation second string should match";
     
-    // Check fourth annotation (IntStringString)
     ++it;
     EXPECT_EQ(it->first, 4) << "Fourth annotation key should match";
     EXPECT_EQ(it->second.type(), ANNOTATION_TYPE_INT_STRING_STRING) << "Fourth annotation should be int-string-string type";
@@ -356,7 +347,6 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(it->second.data).stringValue1View(), "Method") << "Fourth annotation first string should match";
     EXPECT_EQ(std::get<pinpoint::IntStringStringValue>(it->second.data).stringValue2, "POST") << "Fourth annotation second string should match";
     
-    // Check fifth annotation (Complex)
     ++it;
     EXPECT_EQ(it->first, 5) << "Fifth annotation key should match";
     EXPECT_EQ(it->second.type(), ANNOTATION_TYPE_LONG_INT_INT_BYTE_BYTE_STRING) << "Fifth annotation should be complex type";
@@ -368,7 +358,6 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     EXPECT_EQ(complexData.byteValue2, 4) << "Fifth annotation byte2 should match";
     EXPECT_EQ(complexData.stringValue, "Complex") << "Fifth annotation string should match";
     
-    // Check sixth annotation (BytesStringString)
     ++it;
     EXPECT_EQ(it->first, 6) << "Sixth annotation key should match";
     EXPECT_EQ(it->second.type(), ANNOTATION_TYPE_BYTES_STRING_STRING) << "Sixth annotation should be bytes-string-string type";
@@ -379,7 +368,6 @@ TEST_F(AnnotationTest, MultipleAnnotationTypesTest) {
     EXPECT_EQ(bytesData.stringValue2, "Data") << "Sixth annotation second string should match";
 }
 
-// Test insertion order preservation
 TEST_F(AnnotationTest, InsertionOrderTest) {
     // Add annotations in specific order
     annotation->AppendInt(100, 1);
@@ -467,7 +455,6 @@ TEST_F(AnnotationTest, EmptyAnnotationListTest) {
     EXPECT_EQ(annotations.size(), 0) << "Size should be 0";
 }
 
-// Test negative key values
 TEST_F(AnnotationTest, NegativeKeyTest) {
     annotation->AppendInt(-1, 42);
     annotation->AppendData(-100, AnnotationData("negative key"));
@@ -489,7 +476,6 @@ TEST_F(AnnotationTest, NegativeKeyTest) {
     EXPECT_EQ(std::get<int64_t>(it->second.data), 999LL);
 }
 
-// Test zero key value
 TEST_F(AnnotationTest, ZeroKeyTest) {
     annotation->AppendInt(0, 42);
 
@@ -507,7 +493,6 @@ TEST_F(AnnotationTest, AnnotationDataTypeComesFromVariantValueTest) {
     EXPECT_EQ(std::get<int32_t>(value.data), 42);
 }
 
-// Test string_view from temporary string ensures data is copied
 TEST_F(AnnotationTest, StringViewFromTemporaryTest) {
     int32_t key = 310;
     {
@@ -522,7 +507,6 @@ TEST_F(AnnotationTest, StringViewFromTemporaryTest) {
         << "Data should persist after source string is destroyed";
 }
 
-// Test StringString with string_view from temporaries
 TEST_F(AnnotationTest, StringStringFromTemporaryTest) {
     int32_t key = 410;
     {
@@ -538,7 +522,6 @@ TEST_F(AnnotationTest, StringStringFromTemporaryTest) {
     EXPECT_EQ(ssv.second, "temp value");
 }
 
-// Test large number of annotations
 TEST_F(AnnotationTest, LargeAnnotationCountTest) {
     const int count = 1000;
     for (int i = 0; i < count; ++i) {
@@ -548,7 +531,6 @@ TEST_F(AnnotationTest, LargeAnnotationCountTest) {
     auto& annotations = annotation->getAnnotations();
     EXPECT_EQ(annotations.size(), static_cast<size_t>(count)) << "Should have 1000 annotations";
 
-    // Verify first, middle, and last
     auto it = annotations.begin();
     EXPECT_EQ(it->first, 0);
     EXPECT_EQ(std::get<int32_t>(it->second.data), 0);
@@ -562,7 +544,6 @@ TEST_F(AnnotationTest, LargeAnnotationCountTest) {
     EXPECT_EQ(std::get<int32_t>(it->second.data), 9990);
 }
 
-// Test UID data integrity when passed by value
 TEST_F(AnnotationTest, AppendSqlUidStringStringMoveIntegrityTest) {
     int32_t key = 710;
     SqlUid original = {0x01, 0x02, 0x03, 0x04, 0x05};
@@ -579,7 +560,6 @@ TEST_F(AnnotationTest, AppendSqlUidStringStringMoveIntegrityTest) {
     EXPECT_EQ(bytesData.stringValue2, "s2");
 }
 
-// Test AppendIntStringString with extreme int values
 TEST_F(AnnotationTest, AppendIntStringStringExtremeIntTest) {
     annotation->AppendData(510, AnnotationData(INT32_MAX, std::make_shared<const std::string>("max"), "value"));
     annotation->AppendData(511, AnnotationData(INT32_MIN, std::make_shared<const std::string>("min"), "value"));
@@ -634,6 +614,19 @@ TEST_F(AnnotationTest, SealedAnnotationIgnoresEveryLateAppend) {
     auto& annotations = annotation->getAnnotations();
     ASSERT_EQ(annotations.size(), 1u) << "appends after seal() must be ignored";
     EXPECT_EQ(annotations.front().first, 100);
+}
+
+// The annotation keys the agent emits. The collector and the web tier read
+// them by number, so they must never be renumbered.
+TEST(AnnotationKeyTest, WireValues) {
+    EXPECT_EQ(ANNOTATION_API, 12);
+    EXPECT_EQ(ANNOTATION_SQL_ID, 20);
+    EXPECT_EQ(ANNOTATION_SQL_UID, 25);
+    EXPECT_EQ(ANNOTATION_HTTP_URL, 40);
+    EXPECT_EQ(ANNOTATION_HTTP_PARAM, 41);
+    EXPECT_EQ(ANNOTATION_HTTP_STATUS_CODE, 46);
+    EXPECT_EQ(ANNOTATION_HTTP_PROXY_HEADER, 300);
+    EXPECT_EQ(ANNOTATION_EXCEPTION_ID, -52);
 }
 
 } // namespace pinpoint

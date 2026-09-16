@@ -146,12 +146,12 @@ namespace pinpoint {
         /// is not shared_ptr-owned (stack-constructed test instances).
         std::shared_ptr<AgentService> selfRef() noexcept override {
             // Every sampled span takes one of these (SpanImpl::agent_ref_), so
-            // the cost is paid per request on the agent's single control
-            // block. lock() on the stored weak_ptr is one CAS on the strong
-            // count; weak_from_this().lock() would additionally copy the
-            // weak_ptr and destroy the copy — two more RMWs on the same
-            // contended line. The fallback covers shared agents built without
-            // createShared() (tests), whose self_weak_ is never set.
+            // the cost is paid per request on the agent's single control block.
+            // lock() on the stored weak_ptr is one CAS on the strong count;
+            // weak_from_this().lock() would additionally copy the weak_ptr and
+            // destroy the copy — two more RMWs on the same contended line. The
+            // fallback covers shared agents built without createShared()
+            // (tests), whose self_weak_ is never set.
             if (auto self = self_weak_.lock()) {
                 return self;
             }
@@ -213,10 +213,9 @@ namespace pinpoint {
 
         // Identity fields snapshotted once at construction.
         // Config::retainNonReloadableFrom() keeps them fixed across reloads, so
-        // they never change while this agent lives and are served
-        // directly — without a runtime snapshot lookup, shared_ptr copy, or string
-        // copy — on the per-request hot path (e.g. InjectContext, SpanData ctor,
-        // generateTraceId).
+        // they never change while this agent lives and are served directly — no
+        // runtime snapshot lookup, shared_ptr copy or string copy — on the
+        // per-request hot path (InjectContext, SpanData ctor, generateTraceId).
         std::string app_name_;
         int32_t app_type_{};
         // Held as a shared string so generateTraceId() can seed every new

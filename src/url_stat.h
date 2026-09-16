@@ -44,12 +44,11 @@ namespace pinpoint {
     constexpr int URL_STATS_BUCKET_VERSION   = 0;
 
     // Production tick width (the (url, tick) bucket the server aggregates by).
-    // UrlStats accepts an
-    // override so tests can drive the bucketing in seconds instead of 30s.
+    // UrlStats accepts an override so tests can drive the bucketing in seconds.
     //
     // There is no separate send interval constant: the send worker follows
-    // Stat.BatchInterval (config.stat.collect_interval), and a completed tick wakes the
-    // worker immediately regardless of that interval. See the constructor.
+    // Stat.BatchInterval (config.stat.collect_interval), and a completed tick
+    // wakes the worker immediately regardless of that interval.
     constexpr auto URL_STAT_TICK_INTERVAL = std::chrono::seconds(30);
 
     /// @brief Fixed-interval clock used to bucketize URL statistics.
@@ -185,11 +184,10 @@ namespace pinpoint {
         static constexpr size_t maxCompletedSnapshots() noexcept { return kMaxCompletedSnapshots; }
         /// @brief @p tick_interval (bucket width) defaults to the production
         ///        value. @p send_interval is the send worker's timed wait: the
-        ///        agent passes Stat.BatchInterval, and the default is that
-        ///        key's default, so URL stats leave on the agent stat cadence.
-        ///        It is a ceiling, not a period — a completed tick
-        ///        wakes the worker at once — so what it bounds is the close of
-        ///        the last tick after traffic stops. Tests inject shorter ones.
+        ///        agent passes Stat.BatchInterval, so URL stats leave on the
+        ///        agent stat cadence. It is a ceiling, not a period — a
+        ///        completed tick wakes the worker at once — so what it bounds is
+        ///        the close of the last tick after traffic stops.
         explicit UrlStats(AgentService* agent,
                           std::chrono::seconds tick_interval = URL_STAT_TICK_INTERVAL,
                           std::chrono::milliseconds send_interval =
@@ -229,12 +227,11 @@ namespace pinpoint {
         /// into a single snapshot. Empty when nothing was cut since the last
         /// call — the caller must then send no message at all.
         /// @param include_in_progress also takes the tick still being
-        /// collected, splitting it across two messages. Exactly one caller
-        /// in production passes true — GrpcStats::flush_url_stats_on_shutdown(),
-        /// the stats worker's last act before it closes its stream — because that is
-        /// the one point where nothing will arrive later to cut the tick, so
-        /// it is split-or-lose rather than split-or-wait. The steady-state
-        /// send (GrpcStats::next_write) always passes false.
+        /// collected, splitting it across two messages. Only
+        /// GrpcStats::flush_url_stats_on_shutdown() passes true: it is the one
+        /// point where nothing will arrive later to cut the tick, so it is
+        /// split-or-lose rather than split-or-wait. The steady-state send
+        /// (GrpcStats::next_write) always passes false.
         std::unique_ptr<UrlStatSnapshot> takeSnapshot(bool include_in_progress = false);
 
     private:
@@ -267,14 +264,12 @@ namespace pinpoint {
         /// @brief One supervised run of the periodic send loop.
         void runSendUrlStatsWorker();
 
-        // Non-owning. The agent joins the URL-stat workers before its own
-        // destruction, and this object can now outlive the agent (shared
-        // with every AgentRuntime snapshot) — but the only method that runs
-        // in that afterlife is the config-taking enqueueUrlStats overload,
-        // which never reads agent_ (and drops on accepting_ anyway). The
-        // config-loading overload and the workers, which do read it, run
-        // only while the agent is alive. A shared_ptr here would form a
-        // cycle and leak the agent.
+        // Non-owning. This object outlives the agent (it is shared with every
+        // AgentRuntime snapshot), but the only method that runs in that
+        // afterlife is the config-taking enqueueUrlStats overload, which never
+        // reads agent_ (and drops on accepting_ anyway). The config-loading
+        // overload and the workers, which do read it, run only while the agent
+        // is alive. A shared_ptr here would form a cycle and leak the agent.
         AgentService* agent_{};
 
         // Each request thread enqueues into one bounded shard. The worker
@@ -292,11 +287,10 @@ namespace pinpoint {
         std::condition_variable add_cond_var_{};
         // Flipped once by stopAddUrlStatsWorker(); enqueueUrlStats drops
         // entries from then on. Spans that reach this sink through their
-        // runtime snapshot (UnsampledSpan) bypass the agent's enabled_ check
-        // in recordUrlStat, and the snapshot keeps this object alive past
-        // agent teardown — this flag preserves the old behavior of dropping
-        // post-shutdown entries instead of buffering them into queues no
-        // worker will ever drain.
+        // runtime snapshot (UnsampledSpan) bypass the agent's enabled_ check in
+        // recordUrlStat, and the snapshot keeps this object alive past agent
+        // teardown, so without this flag post-shutdown entries would pile up in
+        // queues no worker will ever drain.
         std::atomic<bool> accepting_{true};
         // Rate-limited overflow reporting (see QueueDropReporter). One per
         // drop cause: sharing a reporter would conflate the counts and let
@@ -310,8 +304,8 @@ namespace pinpoint {
         // snapshot_ collects the tick in progress; completed_ holds the ticks
         // already cut, oldest first, until a send drains them. Both are under
         // snapshot_mutex_. Keeping each tick separate is what makes
-        // url_stat.limit a per-tick capacity: a stalled stream no longer packs
-        // N ticks' keys into one limit-capped map.
+        // url_stat.limit a per-tick capacity, rather than one limit-capped map
+        // that a stalled stream packs N ticks' keys into.
         std::unique_ptr<UrlStatSnapshot> snapshot_;
         std::deque<std::unique_ptr<UrlStatSnapshot>> completed_{};
         std::mutex snapshot_mutex_{};

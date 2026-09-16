@@ -36,11 +36,10 @@
 namespace pinpoint {
 
     namespace {
-        // Numeric values are formatted into the caller's reused scratch
-        // buffer (fmt::memory_buffer keeps ~500 bytes inline, far above any
-        // int64/double rendering), replacing the previous fresh std::string
-        // per numeric argument — this runs per bind value per traced SQL
-        // statement when trace_bind_value is on.
+        // Numeric values are formatted into the caller's reused scratch buffer
+        // (fmt::memory_buffer keeps ~500 bytes inline, far above any
+        // int64/double rendering), so no allocation per bind value — this runs
+        // per bind value per traced SQL statement when trace_bind_value is on.
         std::string_view sqlBindValueView(
             const SqlBindValue& value,
             fmt::memory_buffer& scratch) {
@@ -78,15 +77,14 @@ namespace pinpoint {
             }
 
             const auto max_size = static_cast<std::size_t>(max_bind_args_size);
-            // Values are joined with ", "
-            // and a dropped tail is reported as "...(<number of bind values>)"
-            // — the count, not the byte limit, so the reader can tell how many
-            // values the statement had. A value abbreviated below carries the
-            // same "...(N)" shape but a different N: there it is that value's
-            // own original length (StringUtils.abbreviate), not a count of
-            // values. This string is display-only (the SQL_BINDVALUE
-            // annotation); the placeholders the web substitutes come from the
-            // normalizer's parameters, which keep their own separator.
+            // Values are joined with ", " and a dropped tail is reported as
+            // "...(<number of bind values>)" — the count, not the byte limit, so
+            // the reader can tell how many values the statement had. A value
+            // abbreviated below carries the same "...(N)" shape but a different
+            // N: there it is that value's own original length. This string is
+            // display-only (the SQL_BINDVALUE annotation); the placeholders the
+            // web substitutes come from the normalizer's parameters, which keep
+            // their own separator.
             constexpr std::string_view kSeparator = ", ";
             // Room for the "...(<bind arg count>)" marker: 5 punctuation
             // chars plus at most 20 digits of a size_t.
@@ -117,9 +115,9 @@ namespace pinpoint {
                 }
                 if (arg.size() > max_size - joined_bind_args.size()) {
                     // Keep the head of a value that outruns the budget instead
-                    // of dropping it, so a bind larger than the whole budget — a JSON blob, a
-                    // CLOB, base64 — still leaves something to debug with.
-                    // The next round sees the budget spent and closes the
+                    // of dropping it, so a bind larger than the whole budget (a
+                    // JSON blob, a CLOB, base64) still leaves something to debug
+                    // with. The next round sees the budget spent and closes the
                     // join with the count marker.
                     joined_bind_args.append(abbreviateString(arg, max_size));
                 } else {

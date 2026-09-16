@@ -1301,7 +1301,6 @@ TEST_F(GrpcMockTest, GrpcAgentMetaWorkerTest) {
     auto str_meta = std::make_unique<MetaData>(StringMeta(2, "test.string", STRING_META_ERROR));
     agent.enqueueMeta(std::move(str_meta));
 
-    // Test meta worker operations
     ScopedWorker meta_worker([&agent] { agent.stopMetaWorker(); },
                              [&agent] { agent.sendMetaWorker(); });
 

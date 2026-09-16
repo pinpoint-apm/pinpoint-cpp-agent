@@ -28,7 +28,6 @@ class CallStackTest : public ::testing::Test {};
 
 // ========== StackFrame Tests ==========
 
-// Test StackFrame structure creation
 TEST_F(CallStackTest, StackFrameCreationTest) {
     StackFrame frame;
     frame.module = "test_module";
@@ -44,7 +43,6 @@ TEST_F(CallStackTest, StackFrameCreationTest) {
 
 // ========== CallStack Tests ==========
 
-// Test CallStack creation with error message
 TEST_F(CallStackTest, CallStackCreationTest) {
     std::string error_msg = "Test error message";
     CallStack callstack(error_msg);
@@ -62,7 +60,6 @@ TEST_F(CallStackTest, CallStackEmptyErrorMessageTest) {
     EXPECT_GT(callstack.getErrorTime(), 0) << "Error time should be greater than 0 even with empty message";
 }
 
-// Test CallStack with special characters in error message
 TEST_F(CallStackTest, CallStackSpecialCharsErrorMessageTest) {
     std::string error_msg = "Error: !@#$%^&*()_+[]{}|;':\",./<>?\\`~\n\t\rException occurred";
     CallStack callstack(error_msg);
@@ -100,19 +97,16 @@ TEST_F(CallStackTest, CallStackPushMultipleFramesTest) {
     auto& stack = callstack.getStack();
     EXPECT_EQ(stack.size(), 3) << "Stack should have 3 frames";
     
-    // Check first frame
     EXPECT_EQ(stack[0].module, "module1") << "First frame module should match";
     EXPECT_EQ(stack[0].function, "function1") << "First frame function should match";
     EXPECT_EQ(stack[0].file, "file1.cpp") << "First frame file should match";
     EXPECT_EQ(stack[0].line, 10) << "First frame line should match";
     
-    // Check second frame
     EXPECT_EQ(stack[1].module, "module2") << "Second frame module should match";
     EXPECT_EQ(stack[1].function, "function2") << "Second frame function should match";
     EXPECT_EQ(stack[1].file, "file2.cpp") << "Second frame file should match";
     EXPECT_EQ(stack[1].line, 20) << "Second frame line should match";
     
-    // Check third frame
     EXPECT_EQ(stack[2].module, "module3") << "Third frame module should match";
     EXPECT_EQ(stack[2].function, "function3") << "Third frame function should match";
     EXPECT_EQ(stack[2].file, "file3.cpp") << "Third frame file should match";
@@ -132,7 +126,6 @@ TEST_F(CallStackTest, CallStackPushEmptyStringsTest) {
     EXPECT_EQ(stack[0].line, 0) << "Line number should be 0";
 }
 
-// Test CallStack push with negative line number
 TEST_F(CallStackTest, CallStackPushNegativeLineTest) {
     CallStack callstack("Test error");
     
@@ -207,7 +200,6 @@ TEST_F(CallStackTest, ExceptionSequentialIdTest) {
     EXPECT_EQ(id2, id1 + 1) << "Exception IDs should be sequential";
 }
 
-// Test Exception getCallStack returns valid CallStack
 TEST_F(CallStackTest, ExceptionGetCallStackTest) {
     auto callstack = std::make_unique<CallStack>("Test exception");
     std::string expected_error = "Test exception";
@@ -221,7 +213,6 @@ TEST_F(CallStackTest, ExceptionGetCallStackTest) {
     EXPECT_EQ(retrieved_callstack.getStack()[0].module, "module") << "Module should match";
 }
 
-// Test Exception getCallStack can be accessed multiple times
 TEST_F(CallStackTest, ExceptionGetCallStackMultipleAccessTest) {
     auto callstack = std::make_unique<CallStack>("Test exception");
     callstack->push("module", "function", "file.cpp", 10);
@@ -264,14 +255,13 @@ TEST_F(CallStackTest, ExceptionWithComplexCallStackTest) {
     const auto& retrieved_callstack = exception.getCallStack();
     EXPECT_EQ(retrieved_callstack.getStack().size(), 10) << "Stack should have 10 frames";
 
-    // Verify first and last frames
     const auto& stack = retrieved_callstack.getStack();
     EXPECT_EQ(stack[0].module, "module_0") << "First module should match";
     EXPECT_EQ(stack[9].module, "module_9") << "Last module should match";
     EXPECT_EQ(stack[9].line, 90) << "Last line number should match";
 }
 
-// Test multiple Exceptions concurrently (thread safety of ID generation)
+// Exception ids must stay unique when generated concurrently.
 TEST_F(CallStackTest, ExceptionConcurrentIdGenerationTest) {
     const int num_threads = 10;
     const int exceptions_per_thread = 100;
@@ -292,7 +282,6 @@ TEST_F(CallStackTest, ExceptionConcurrentIdGenerationTest) {
         thread.join();
     }
     
-    // Check all IDs are unique
     std::sort(all_ids.begin(), all_ids.end());
     auto last = std::unique(all_ids.begin(), all_ids.end());
     size_t unique_count = std::distance(all_ids.begin(), last);
@@ -303,14 +292,13 @@ TEST_F(CallStackTest, ExceptionConcurrentIdGenerationTest) {
 
 // ========== Edge Case Tests ==========
 
-// Test CallStack getModuleName on empty stack returns empty string
 TEST_F(CallStackTest, CallStackGetModuleNameEmptyStackTest) {
     CallStack callstack("Test error");
 
     EXPECT_TRUE(callstack.getModuleName().empty()) << "getModuleName on empty stack should return empty string";
 }
 
-// Test CallStack push with temporary string_view sources (lifetime safety)
+// push() must copy: the source string_views point at temporaries.
 TEST_F(CallStackTest, CallStackPushTemporaryStringViewTest) {
     CallStack callstack("Test error");
 
@@ -330,7 +318,6 @@ TEST_F(CallStackTest, CallStackPushTemporaryStringViewTest) {
     EXPECT_EQ(stack[0].line, 42);
 }
 
-// Test Exception takes ownership and nullifies the source unique_ptr
 TEST_F(CallStackTest, ExceptionMovesOwnershipTest) {
     auto callstack = std::make_unique<CallStack>("Ownership test");
     callstack->push("mod", "fn", "f.cpp", 1);
@@ -342,7 +329,6 @@ TEST_F(CallStackTest, ExceptionMovesOwnershipTest) {
     EXPECT_EQ(exception.getCallStack().getStack().size(), 1);
 }
 
-// Test CallStack getModuleName returns first frame, not last
 TEST_F(CallStackTest, CallStackGetModuleNameReturnsFirstFrameTest) {
     CallStack callstack("Test error");
 
@@ -354,7 +340,6 @@ TEST_F(CallStackTest, CallStackGetModuleNameReturnsFirstFrameTest) {
         << "getModuleName should return the first pushed frame's module";
 }
 
-// Test CallStack push with concatenated/computed string_view arguments
 TEST_F(CallStackTest, CallStackPushComputedStringsTest) {
     CallStack callstack("Test error");
 
@@ -379,7 +364,6 @@ TEST_F(CallStackTest, CallStackPushComputedStringsTest) {
 
 // ========== Integration Tests ==========
 
-// Test complete workflow: create CallStack, add frames, wrap in Exception
 TEST_F(CallStackTest, CompleteWorkflowTest) {
     // Create a CallStack
     auto callstack = std::make_unique<CallStack>("Workflow test exception");

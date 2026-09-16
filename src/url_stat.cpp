@@ -99,12 +99,11 @@ namespace pinpoint {
         // progress. Entry arrival drives this rather than a timer thread —
         // entries carry an end time of about "now", so the cut lands on the
         // boundary anyway, and a tick with no traffic has nothing to cut.
-        // A send no longer takes the tick in progress (see takeSnapshot),
-        // so this is the only thing that closes one under load. A trailing
-        // tick that never gets a successor is closed by closeElapsedTick()
-        // once its window is over; one that is still inside its window when
-        // the agent exits leaves on the shutdown flush,
-        // GrpcStats::flush_url_stats_on_shutdown().
+        // A send never takes the tick in progress (see takeSnapshot), so this
+        // is the only thing that closes one under load. A trailing tick that
+        // never gets a successor is closed by closeElapsedTick() once its
+        // window is over; one still inside its window when the agent exits
+        // leaves on GrpcStats::flush_url_stats_on_shutdown().
         //
         // Strictly-newer only: a straggler for an already-cut tick (drained
         // out of order across shards) must not cut again. It lands in the
@@ -162,9 +161,9 @@ namespace pinpoint {
     void UrlStats::closeElapsedTick() {
         // A tick whose window has elapsed is complete whether or not a newer
         // entry arrives to cut it. addLocked closes ticks on arrival, which
-        // covers an agent under
-        // load; an agent whose traffic stops would otherwise hold its last
-        // tick until traffic resumed, because nothing would ever cut it.
+        // covers an agent under load; an agent whose traffic stops would
+        // otherwise hold its last tick until traffic resumed, because nothing
+        // would ever cut it.
         //
         // Wall clock rather than the entries' own end times on purpose: the
         // question here is whether the window is over, and with no entry to
@@ -181,12 +180,10 @@ namespace pinpoint {
     std::unique_ptr<UrlStatSnapshot> UrlStats::takeSnapshot(const bool include_in_progress) {
         // Completed ticks only. The send timer and the tick boundary are not
         // aligned (30s each, but free-running), so taking the tick in progress
-        // would cut it wherever the timer happened to land and ship the two
-        // halves in consecutive messages. The server aggregates by (uri, tick)
-        // and would still add them up, but every derived value that is not a
-        // sum — the per-tick max, and the average implied by total/count — is
-        // computed per message, so a split tick reports a max and an average
-        // for each half instead of for the tick.
+        // would cut it wherever the timer landed and ship the two halves in
+        // consecutive messages. The server would still sum them, but every
+        // derived value that is not a sum — the per-tick max, the average
+        // implied by total/count — is computed per message.
         //
         // Allocated before touching snapshot_: if this throws under memory
         // pressure the member must stay intact — moving it out first would
@@ -197,9 +194,8 @@ namespace pinpoint {
 
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         // Every retained tick goes out in one message: PAgentUriStat carries a
-        // repeated eachUriStat and each entry stamps its own tick, so draining
-        // one snapshot per send token would have taken 4 send intervals to
-        // clear a backlog the stream is finally able to accept.
+        // repeated eachUriStat and each entry stamps its own tick, so a backlog
+        // clears in one send rather than one snapshot per send token.
         while (!completed_.empty()) {
             taken->merge(*completed_.front());
             completed_.pop_front();
@@ -266,12 +262,10 @@ namespace pinpoint {
         if (us == nullptr) {
             return true;
         }
-        // An entry whose end time was never set would key under tick 0
-        // (1970) and pin a bogus watermark. It is a producer bug, not a capacity
-        // event, so it returns true ("handled") rather than false, which the
-        // caller (UrlStats::addLocked) would count as a limit drop. Both
-        // producers today (SpanImpl::sendUrlStat, UnsampledSpan::EndSpan) set
-        // the end time; the log is here to expose a new one that does not.
+        // An entry whose end time was never set would key under tick 0 (1970)
+        // and pin a bogus watermark. That is a producer bug, not a capacity
+        // event, so this returns true ("handled") rather than the false
+        // UrlStats::addLocked would count as a limit drop.
         if (us->end_time_ == std::chrono::system_clock::time_point{}) {
             if (const auto skipped = epoch_end_time_reporter.acquire()) {
                 LOG_WARN("url stat entry skipped: end time is not set ({} in this interval, last url {})",
@@ -424,13 +418,10 @@ namespace pinpoint {
         constexpr size_t kEntriesPerSnapshotLock = 64;
 
         // Hoisted out of the loop, and swapped only into shards that hold
-        // something. The worker wakes on the empty→non-empty transition, so it
-        // runs about once per enqueue under load; building a deque per shard
-        // meant kQueueShardCount allocations per call — nearly all of them for
-        // shards that were empty — to move a handful of entries. Reuse is safe
-        // because the drain loop below always leaves batch empty, and keeping
-        // its buffer is what removes the allocation. A non-empty shard gets
-        // that buffer in exchange, which its next enqueue reuses.
+        // something, so a drain costs no allocation for the shards that are
+        // empty. Reuse is safe because the drain loop below always leaves batch
+        // empty; a non-empty shard gets that buffer in exchange, which its next
+        // enqueue reuses.
         std::queue<UrlStatEntry> batch;
 
         for (auto& shard : queue_shards_) {
@@ -456,12 +447,10 @@ namespace pinpoint {
     void UrlStats::addUrlStatsWorker() {
         // Boot-time decision: CollectUrlStat is non-reloadable
         // (Config::retainNonReloadableFrom retains the whole http.url_stat
-        // block on a reload), so a worker that returns here can never be
-        // needed later — the enqueue path's authoritative drop point reads
-        // the same never-changing flag, and no entry can strand in the
-        // shards. If that flag is ever made reloadable, this gate (and
-        // sendUrlStatsWorker's, and GrpcStats::sendStatsWorker's) must
-        // become a per-cycle live check instead.
+        // block on a reload), so a worker that returns here can never be needed
+        // later and no entry can strand in the shards. If that flag is ever made
+        // reloadable, this gate (and sendUrlStatsWorker's, and
+        // GrpcStats::sendStatsWorker's) must become a per-cycle live check.
         const auto config = agent_->getConfig();
         if (!config->http.url_stat.enable) {
             return;
@@ -480,8 +469,8 @@ namespace pinpoint {
             // Timed wait, not a wakeup per enqueue: the request path never
             // notifies (see enqueueUrlStats), only stopAddUrlStatsWorker does.
             // Draining every shard on a 10 ms cadence costs kQueueShardCount
-            // uncontended lock/unlock pairs per cycle — nothing against the
-            // per-request lock + futex wake it replaces.
+            // uncontended lock/unlock pairs per cycle, well under what a
+            // per-request futex wake would.
             if (add_cond_var_.wait_for(lock, kDrainInterval, [this] { return agent_->isExiting(); })) {
                 break;
             }
@@ -502,14 +491,11 @@ namespace pinpoint {
         // begun, so anything enqueued now would never be drained.
         accepting_.store(false, std::memory_order_relaxed);
         // Always notify, without consulting any config: re-deriving the
-        // worker's boot decision from a config load here would couple
-        // shutdown to the non-reloadability invariant documented in
-        // addUrlStatsWorker — get it wrong and the worker only notices
-        // isExiting() at its next kDrainInterval tick.
+        // worker's boot decision here would couple shutdown to the
+        // non-reloadability invariant documented in addUrlStatsWorker.
         // Taking the lock pairs the notify with the worker's predicate check
         // (isExiting), so it cannot fire in the window between the worker
-        // reading the flag as false and blocking — a lost wakeup that would
-        // also hang shutdown forever.
+        // reading the flag as false and blocking.
         std::lock_guard<std::mutex> lock(add_mutex_);
         add_cond_var_.notify_one();
     }

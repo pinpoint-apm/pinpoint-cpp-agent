@@ -58,10 +58,9 @@ namespace pinpoint {
      *        from both ids already in this span's context.
      *
      * The generated id becomes the callee's span id while @p span_id becomes
-     * its parent span id, so an id equal to
-     * either would make the callee its own parent (or its own grandparent) and
-     * break the call tree the collector reconstructs. Redraws until the value
-     * clears all three.
+     * its parent span id, so an id equal to either would make the callee its
+     * own parent (or grandparent) and break the call tree the collector
+     * reconstructs. Redraws until the value clears all three.
      *
      * @p rand_source overrides the thread-local generator; only tests pass it,
      * to drive the redraw loop deterministically.
@@ -95,9 +94,8 @@ namespace pinpoint {
      * The fork-inheritance guards compare a stored owner pid against the
      * running process on paths as hot as span admission (once per NewSpan), and
      * getpid() is not uniformly cheap: glibc dropped its pid cache in 2.25 and
-     * the call is not in the vDSO, so on Linux it is a real syscall (~139 ns
-     * against ~1 ns for the relaxed atomic load here; Darwin still caches it at
-     * ~2 ns). Reading it from here costs the same everywhere.
+     * the call is not in the vDSO, so on Linux it is a real syscall. Reading it
+     * from here is a relaxed atomic load, and costs the same everywhere.
      *
      * Correctness across fork() comes from a pthread_atfork child handler,
      * which runs before fork() returns in the child, so the child never
@@ -142,10 +140,8 @@ namespace pinpoint {
         ///
         /// Word-at-a-time, and inline on purpose. Every outbound string field
         /// is validated on the span export path, and in practice they are
-        /// almost all pure ASCII (URLs, RPC names, SQL text, agent ids), so
-        /// the common case costs one test per eight bytes and no call at all
-        /// -- rather than a cross-library call per *byte*, which measured 225
-        /// Ir per validation against ~14-byte inputs.
+        /// almost all pure ASCII (URLs, RPC names, SQL text, agent ids), so the
+        /// common case costs one test per eight bytes and no call at all.
         inline size_t asciiPrefixLength(std::string_view s) noexcept {
             constexpr uint64_t kHighBits = 0x8080808080808080ULL;
             const char* const p = s.data();
@@ -188,8 +184,8 @@ namespace pinpoint {
 
     /**
      * @brief True when every byte of @p s is in the id charset
-     * ([a-zA-Z0-9._-]). An empty string
-     * passes; callers that need a non-empty id check that themselves.
+     * ([a-zA-Z0-9._-]). An empty string passes; callers that need a non-empty
+     * id check that themselves.
      *
      * Shared by the callers that validate an id taken from an untrusted
      * carrier: the inbound transaction id (`TraceId::parseTraceId`) and the
@@ -205,19 +201,16 @@ namespace pinpoint {
      *
      * Callers feed network- and user-origin bytes into protobuf string fields
      * (percent-decoded URL paths, binary row keys, driver error strings). The
-     * C++ runtime only logs on marshalling invalid UTF-8, but the collector
-     * can reject the whole span,
-     * stat or metadata message — and a failed span stream Send cancels the
-     * stream. Applied at the protobuf conversion boundary, off the
-     * instrumentation hot path. Valid input is copied once, untouched.
+     * C++ runtime only logs on marshalling invalid UTF-8, but the collector can
+     * reject the whole span, stat or metadata message — and a failed span
+     * stream Send cancels the stream. Applied at the protobuf conversion
+     * boundary, off the instrumentation hot path.
      *
-     * Inline so that the valid case -- which is effectively all of them --
-     * is a word-wise scan plus that one copy, with no call out of the
-     * caller's translation unit. The returned string is an rvalue and
-     * protobuf's generated setters forward it to
-     * `ArenaStringPtr::Set(std::string&&)`, so the copy is adopted rather
-     * than copied again; returning a view to avoid it would trade the copy
-     * for a different one, not remove it.
+     * Inline so the valid case — effectively all of them — is a word-wise scan
+     * plus one copy, with no call out of the caller's translation unit. The
+     * returned string is an rvalue that protobuf's generated setters forward to
+     * `ArenaStringPtr::Set(std::string&&)`, so that copy is adopted rather than
+     * copied again.
      */
     inline std::string toValidUtf8(std::string_view s) {
         return isValidUtf8(s) ? std::string{s} : repairUtf8(s);
@@ -230,8 +223,8 @@ namespace pinpoint {
     inline constexpr size_t kMaxSqlMetaLength = 64 * 1024;
 
     /**
-     * @brief Abbreviates @p s: a string within the cap is returned verbatim; a longer
-     * one keeps its first @p max_len bytes and gains a
+     * @brief Abbreviates @p s: a string within the cap is returned verbatim, a
+     * longer one keeps its first @p max_len bytes and gains a
      * "...(<original length>)" suffix naming the length that was dropped.
      *
      * The cut is by byte. utf8SafeCutLength keeps the cut off a multibyte
@@ -239,9 +232,7 @@ namespace pinpoint {
      */
     std::string abbreviateString(std::string_view s, size_t max_len);
 
-    /**
-     * @brief Abbreviates an error message to kMaxErrorStringLength.
-     */
+    /// @brief Abbreviates an error message to kMaxErrorStringLength.
     std::string abbreviateErrorString(std::string_view msg);
 
     /**

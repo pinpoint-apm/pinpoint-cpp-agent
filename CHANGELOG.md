@@ -435,9 +435,9 @@
 - **The metadata rejection policy is locked as a port consensus.** Both ports
   drop a `PResult.success=false` reply and release the cache entry after one
   retry delay where Java retries it; the retry budget (3 attempts, 1 s, a
-  1000-entry queue) is Java's. Group 17 of the parity invariants
-  (`test/test_java_parity_lock.cpp`) pins the numbers so a change in either
-  port is a deliberate joint change; the Go suite carries the mirror group
+  1000-entry queue) is Java's. `GrpcTest.MetadataRetryBudgetDefaults`
+  (`test/test_grpc.cpp`) pins the numbers so a change in either port is a
+  deliberate joint change; the Go suite carries the mirror group
   (`Test_javaParityLock_MetadataRetryBudget`).
 
 - **`Http.Server.ProxyHeaderEnable` switches proxy header recording off.**

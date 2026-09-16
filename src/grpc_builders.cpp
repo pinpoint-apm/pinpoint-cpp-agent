@@ -282,9 +282,9 @@ namespace pinpoint {
             // A histogram with no samples goes out as an empty message rather
             // than eight zero buckets. build_each_url_stat calls this for the
             // failed histogram of every URI, and most URIs never fail, so the
-            // zeroes would be the bulk of a PAgentUriStat. The message itself
-            // is still set by the caller — an absent field is
-            // not what the collector expects.
+            // zeroes would be the bulk of a PAgentUriStat. The message itself is
+            // still set by the caller — the collector does not expect an absent
+            // field.
             if (url_histogram.empty()) {
                 return;
             }

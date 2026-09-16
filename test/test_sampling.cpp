@@ -44,7 +44,6 @@ protected:
 
 // CounterSampler Tests
 
-// Test CounterSampler with rate 0 - should always return false
 TEST_F(SamplingTest, CounterSamplerZeroRateTest) {
     CounterSampler sampler(0);
     
@@ -54,7 +53,6 @@ TEST_F(SamplingTest, CounterSamplerZeroRateTest) {
     }
 }
 
-// Test CounterSampler with rate 1 - should always return true
 TEST_F(SamplingTest, CounterSamplerOneRateTest) {
     CounterSampler sampler(1);
     
@@ -68,7 +66,6 @@ TEST_F(SamplingTest, CounterSamplerNRateTest) {
     const int rate = 3;
     CounterSampler sampler(rate);
 
-    // Test pattern: true, false, false, true, false, false, ...
     for (int cycle = 0; cycle < 3; ++cycle) {
         for (int i = 0; i < rate; ++i) {
             bool expected = (i == 0);
@@ -124,7 +121,6 @@ TEST_F(SamplingTest, CounterSamplerThreadSafetyTest) {
 
 // PercentSampler Tests
 
-// Test PercentSampler with rate 0.0 - should always return false
 TEST_F(SamplingTest, PercentSamplerZeroRateTest) {
     PercentSampler sampler(0.0);
     
@@ -311,7 +307,6 @@ TEST_F(SamplingTest, PercentSamplerThreadSafetyTest) {
 // Pass-through (no-limiter) trace sampler tests: with both throughputs 0,
 // TraceSampler delegates straight to the underlying Sampler.
 
-// Test the pass-through sampler with a null sampler
 TEST_F(SamplingTest, PassThroughTraceSamplerNullSamplerTest) {
     TraceSampler trace_sampler(mock_service_.get(), nullptr, 0, 0);
 
@@ -324,12 +319,10 @@ TEST_F(SamplingTest, PassThroughTraceSamplerNullSamplerTest) {
     EXPECT_TRUE(trace_sampler.isContinueSampled());
 }
 
-// Test the pass-through sampler with CounterSampler
 TEST_F(SamplingTest, PassThroughTraceSamplerWithCounterSamplerTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(2);
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
 
-    // Test pattern: true, false, true, false, ...
     EXPECT_TRUE(trace_sampler.isNewSampled());
     EXPECT_FALSE(trace_sampler.isNewSampled());
     EXPECT_TRUE(trace_sampler.isNewSampled());
@@ -340,12 +333,10 @@ TEST_F(SamplingTest, PassThroughTraceSamplerWithCounterSamplerTest) {
     EXPECT_TRUE(trace_sampler.isContinueSampled());
 }
 
-// Test the pass-through sampler with PercentSampler
 TEST_F(SamplingTest, PassThroughTraceSamplerWithPercentSamplerTest) {
     auto percent_sampler = std::make_unique<PercentSampler>(10.0); // 10.0 input = 10% sampling
     TraceSampler trace_sampler(mock_service_.get(), std::move(percent_sampler), 0, 0);
     
-    // Test over many calls to check approximate rate
     int true_count = 0;
     int total_calls = 10000;
     
@@ -381,7 +372,6 @@ TEST_F(SamplingTest, TraceSamplerNoLimitersTest) {
     }
 }
 
-// Test TraceSampler with new_tps limiter
 TEST_F(SamplingTest, TraceSamplerNewLimiterTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
     const int new_tps = 3;
@@ -402,7 +392,6 @@ TEST_F(SamplingTest, TraceSamplerNewLimiterTest) {
     }
 }
 
-// Test TraceSampler with continue_tps limiter
 TEST_F(SamplingTest, TraceSamplerContinueLimiterTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
     const int continue_tps = 2;
@@ -435,7 +424,6 @@ TEST_F(SamplingTest, TraceSamplerBothLimitersTest) {
     EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Additional continue call should be blocked";
 }
 
-// Test TraceSampler with sampler that blocks
 TEST_F(SamplingTest, TraceSamplerWithBlockingSamplerTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(0); // 0% sampling (always blocks)
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 10, 10);
@@ -453,7 +441,7 @@ TEST_F(SamplingTest, TraceSamplerWithBlockingSamplerTest) {
 
 // Edge Case Tests
 
-// Test CounterSampler with negative rate - should be treated as disabled.
+// A negative CounterSampler rate is treated as disabled.
 // Without the rate_ <= 0 guard, `count % rate_` would convert the negative
 // rate_ to a huge uint64 and silently "almost never" sample instead.
 TEST_F(SamplingTest, CounterSamplerNegativeRateTest) {
@@ -464,7 +452,6 @@ TEST_F(SamplingTest, CounterSamplerNegativeRateTest) {
     }
 }
 
-// Test CounterSampler with very large rate
 TEST_F(SamplingTest, CounterSamplerLargeRateTest) {
     const int rate = 1000000;
     CounterSampler sampler(rate);
@@ -478,7 +465,6 @@ TEST_F(SamplingTest, CounterSamplerLargeRateTest) {
 
 // AgentStats Counter Verification Tests
 
-// Test that the pass-through sampler correctly increments sample_new stats
 TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewSampledTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // always sampled
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
@@ -495,7 +481,6 @@ TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewSampledTest) {
     EXPECT_EQ(snapshot.num_unsample_new_, 0) << "Should have 0 unsampled new traces";
 }
 
-// Test that the pass-through sampler correctly increments unsample_new stats
 TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewUnsampledTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(0); // never sampled
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 0, 0);
@@ -511,7 +496,6 @@ TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementNewUnsampledTest) {
     EXPECT_EQ(snapshot.num_unsample_new_, 5) << "Should have 5 unsampled new traces";
 }
 
-// Test that the pass-through sampler correctly increments sample_cont stats
 TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementContTest) {
     TraceSampler trace_sampler(mock_service_.get(), nullptr, 0, 0);
     auto& stats = mock_service_->getAgentStats();
@@ -525,7 +509,6 @@ TEST_F(SamplingTest, PassThroughTraceSamplerStatsIncrementContTest) {
     EXPECT_EQ(snapshot.num_sample_cont_, 7) << "Should have 7 sampled continue traces";
 }
 
-// Test TraceSampler skip_new stats when rate limited
 TEST_F(SamplingTest, TraceSamplerStatsSkipNewTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // always sampled
     const int new_tps = 2;
@@ -545,7 +528,6 @@ TEST_F(SamplingTest, TraceSamplerStatsSkipNewTest) {
     EXPECT_EQ(snapshot.num_unsample_new_, 0) << "Should have 0 unsampled new traces";
 }
 
-// Test TraceSampler skip_cont stats when rate limited
 TEST_F(SamplingTest, TraceSamplerStatsSkipContTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1);
     const int continue_tps = 3;
@@ -563,7 +545,6 @@ TEST_F(SamplingTest, TraceSamplerStatsSkipContTest) {
     EXPECT_EQ(snapshot.num_skip_cont_, 6) << "Should have 6 skipped continue traces";
 }
 
-// Test TraceSampler unsample_new stats when sampler rejects
 TEST_F(SamplingTest, TraceSamplerStatsUnsampleNewTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(0); // never sampled
     TraceSampler trace_sampler(mock_service_.get(), std::move(counter_sampler), 10, 10);
@@ -594,7 +575,6 @@ TEST_F(SamplingTest, TraceSamplerNullSamplerTest) {
     EXPECT_FALSE(trace_sampler.isContinueSampled()) << "Should be blocked after rate limit exhausted";
 }
 
-// Test CounterSampler with rate 2 exact pattern
 TEST_F(SamplingTest, CounterSamplerRate2PatternTest) {
     CounterSampler sampler(2);
 
@@ -605,7 +585,6 @@ TEST_F(SamplingTest, CounterSamplerRate2PatternTest) {
     }
 }
 
-// Test TraceSampler with CounterSampler rate 2 + new limiter
 TEST_F(SamplingTest, TraceSamplerPartialSamplingWithLimiterTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(2); // 50% sampling
     const int new_tps = 2;
@@ -626,7 +605,6 @@ TEST_F(SamplingTest, TraceSamplerPartialSamplingWithLimiterTest) {
     EXPECT_FALSE(trace_sampler.isNewSampled());
 }
 
-// Test refill behavior after time passes
 TEST_F(SamplingTest, TraceSamplerRefillTest) {
     auto counter_sampler = std::make_unique<CounterSampler>(1); // 100% sampling
     const int new_tps = 2;
@@ -644,6 +622,81 @@ TEST_F(SamplingTest, TraceSamplerRefillTest) {
         EXPECT_TRUE(trace_sampler.isNewSampled()) << "After refill call " << i << " should be allowed";
     }
     EXPECT_FALSE(trace_sampler.isNewSampled()) << "Additional call after refill should be blocked";
+}
+
+// ========== Sampling Formulas ==========
+
+TEST_F(SamplingTest, CounterSamplerPhaseIsFirstCallThenEveryNthTest) {
+    CounterSampler sampler(3);
+
+    std::vector<int> sampled;
+    for (int i = 1; i <= 10; ++i) {
+        if (sampler.isSampled()) {
+            sampled.push_back(i);
+        }
+    }
+    EXPECT_EQ(sampled, (std::vector<int>{1, 4, 7, 10}))
+        << "the first call and every 3rd after it";
+}
+
+TEST_F(SamplingTest, PercentSamplerWindowStartsAtTheFirstCallTest) {
+    PercentSampler sampler(1.0);  // rate 100 of 10000
+
+    std::vector<int> sampled;
+    for (int i = 1; i <= 200; ++i) {
+        if (sampler.isSampled()) {
+            sampled.push_back(i);
+        }
+    }
+    EXPECT_EQ(sampled, (std::vector<int>{1, 101}))
+        << "one per hundred, starting at the first call";
+}
+
+TEST_F(SamplingTest, PercentSamplerEdgeRatesTest) {
+    EXPECT_EQ(MAX_PERCENT_RATE, 100 * 100) << "the rate is stored in hundredths of a percent";
+
+    PercentSampler always(100.0);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_TRUE(always.isSampled()) << "100% always samples";
+    }
+
+    PercentSampler clamped(150.0);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_TRUE(clamped.isSampled()) << "over 100 is clamped to 100";
+    }
+
+    PercentSampler never(0.0);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_FALSE(never.isSampled()) << "0% never samples";
+    }
+
+    PercentSampler below_minimum(0.009);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_FALSE(below_minimum.isSampled()) << "a rate under 0.01 truncates to 0";
+    }
+
+    PercentSampler negative(-1.0);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_FALSE(negative.isSampled()) << "a negative percentage is clamped to 0";
+    }
+}
+
+TEST_F(SamplingTest, CounterSamplerEdgeRatesTest) {
+    CounterSampler always(1);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_TRUE(always.isSampled()) << "rate 1 samples everything";
+    }
+
+    CounterSampler never(0);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_FALSE(never.isSampled()) << "rate 0 samples nothing";
+    }
+
+    CounterSampler negative(-7);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_FALSE(negative.isSampled())
+            << "a negative rate must not be promoted to unsigned";
+    }
 }
 
 } // namespace pinpoint

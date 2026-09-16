@@ -142,12 +142,12 @@ namespace pinpoint {
     /// @brief Utility functions for HTTP tracing.
     class HttpTracerUtil {
     public:
-        /// @brief Resolves the client address from the ordered @p real_ip_headers
-        ///        (Java RealIpHeaderResolver): the first header present whose
-        ///        candidate is non-empty and not @p empty_value wins. A header
-        ///        named `Forwarded` is parsed for its `for=` token (port
-        ///        stripped); any other takes its first comma-separated hop.
-        ///        None → @p remote_addr with its port stripped. Never throws.
+        /// @brief Resolves the client address from the ordered @p real_ip_headers:
+        ///        the first header present whose candidate is non-empty and not
+        ///        @p empty_value wins. A header named `Forwarded` is parsed for
+        ///        its `for=` token (port stripped); any other takes its first
+        ///        comma-separated hop. None → @p remote_addr with its port
+        ///        stripped. Never throws.
         /// Returns a view into either a header value of @p reader (valid
         /// until the next Get() on it) or @p remote_addr; consume it before
         /// touching the reader again.

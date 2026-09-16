@@ -131,10 +131,8 @@ namespace pinpoint {
          * batches with the producer wakeups switched off uses it as the signal
          * to take them again for this enqueue, so a burst reaches it inside a
          * collect slice instead of at the end of one. It describes the home
-         * shard alone: drops are per shard, so that is the level which decides
-         * whether this producer's next values survive, and reading it costs
-         * nothing extra — it is computed under the shard lock the enqueue
-         * already holds, with no process-wide counter on the hot path.
+         * shard alone — drops are per shard — and is computed under the shard
+         * lock the enqueue already holds.
          */
         bool enqueue(T& value, bool& home_shard_pressured) {
             const size_t home = thread_shard_id() % shard_count_;
@@ -171,12 +169,10 @@ namespace pinpoint {
          * @brief Dequeues up to max_items values, appended to out.
          *
          * One shard lock drains a whole run of values, where per-item
-         * try_dequeue() pays a lock/unlock per probed shard per item — under
-         * a skewed producer load (a few busy threads filling one shard) that
-         * is O(active_shards) mutex operations per item. Each active shard is
-         * probed at most once per call, and the cursor advances past every
-         * shard that yielded, preserving try_dequeue()'s round-robin rotation
-         * so a persistently hot shard cannot starve the others.
+         * try_dequeue() pays a lock/unlock per probed shard per item. Each
+         * active shard is probed at most once per call, and the cursor advances
+         * past every shard that yielded, preserving try_dequeue()'s round-robin
+         * rotation so a persistently hot shard cannot starve the others.
          *
          * @return The number of values appended to out.
          */
@@ -267,16 +263,15 @@ namespace pinpoint {
                         return;
                     }
                     // Empty the head cell before storing the new value: when
-                    // quota_ < physical capacity the tail cell is empty, so
-                    // the old head value would otherwise stay alive until
-                    // tail_ wraps back around to its cell — retaining up to
-                    // the full physical ring instead of quota_ values
-                    // (take_excess_quota extracts dropped cells the same
-                    // way). Emptying head_ first also keeps the
-                    // quota_ == capacity case correct, where head_ and tail_
-                    // are the same cell. Two move assignments rather than
-                    // std::exchange, which move-constructs its result —
-                    // outside the class's no-throw T contract.
+                    // quota_ < physical capacity the tail cell is empty, so the
+                    // old head value would otherwise stay alive until tail_
+                    // wraps back around to its cell, retaining up to the full
+                    // physical ring instead of quota_ values. Emptying head_
+                    // first also keeps the quota_ == capacity case correct,
+                    // where head_ and tail_ are the same cell. Two move
+                    // assignments rather than std::exchange, which
+                    // move-constructs its result — outside the class's no-throw
+                    // T contract.
                     dropped = std::move(cells_[head_]);
                     cells_[head_] = T{};
                     head_ = next(head_);
@@ -535,14 +530,13 @@ namespace pinpoint {
         std::atomic<uint64_t> borrowable_shards_;
         std::mutex rebalance_mutex_;
         // Own cache line: the consumer writes this on every successful
-        // dequeue, while producers read active_shards_/borrowable_shards_
-        // above on every enqueue. Without the padding the cursor write would
-        // ping-pong the line those reads ride on — the exact cross-thread
-        // line sharing the per-shard design set out to remove.
+        // dequeue, while producers read active_shards_/borrowable_shards_ above
+        // on every enqueue, so without the padding the cursor write would
+        // ping-pong the line those reads ride on.
         // Plain size_t on purpose: only the single consumer (see the class
-        // doc's concurrency contract) ever touches it, so no synchronization
-        // is needed — and none is provided. A second concurrent dequeuer
-        // would race on this unsynchronized read-modify-write.
+        // doc's concurrency contract) ever touches it, so no synchronization is
+        // needed — and none is provided. A second concurrent dequeuer would race
+        // on this unsynchronized read-modify-write.
         alignas(64) size_t consumer_cursor_{0};
     };
 

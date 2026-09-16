@@ -106,7 +106,6 @@ TEST_F(SpanEventTest, ConstructorWithNonEmptyOperationTest) {
     EXPECT_EQ(span_event.getOperationName(), "")
         << "an event with an API ID keeps no fallback name";
     
-    // Verify API was cached
     int32_t cached_id = mock_agent_service_->getCachedApiId("database-query");
     EXPECT_EQ(span_event.getApiId(), cached_id) << "API ID should match cached ID";
 }
@@ -189,7 +188,6 @@ TEST_F(SpanEventTest, SetErrorWithMessageOnlyTest) {
     EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
     EXPECT_EQ(span_event.getErrorString(), "Something went wrong") << "Error message should be set";
     
-    // Verify error was cached with default name "Error"
     int32_t cached_id = mock_agent_service_->getCachedErrorId("Error");
     EXPECT_EQ(span_event.getErrorFuncId(), cached_id) << "Error function ID should match cached ID";
 }
@@ -202,7 +200,6 @@ TEST_F(SpanEventTest, SetErrorWithNameAndMessageTest) {
     EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
     EXPECT_EQ(span_event.getErrorString(), "Connection timeout") << "Error message should be set";
     
-    // Verify error was cached with custom name
     int32_t cached_id = mock_agent_service_->getCachedErrorId("SQLException");
     EXPECT_EQ(span_event.getErrorFuncId(), cached_id) << "Error function ID should match cached ID";
 }
@@ -218,19 +215,15 @@ TEST_F(SpanEventTest, SetErrorWithCallStackBasicTest) {
     
     span_event.SetError("RuntimeError", "Test error message", reader);
     
-    // Verify error information is set
     EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
     EXPECT_EQ(span_event.getErrorString(), "Test error message") << "Error message should be set";
     
-    // Verify error was cached with correct name
     int32_t cached_id = mock_agent_service_->getCachedErrorId("RuntimeError");
     EXPECT_EQ(span_event.getErrorFuncId(), cached_id) << "Error function ID should match cached ID";
     
-    // Verify annotation contains exception ID
     auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
     
-    // Verify exception was added to parent span
     const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added to parent span";
     EXPECT_NE(exceptions[0], nullptr) << "Exception should not be null";
@@ -249,22 +242,18 @@ TEST_F(SpanEventTest, SetErrorWithCallStackMultipleFramesTest) {
 
     span_event.SetError("StackOverflowError", "Stack overflow occurred", reader);
 
-    // Verify error information
     EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
     EXPECT_EQ(span_event.getErrorString(), "Stack overflow occurred") << "Error message should be set";
 
-    // Verify exception was added
     const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added";
 
-    // Verify callstack contains all frames
     const auto& callstack = exceptions[0]->getCallStack();
     EXPECT_EQ(callstack.getErrorMessage(), "Stack overflow occurred") << "Error message should match";
 
     const auto& stack_frames = callstack.getStack();
     EXPECT_EQ(stack_frames.size(), 4) << "Should have 4 stack frames";
 
-    // Verify frame details
     EXPECT_EQ(stack_frames[0].module, "/usr/lib/libmyapp.so");
     EXPECT_EQ(stack_frames[0].function, "function1");
     EXPECT_EQ(stack_frames[0].file, "/src/file1.cpp");
@@ -331,11 +320,9 @@ TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
     
     span_event.SetError("EmptyStackError", "Error with empty stack", reader);
     
-    // Verify error information is still set
     EXPECT_GT(span_event.getErrorFuncId(), 0) << "Error function ID should be cached";
     EXPECT_EQ(span_event.getErrorString(), "Error with empty stack") << "Error message should be set";
     
-    // Verify exception was added even with empty stack
     const auto& exceptions = test_span_->getExceptions();
     EXPECT_EQ(exceptions.size(), 1) << "One exception should be added even with empty stack";
     
@@ -347,7 +334,6 @@ TEST_F(SpanEventTest, SetErrorWithCallStackEmptyTest) {
 }
 
 TEST_F(SpanEventTest, SetErrorWithCallStackMultipleErrorsTest) {
-    // Test that multiple errors can be set on different span events
     auto event1 = make_test_span_event(*test_span_, "op1");
     auto event2 = make_test_span_event(*test_span_, "op2");
     
@@ -554,7 +540,6 @@ TEST_F(SpanEventTest, SetErrorWithCallStackErrorTimeTest) {
 
     span_event.SetError("TimeTestError", "Testing timestamp", reader);
 
-    // Verify exception
     const auto& exceptions = test_span_->getExceptions();
     ASSERT_EQ(exceptions.size(), 1);
 
@@ -736,10 +721,8 @@ TEST_F(SpanEventTest, FinishTest) {
     
     span_event.finish();
     
-    // Check that depth was decremented
     EXPECT_EQ(test_span_data_->getEventDepth(), initial_depth - 1) << "Event depth should be decremented";
     
-    // Check that elapsed time was calculated
     EXPECT_GT(span_event.getEndElapsed(), 0) << "End elapsed should be greater than 0";
 }
 
@@ -862,9 +845,7 @@ TEST_F(SpanEventTest, GetAnnotationsInternalPointerTest) {
     auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations pointer should not be null";
     
-    // Test that we can use the annotations
     annotations->AppendData(100, AnnotationData("test-value"));
-    // Verify by checking the content (this depends on PinpointAnnotation implementation)
 }
 
 // ========== Integration Tests ==========
@@ -904,7 +885,6 @@ TEST_F(SpanEventTest, CompleteWorkflowTest) {
     // Finish the span event
     span_event.finish();
     
-    // Verify final state
     EXPECT_EQ(span_event.getServiceType(), 9999);
     EXPECT_EQ(span_event.getDestinationId(), "api.example.com");
     EXPECT_EQ(span_event.getEndPoint(), "https://api.example.com/users");
@@ -1212,12 +1192,10 @@ TEST_F(SpanEventTest, SetSqlQueryBasicTest) {
     
     span_event.SetSqlQuery(sql_query, args);
     
-    // Verify SQL was cached with normalized form
     std::string normalized_sql = "SELECT * FROM users WHERE id = ?";  // Expected normalized form
     int32_t cached_id = mock_agent_service_->getCachedSqlId(normalized_sql);
     EXPECT_GT(cached_id, 0) << "SQL should be cached with valid ID";
     
-    // Verify annotations were added
     auto* annotations = span_event.getAnnotations();
     EXPECT_NE(annotations, nullptr) << "Annotations should not be null";
 }
@@ -1234,7 +1212,6 @@ TEST_F(SpanEventTest, SetSqlQueryWithParametersTest) {
     
     span_event.SetSqlQuery(sql_query, args);
     
-    // Verify the prepared SQL was cached without changing its placeholders.
     std::string expected_normalized = "INSERT INTO products (name, price) VALUES (?, ?)";
     (void)mock_agent_service_->getCachedSqlId(expected_normalized);  // Check if cached (suppress unused warning)
     
@@ -1561,7 +1538,6 @@ TEST_F(SpanEventTest, SetErrorSingleArgDefaultNameTest) {
 
     span_event.SetError("Something went wrong");
 
-    // Verify the default error name "Error" was used
     int32_t cached_id = mock_agent_service_->getCachedErrorId("Error");
     EXPECT_GE(cached_id, 0) << "Default error name 'Error' should be cached";
     EXPECT_EQ(span_event.getErrorFuncId(), cached_id);

@@ -36,13 +36,12 @@ namespace pinpoint {
      *
      * Always the same `NoopSpan` object (`.get()` is stable process-wide), but
      * handed out through a per-thread control block so the returned copy's
-     * refcount traffic stays on the calling thread — see the definition.
+     * refcount traffic stays on the calling thread.
      *
-     * Cannot throw once the calling thread has been set up, which is what the
-     * CATCH_AND_LOG_RETURN handlers returning this rely on. Setting the thread
-     * up is best-effort and degrades to the shared holder on failure, leaving
-     * only the process-wide singleton's own first-call allocation as a throwing
-     * path — unchanged from before the per-thread owner existed.
+     * Cannot throw once the calling thread has been set up, which the
+     * CATCH_AND_LOG_RETURN handlers returning this rely on; setting the thread
+     * up degrades to the shared holder on failure, leaving the singleton's own
+     * first-call allocation as the only throwing path.
      */
     SpanPtr noopSpan();
     /// @brief Returns a shared noop agent instance.
@@ -82,27 +81,21 @@ namespace pinpoint {
     class UnsampledSpan;
 
     /**
-     * @brief Span event handed out by UnsampledSpan: records nothing but still
+     * @brief Span event handed out by UnsampledSpan: records nothing, but still
      *        propagates the unsampled decision (`Pinpoint-Sampled: s0`) to
-     *        downstream services on InjectContext, and still fails its span.
+     *        downstream services on InjectContext.
      *
-     * One instance per span, held by value inside the UnsampledSpan (it used
-     * to be a stateless process-wide singleton). SetError has to reach the
-     * span that handed the event out — an unsampled request's only visible
-     * output is its URL stat entry, and a DB/external-call exception is
-     * recorded on the event, not on the span. Its lifetime is the span's, the
-     * same contract a real SpanEventPtr carries (api_contracts.md section 4).
+     * One instance per span, held by value inside the UnsampledSpan, so its
+     * lifetime is the span's — the same contract a real SpanEventPtr carries
+     * (api_contracts.md section 4).
      */
     class UnsampledSpanEvent final : public NoopSpanEvent {
     public:
         void InjectContext(TraceContextWriter& writer) override;
 
         // Every SetError overload is inherited from NoopSpanEvent, i.e. a
-        // no-op. An error recorded on the *event* of an unsampled request is
-        // dropped, matching Java's DisableSpanEventRecorder.recordException
-        // and the Go agent's noopSpanEvent.SetError. The span's own SetError
-        // still fails the URL stat entry, as Java's DisableSpanRecorder and
-        // Go's noopSpan.SetError do.
+        // no-op: an error recorded on the *event* of an unsampled request is
+        // dropped. Only the span's own SetError fails the URL stat entry.
     };
 
     /// @brief Span implementation used when tracing is disabled.
@@ -152,9 +145,9 @@ namespace pinpoint {
     class UnsampledSpan final : public NoopSpan {
     public:
         // `runtime` is the creator's already-loaded runtime snapshot (see
-        // SpanImpl). With it, SetUrlStat gates on the snapshot's config and
-        // EndSpan resolves the failure status without any atomic runtime
-        // load. When omitted (tests), both fall back to the agent calls.
+        // SpanImpl); with it, SetUrlStat and EndSpan resolve config and
+        // failure status without an atomic runtime load. When omitted
+        // (tests), both fall back to the agent calls.
         explicit UnsampledSpan(AgentService *agent,
                                std::shared_ptr<const AgentRuntime> runtime = nullptr);
         ~UnsampledSpan() override;
@@ -168,8 +161,6 @@ namespace pinpoint {
 
         // An unsampled span records nothing and is never sent, but it still
         // produces a URL stat entry, so a span-level error fails that entry.
-        // This is the span half of Java's DisableSpanRecorder.recordException;
-        // the event half is a no-op there, in the Go agent and here.
         void SetError(std::string_view error_message) override { markError("Error", error_message); }
         void SetError(std::string_view error_name, std::string_view error_message) override {
             markError(error_name, error_message);
@@ -200,8 +191,7 @@ namespace pinpoint {
         std::atomic<bool> finished_{false};
         // The whole of this span's error state: no span is ever sent, so the
         // flag exists only to fail the URL stat entry. Atomic like finished_,
-        // since EndSpan reads it and the span's single-thread contract is
-        // exactly what a misbehaving caller bends.
+        // since EndSpan reads it from a possibly different thread.
         std::atomic<bool> err_{false};
         // Handed out by NewSpanEvent/GetSpanEvent; by value, so an unsampled
         // request pays no allocation for it.
@@ -210,9 +200,7 @@ namespace pinpoint {
         // linked by the constructor, unlinked by EndSpan; the destructor and
         // releaseActiveSpanOnError unlink as idempotent backstops.
         ActiveSpanNode active_node_;
-        // Guards url_stat_ between SetUrlStat() and EndSpan(): unlike the
-        // fully-stateful SpanImpl, this span's only mutable state is this one
-        // optional, so a mutex is cheap insurance that turns the
+        // Guards url_stat_ between SetUrlStat() and EndSpan(), turning a
         // contract-violating concurrent SetUrlStat/EndSpan into a defined
         // warn/no-op instead of a data race on the moved-from entry.
         std::mutex url_stat_mutex_;
@@ -223,8 +211,7 @@ namespace pinpoint {
         std::shared_ptr<const AgentRuntime> runtime_;
         // Agent keep-alive, held ONLY when runtime_ does not carry the stats
         // sinks (tests, hand-built runtimes). A production span reaches
-        // everything it touches after construction through runtime_, avoiding
-        // a per-request selfRef() CAS; see the ctor.
+        // everything it touches after construction through runtime_.
         std::shared_ptr<AgentService> agent_ref_;
         // Dereferenced during construction (caller holds the agent) and on
         // the agent_ref_-protected fallback paths only: without the

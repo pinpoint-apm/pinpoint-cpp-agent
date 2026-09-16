@@ -108,7 +108,7 @@ TEST_F(CacheTest, RawSqlCacheLengthLimitIsInclusive) {
         << "a statement under the limit must still be cached";
 }
 
-// kNoCacheLengthLimit restores the pre-limit behaviour (Sql.CacheLengthLimit: -1).
+// kNoCacheLengthLimit (Sql.CacheLengthLimit: -1) disables the bypass entirely.
 TEST_F(CacheTest, RawSqlCacheNoLengthLimitCachesLongStatements) {
     RawSqlCache cache(16, 4, kNoCacheLengthLimit);
     auto generator = [] { return prepared_sql("1"); };
@@ -147,7 +147,6 @@ TEST_F(CacheTest, RawSqlCacheConcurrentSameKeyPublishesOneEntry) {
 
 // Basic functionality tests
 
-// Test basic get operation with cache miss
 TEST_F(CacheTest, BasicGetCacheMissTest) {
     IdCache cache(5);
     
@@ -157,7 +156,6 @@ TEST_F(CacheTest, BasicGetCacheMissTest) {
     EXPECT_FALSE(result.found) << "First access should be cache miss (found=false)";
 }
 
-// Test cache hit after initial miss
 TEST_F(CacheTest, BasicGetCacheHitTest) {
     IdCache cache(5);
     
@@ -172,7 +170,6 @@ TEST_F(CacheTest, BasicGetCacheHitTest) {
     EXPECT_TRUE(result2.found) << "Second access should be cache hit (found=true)";
 }
 
-// Test multiple different keys get different IDs
 TEST_F(CacheTest, MultipleDifferentKeysTest) {
     IdCache cache(5);
     
@@ -188,7 +185,6 @@ TEST_F(CacheTest, MultipleDifferentKeysTest) {
     EXPECT_FALSE(result2.found);
     EXPECT_FALSE(result3.found);
     
-    // Verify all different IDs
     EXPECT_NE(result1.value, result2.value);
     EXPECT_NE(result2.value, result3.value);
     EXPECT_NE(result1.value, result3.value);
@@ -204,7 +200,6 @@ TEST_F(CacheTest, IdSequenceIncrementalTest) {
         EXPECT_FALSE(result.found) << "Key " << i << " should be cache miss";
     }
     
-    // Verify IDs are sequential
     for (size_t i = 0; i < ids.size(); ++i) {
         EXPECT_EQ(ids[i], static_cast<int32_t>(i + 1)) << "ID " << i << " should be sequential";
     }
@@ -212,7 +207,7 @@ TEST_F(CacheTest, IdSequenceIncrementalTest) {
 
 // LRU policy tests
 
-// Test LRU eviction when cache is full
+// LRU eviction once the cache is full.
 //
 // This and the other LRU-order tests pin shard_count=1: with more shards each
 // shard evicts within its own capacity slice, so a global eviction order is
@@ -240,13 +235,11 @@ TEST_F(CacheTest, LRUEvictionTest) {
     EXPECT_GT(result1_again.value, 4) << "Evicted key should get new ID";
     EXPECT_FALSE(result1_again.found) << "Evicted key should be cache miss";
     
-    // Verify key4 is still in cache (was just added)
     auto result4_check = cache.get("key4");
     EXPECT_EQ(result4_check.value, 4) << "Recently added key should still be in cache";
     EXPECT_TRUE(result4_check.found) << "Recently added key should be cache hit";
 }
 
-// Test LRU ordering - accessing item moves it to front
 TEST_F(CacheTest, LRUOrderingTest) {
     IdCache cache(3, 1);
     
@@ -264,12 +257,10 @@ TEST_F(CacheTest, LRUOrderingTest) {
     auto result4 = cache.get("key4"); // ID: 4
     EXPECT_EQ(result4.value, 4);
     
-    // Verify key1 is still in cache (was recently accessed)
     auto result1_check = cache.get("key1");
     EXPECT_EQ(result1_check.value, 1) << "Recently accessed key should still be in cache";
     EXPECT_TRUE(result1_check.found) << "Recently accessed key should be cache hit";
     
-    // Verify key4 is in cache (was just added)
     auto result4_check = cache.get("key4");
     EXPECT_EQ(result4_check.value, 4) << "Recently added key should be in cache";
     EXPECT_TRUE(result4_check.found) << "Recently added key should be cache hit";
@@ -280,7 +271,7 @@ TEST_F(CacheTest, LRUOrderingTest) {
     EXPECT_FALSE(result2_check.found) << "Evicted key should be cache miss";
 }
 
-// Test aged promotion: a full-cache hit on a recently inserted entry skips the
+// Aged promotion: a full-cache hit on a recently inserted entry skips the
 // splice (pure shared-lock read), while a hit on an aged entry promotes it so
 // it survives subsequent evictions
 TEST_F(CacheTest, AgedPromotionTest) {
@@ -379,7 +370,6 @@ TEST_F(CacheTest, ZeroCapacityIsClampedToOneTest) {
 
 // Remove functionality tests
 
-// Test basic remove operation
 TEST_F(CacheTest, BasicRemoveTest) {
     IdCache cache(5);
     
@@ -395,7 +385,6 @@ TEST_F(CacheTest, BasicRemoveTest) {
     // Remove the item
     cache.remove("key1", result2.value);
     
-    // Verify it's no longer in cache
     auto result3 = cache.get("key1");
     EXPECT_EQ(result3.value, 2) << "Removed key should get new ID";
     EXPECT_FALSE(result3.found) << "Removed key should be cache miss";
@@ -448,7 +437,6 @@ TEST_F(CacheTest, IdSequenceWrapLatchesAndStopsIssuingIdsTest) {
     EXPECT_EQ(cache.get("last-valid").value, std::numeric_limits<int32_t>::max());
 }
 
-// Test remove non-existent key (should not crash)
 TEST_F(CacheTest, RemoveNonExistentKeyTest) {
     IdCache cache(5);
     
@@ -461,7 +449,6 @@ TEST_F(CacheTest, RemoveNonExistentKeyTest) {
     EXPECT_FALSE(result.found);
 }
 
-// Test remove from middle of cache
 TEST_F(CacheTest, RemoveFromMiddleTest) {
     IdCache cache(5, 1);
     
@@ -473,7 +460,6 @@ TEST_F(CacheTest, RemoveFromMiddleTest) {
     // Remove middle item
     cache.remove("key2", 2);
     
-    // Verify key1 and key3 are still accessible
     auto result1 = cache.get("key1");
     auto result3 = cache.get("key3");
     EXPECT_EQ(result1.value, 1);
@@ -481,7 +467,6 @@ TEST_F(CacheTest, RemoveFromMiddleTest) {
     EXPECT_TRUE(result1.found);
     EXPECT_TRUE(result3.found);
     
-    // Verify key2 is no longer in cache
     auto result2 = cache.get("key2");
     EXPECT_EQ(result2.value, 4); // New ID
     EXPECT_FALSE(result2.found);
@@ -519,7 +504,6 @@ TEST_F(CacheTest, EmptyStringKeyTest) {
     EXPECT_TRUE(result2.found);
 }
 
-// Test very long key
 TEST_F(CacheTest, LongKeyTest) {
     IdCache cache(5);
     
@@ -536,7 +520,6 @@ TEST_F(CacheTest, LongKeyTest) {
 
 // Thread safety tests
 
-// Test concurrent get operations
 TEST_F(CacheTest, ConcurrentGetTest) {
     IdCache cache(100);
     const int num_threads = 10;
@@ -575,7 +558,6 @@ TEST_F(CacheTest, ConcurrentGetTest) {
     EXPECT_EQ(*all_ids.rbegin(), expected_count) << "Largest ID should be " << expected_count;
 }
 
-// Test concurrent get/remove operations
 TEST_F(CacheTest, ConcurrentGetRemoveTest) {
     IdCache cache(50);
     std::atomic<bool> stop_flag(false);
@@ -616,7 +598,6 @@ TEST_F(CacheTest, ConcurrentGetRemoveTest) {
     EXPECT_GT(result.value, 0) << "Cache should still be functional after concurrent operations";
 }
 
-// Test concurrent access to same key
 TEST_F(CacheTest, ConcurrentSameKeyTest) {
     IdCache cache(10);
     const int num_threads = 5;
@@ -659,7 +640,6 @@ TEST_F(CacheTest, ConcurrentSameKeyTest) {
 
 // Performance and stress tests
 
-// Test cache behavior with many items
 TEST_F(CacheTest, ManyItemsTest) {
     const int cache_size = 10; // Use smaller cache size for clearer testing
     const int total_items = 25;
@@ -701,7 +681,6 @@ TEST_F(CacheTest, ManyItemsTest) {
     EXPECT_GT(items_evicted, 0) << "Some early items should have been evicted";
 }
 
-// Test cache at exact capacity - no eviction should occur
 TEST_F(CacheTest, ExactCapacityNoEvictionTest) {
     const int capacity = 5;
     IdCache cache(capacity, 1);
@@ -719,7 +698,6 @@ TEST_F(CacheTest, ExactCapacityNoEvictionTest) {
     }
 }
 
-// Test removing all items and re-adding
 TEST_F(CacheTest, RemoveAllAndReuseTest) {
     IdCache cache(5, 1);
 
@@ -743,7 +721,6 @@ TEST_F(CacheTest, RemoveAllAndReuseTest) {
     EXPECT_TRUE(result2.found) << "Should be cache hit now";
 }
 
-// Test LRU eviction chain - verify correct eviction order
 TEST_F(CacheTest, LRUEvictionChainTest) {
     IdCache cache(3, 1);
 
@@ -756,7 +733,6 @@ TEST_F(CacheTest, LRUEvictionChainTest) {
     auto r4 = cache.get("key4"); // ID: 4
     EXPECT_FALSE(r4.found);
 
-    // Verify key1 was evicted
     auto r1 = cache.get("key1"); // miss, re-inserted -> evicts key2. Cache: key3, key4, key1
     EXPECT_FALSE(r1.found) << "key1 should have been evicted";
 
@@ -785,7 +761,6 @@ TEST_F(CacheTest, StringViewKeyFromTemporaryTest) {
     EXPECT_TRUE(result.found) << "Should be cache hit even after source string destroyed";
 }
 
-// Test remove and re-add places item at MRU position
 TEST_F(CacheTest, RemoveAndReaddLRUPositionTest) {
     IdCache cache(3, 1);
 
@@ -809,7 +784,6 @@ TEST_F(CacheTest, RemoveAndReaddLRUPositionTest) {
     EXPECT_TRUE(r1.found) << "key1 should be in cache (was MRU after re-add)";
 }
 
-// Test keys with special characters and Unicode
 TEST_F(CacheTest, SpecialCharacterKeysTest) {
     // Single shard: three keys must coexist, which sharding cannot guarantee
     // at this capacity (each shard would hold a single entry).
@@ -831,7 +805,6 @@ TEST_F(CacheTest, SpecialCharacterKeysTest) {
     EXPECT_NE(r1.value, r2.value);
     EXPECT_NE(r2.value, r3.value);
 
-    // Verify cache hits
     EXPECT_TRUE(cache.get(unicode_key).found);
     EXPECT_TRUE(cache.get(special_key).found);
     EXPECT_TRUE(cache.get(null_key).found);
@@ -1081,7 +1054,6 @@ TEST_F(CacheTest, ShardCountOneDegeneratesToUnshardedBehaviorTest) {
 // the SQL text.
 class SqlUidCacheTest : public ::testing::Test {};
 
-// Test cache hit after initial miss
 TEST_F(SqlUidCacheTest, BasicGetCacheHitTest) {
     SqlUidCache cache(5);
     
@@ -1099,7 +1071,6 @@ TEST_F(SqlUidCacheTest, BasicGetCacheHitTest) {
     EXPECT_TRUE(result2.found) << "Second access should be cache hit (found=true)";
 }
 
-// Test same SQL always produces same UID
 TEST_F(SqlUidCacheTest, ConsistentUidGenerationTest) {
     SqlUidCache cache1(10);
     SqlUidCache cache2(10);
@@ -1112,7 +1083,6 @@ TEST_F(SqlUidCacheTest, ConsistentUidGenerationTest) {
     EXPECT_EQ(result1.value, result2.value) << "Same SQL should always produce same UID across different cache instances";
 }
 
-// Test UID consistency across different cache instances
 TEST_F(SqlUidCacheTest, UidConsistencyTest) {
     SqlUidCache cache1(5);
     SqlUidCache cache2(5);
@@ -1157,13 +1127,13 @@ TEST_F(SqlUidCacheTest, LengthLimitBypassesStorageAndReportsEveryUseAsNew) {
         << "the UID is a content hash, so bypassing keeps it stable";
     EXPECT_EQ(first.value.size(), 16u);
 
-    // Under the limit the cache still works as before.
+    // A statement under the limit is cached normally.
     const std::string short_sql(2047, 'a');
     EXPECT_FALSE(cache.get(short_sql).found);
     EXPECT_TRUE(cache.get(short_sql).found);
 }
 
-// kNoCacheLengthLimit restores the pre-limit behaviour (Sql.CacheLengthLimit: -1).
+// kNoCacheLengthLimit (Sql.CacheLengthLimit: -1) disables the bypass entirely.
 TEST_F(SqlUidCacheTest, NoLengthLimitCachesLongStatements) {
     SqlUidCache cache(1024, 16, kNoCacheLengthLimit);
 
@@ -1287,6 +1257,34 @@ TEST_F(SqlUidCacheTest, SqlUidCacheWithoutTtlNeverExpires) {
     const std::string sql = "SELECT 1";
     EXPECT_FALSE(cache.get(sql).found);
     EXPECT_TRUE(cache.get(sql).found);
+}
+
+// Sql.CacheLengthLimit bypasses the UID cache but never the id cache: a UID is
+// a content hash, so recomputing it is free, while an id comes from a counter
+// and re-minting one would leak ids and re-publish PSqlMetaData forever.
+TEST_F(CacheTest, CacheLengthLimitAppliesToTheUidCacheOnlyTest) {
+    constexpr size_t kLengthLimit = 16;
+    const std::string under_limit(kLengthLimit - 1, 'a');
+    const std::string at_limit(kLengthLimit, 'b');
+
+    SqlUidCache uid_cache(/*max_size=*/64, kDefaultCacheShardCount, kLengthLimit);
+    EXPECT_FALSE(uid_cache.bypasses(under_limit));
+    EXPECT_TRUE(uid_cache.bypasses(at_limit)) << "only a statement shorter than the limit is stored";
+
+    // A bypassed statement is never "found", so its UID metadata is published
+    // again on every use; a short one is cached after the first miss.
+    EXPECT_FALSE(uid_cache.get(at_limit).found);
+    EXPECT_FALSE(uid_cache.get(at_limit).found) << "still a miss on the second lookup";
+    EXPECT_FALSE(uid_cache.get(under_limit).found);
+    EXPECT_TRUE(uid_cache.get(under_limit).found) << "a short statement is stored";
+
+    IdCache id_cache(/*max_size=*/64);
+    const std::string very_long(kLengthLimit * 100, 'c');
+    const auto first = id_cache.get(very_long);
+    EXPECT_FALSE(first.found) << "first sight of a statement is a miss";
+    const auto second = id_cache.get(very_long);
+    EXPECT_TRUE(second.found) << "the id cache takes no length limit";
+    EXPECT_EQ(first.value, second.value) << "and the id is stable";
 }
 
 } // namespace pinpoint

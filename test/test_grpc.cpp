@@ -1159,4 +1159,16 @@ TEST_F(GrpcTest, ChannelStateTransitionLineCountsFoldedTransitions) {
         << lines[2];
 }
 
+// The metadata retry schedule is bounded separately from the new-metadata
+// queue so an outage cannot fill one budget with retries (see
+// GrpcClientTuning::meta_retry_queue_size).
+TEST_F(GrpcTest, MetadataRetryBudgetDefaults) {
+    const GrpcClientTuning tuning{};
+    EXPECT_EQ(tuning.meta_retry_max_attempts, 3);
+    EXPECT_EQ(tuning.meta_retry_delay, std::chrono::milliseconds(1000));
+    EXPECT_EQ(tuning.meta_retry_queue_size, 1000u)
+        << "the retry schedule is bounded like the new-metadata queue";
+    EXPECT_EQ(Config{}.collector.grpc.channel.sender_queue_size, 1000);
+}
+
 } // namespace pinpoint
