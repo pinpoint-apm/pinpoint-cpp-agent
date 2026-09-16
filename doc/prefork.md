@@ -106,9 +106,9 @@ the hook simply loses whatever was still queued in that process.
 - **Collector connections**: each worker maintains its own gRPC channels.
   Registration retries and reconnects are jittered per worker, so a collector
   outage does not produce synchronized retry storms across the pool.
-- **Sampling is per worker**: `CounterRate: 10` samples 1-in-10 *per worker*.
-  Rate-style expectations hold globally, but exact counter semantics do not
-  span workers.
+- **Sampling is per worker**: `PercentRate: 1` samples 1% *per worker*.
+  Rate-style expectations hold across the pool, but a counter rate's exact
+  1-in-N semantics do not span workers.
 
 ---
 

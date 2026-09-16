@@ -29,11 +29,12 @@ the file, before the file is loaded.
 ApplicationName: "MyApplication"
 ActiveProfile: release          # or PINPOINT_CPP_ACTIVE_PROFILE=release
 Sampling:
-  CounterRate: 1                # base value
+  Type: "PERCENT"
+  PercentRate: 100              # base value
 Profile:
   release:
     Sampling:
-      CounterRate: 20           # wins over the base value when ActiveProfile is release
+      PercentRate: 1            # wins over the base value when ActiveProfile is release
   local:
     Log:
       Level: debug
@@ -105,7 +106,7 @@ options.config_yaml = R"(
       Host: "localhost"
     Sampling:
       Type: "PERCENT"
-      PercentRate: 10
+      PercentRate: 1
 )";
 pinpoint::StartAgent(options);
 ```
@@ -649,8 +650,8 @@ Collector:
   Host: "localhost"
 
 Sampling:
-  Type: "COUNTER"
-  CounterRate: 1  # sample all
+  Type: "PERCENT"
+  PercentRate: 100  # sample all
 
 Http:
   CollectUrlStat: true
@@ -683,7 +684,7 @@ Collector:
 
 Sampling:
   Type: "PERCENT"
-  PercentRate: 10.0
+  PercentRate: 1.0
   NewThroughput: 500        # omit both for unlimited
   ContinueThroughput: 1000
 
@@ -744,7 +745,7 @@ symptom:
 |---|---|
 | Agent never connects | `Collector.Host`, `Collector.*Port` ([Collector](#collector-configuration)) |
 | Nothing is traced at all | `Enable` — `false` disables the agent and makes `StartAgent()` return `false` ([Agent](#agent-configuration)) |
-| Transactions missing | `Sampling.Type: COUNTER` with `Sampling.CounterRate: 1` to sample all; clear `Http.Server.ExcludeUrl` / `ExcludeMethod` ([Sampling](#sampling-configuration), [HTTP](#http-configuration)) |
+| Transactions missing | `Sampling.Type: PERCENT` with `Sampling.PercentRate: 100` to sample all; clear `Http.Server.ExcludeUrl` / `ExcludeMethod` ([Sampling](#sampling-configuration), [HTTP](#http-configuration)) |
 | Memory too high | Lower `Span.QueueSize`, `Span.MaxEventSequence`, `Http.UrlStatLimit`, `Sql.CacheSize` ([Span](#span-configuration), [HTTP](#http-configuration), [SQL](#sql-configuration)) |
 | SQL metadata re-sent constantly / spans show unresolved SQL ids | Raise `Sql.CacheSize` above the number of distinct statements the application runs ([SQL](#sql-configuration)) |
 | CPU / latency overhead | Lower `Sampling.PercentRate` or set `NewThroughput` / `ContinueThroughput`; turn off `Http.CollectUrlStat`, `Sql.EnableSqlStats`, `Stat.Enable` |

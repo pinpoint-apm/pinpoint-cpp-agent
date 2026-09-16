@@ -184,8 +184,8 @@ broken configuration; check that first.
 
 The agent starts successfully but no traces appear.
 
-1. **Check sampling** — set `Sampling.Type: COUNTER` and
-   `Sampling.CounterRate: 1` together to sample every transaction.
+1. **Check sampling** — set `Sampling.Type: PERCENT` and
+   `Sampling.PercentRate: 100` together to sample every transaction.
 2. **Verify spans are ended** — `EndSpan()` must run on every code path; a span
    released without it is never sent.
 3. **Check excluded URLs and methods** — a filter match produces a noop span, so
@@ -305,7 +305,7 @@ followed by `grpc span worker end`.
    ```yaml
    Sampling:
      Type: "PERCENT"
-     PercentRate: 10.0         # Sample only 10%
+     PercentRate: 1.0          # Sample only 1%
      NewThroughput: 100        # Or: accept all, cap at 100 new tx/sec
      ContinueThroughput: 200
    ```

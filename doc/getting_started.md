@@ -77,8 +77,8 @@ Collector:
   Host: "localhost"          # Your Pinpoint collector host
 
 Sampling:
-  Type: "COUNTER"
-  CounterRate: 1             # Sample all requests
+  Type: "PERCENT"
+  PercentRate: 1             # Sample 1% of requests
 
 Log:
   Level: "info"              # debug, info, warning, error
@@ -295,7 +295,7 @@ is the only authoritative startup signal. See
 [Verifying Agent Startup](troubleshooting.md#verifying-agent-startup).
 
 Nothing in the UI despite `AgentInfo sent`? The three usual causes are sampling
-(`Type: COUNTER` with `CounterRate: 1` samples everything — use both while
+(`Type: PERCENT` with `PercentRate: 100` samples everything — use both while
 testing), a span that is never ended (`EndSpan()` must run on every code path),
 and the collection interval (wait a few seconds).
 
