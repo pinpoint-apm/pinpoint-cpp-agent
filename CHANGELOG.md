@@ -1,28 +1,19 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 (2026-09-17)
 
 ### Breaking
 
 - **`SetError()` on an unsampled span's *event* no longer fails its URL stat
-  entry.** It now records nothing, matching Java's no-op
-  `DisableSpanEventRecorder.recordException` and the Go agent's
-  `noopSpanEvent.SetError`; the three agents agree on this path for the first
-  time. `SetError()` on the unsampled **span** is unchanged and still marks the
-  entry failed, as Java's `DisableSpanRecorder` and Go's `noopSpan.SetError`
-  do. The previous behaviour was a deliberate step past Java, taken so that a
-  host reporting failures only on the failing step would not bias the URL stat
-  failure rate toward zero; the cost of keeping it was that the same
-  application reported a different unsampled failure rate under this agent than
-  under the Go one. **A host that records step failures on the event and needs
-  them in the URL statistics must record them on the span instead** — the
-  failed-request count on unsampled traffic will otherwise drop after the
-  upgrade.
+  entry.** It now records nothing. `SetError()` on the unsampled **span** is
+  unchanged and still marks the entry failed. **A host that records step
+  failures on the event and needs them in the URL statistics must record them
+  on the span instead** — the failed-request count on unsampled traffic will
+  otherwise drop after the upgrade.
 - **`helper::TraceHttpClientRequest` strips the URL query by default.** The
   `ANNOTATION_HTTP_URL` value is cut at its first `?` unless the new
-  `Http.Client.RecordUrlQuery` (default `false`) is on, matching Java's
-  `profiler.<plugin>.param` default. Query strings carry tokens and ids.
-  Endpoint and destination are unchanged.
+  `Http.Client.RecordUrlQuery` (default `false`) is on. Query strings carry
+  tokens and ids. Endpoint and destination are unchanged.
 
 ### Added
 
@@ -42,54 +33,48 @@
   [C API Guide §5](doc/instrument_c.md#linking-application-logs-to-the-trace).
 - **`SetIgnoredError()` on `Span` and `SpanEvent`.** Records an error exactly
   as `SetError()` does but never marks the transaction failed, for a caller
-  that matched an ignore rule `Span.IgnoreErrors` cannot express (Java's
-  subclass or cause matching). Documented in
+  that matched an ignore rule `Span.IgnoreErrors` cannot express. Documented in
   [Instrumentation Guide §9](doc/instrument.md#recording-an-error-without-failing-the-transaction).
 - **Configurable real-IP headers.** `Http.Server.RealIpHeader` (ordered list,
   default `["X-Forwarded-For", "X-Real-Ip"]` = today's behaviour, `[]` trusts
-  none) and `Http.Server.RealIpEmptyValue` port Java's `RealIpHeaderResolver`:
-  a `Forwarded` header is parsed for its `for=` token, other headers give
-  their first hop, a value equal to the empty value is skipped. Both
-  reloadable and appended to `SpanConfigSnapshot`.
+  none) and `Http.Server.RealIpEmptyValue`: a `Forwarded` header is parsed for
+  its `for=` token, other headers give their first hop, a value equal to the
+  empty value is skipped. Both reloadable and appended to
+  `SpanConfigSnapshot`.
 - **Request parameter recording, opt-in.** New `TraceHttpServerRequest`
   overloads taking a `query_string` (C: `pt_trace_http_server_request_with_query`)
-  record it as annotation 41 (`ANNOTATION_HTTP_PARAM`) in Java's
-  `HttpServletParameterExtractor` format when `Http.Server.RecordRequestParam`
-  is on (default `false`; Java defaults on). `helper::FormatRequestParams`
-  exposes the formatter. Both toggles are reloadable and appended to
-  `SpanConfigSnapshot`.
+  record it as annotation 41 (`ANNOTATION_HTTP_PARAM`) when
+  `Http.Server.RecordRequestParam` is on (default `false`).
+  `helper::FormatRequestParams` exposes the formatter. Both toggles are
+  reloadable and appended to `SpanConfigSnapshot`.
 
 - **Proxy request headers: every header is recorded, and one without a usable
   `t=` is discarded.**
 
-  Four changes to `setProxyHeader` ([src/http.cpp](src/http.cpp)), all bringing
-  the agent to what the Java agent already does:
+  Four changes to `setProxyHeader` ([src/http.cpp](src/http.cpp)):
 
   1. **nginx `D=` is parsed as `seconds.milliseconds`.** nginx writes
      `$request_time` (and `$msec`) as `sec.mmm`, so the integer parse the agent
      used always failed and **every** nginx proxy annotation reported a
-     duration of `0`. Only that exact shape is accepted, as in
-     `NginxRequestParser.toDurationTimeMicros`; anything else records no
-     duration. apache's `D=` is unaffected — it really is plain microseconds.
-  2. **A header with no positive `t=` records nothing.** Java's parsers call
-     `setValid(false)` and `DefaultProxyRequestRecorder` skips the header
-     entirely. The agent used to record the annotation anyway, with a received
-     time of `0` — which the web UI charts as a proxy-to-agent gap of five
-     decades.
+     duration of `0`. Only that exact shape is accepted; anything else records
+     no duration. apache's `D=` is unaffected — it really is plain
+     microseconds.
+  2. **A header with no positive `t=` records nothing.** The agent used to
+     record the annotation anyway, with a received time of `0` — which the web
+     UI charts as a proxy-to-agent gap of five decades.
   3. **All headers are recorded, not just the first match.** A request that
-     crossed two proxies now records one annotation per hop, like
-     `DefaultProxyRequestRecorder.record`, instead of only the hop closest to
-     the agent.
-  4. **`app=` is validated, not truncated.** `AppRequestParser` runs it through
-     `IdValidateUtils.validateId(app, 30)` and discards the header on failure;
-     the agent used to cut the value at 32 bytes, inventing a server-map node
-     for any oversized or html-bearing name.
+     crossed two proxies now records one annotation per hop, instead of only
+     the hop closest to the agent.
+  4. **`app=` is validated, not truncated.** The value must be at most 30
+     characters of `[a-zA-Z0-9._-]` or the header is discarded; the agent used
+     to cut the value at 32 bytes, inventing a server-map node for any
+     oversized or html-bearing name.
 
   **New: the user proxy type (code 4).** `Pinpoint-ProxyUser` — or any header
-  name listed in the new `Http.Server.ProxyUserHeaderNames`, Java's
-  `profiler.proxy.http.headers` — is now read, one annotation per configured
-  name that is present, labelled with the header name. Empty by default, as in
-  Java. See [doc/config.md](doc/config.md#server-side-tracing).
+  name listed in the new `Http.Server.ProxyUserHeaderNames` — is now read, one
+  annotation per configured name that is present, labelled with the header
+  name. Empty by default. See
+  [doc/config.md](doc/config.md#server-side-tracing).
 
   **Symptom if you do not migrate:** nothing to migrate, but the annotations
   change. Requests behind nginx gain a real proxy duration where they reported
@@ -97,55 +82,35 @@
   received time was `0` disappear; and an `app=` outside `[a-zA-Z0-9._-]` or
   over 30 characters drops its header instead of being truncated.
 
-  **The Go agent still has all four.** `setProxyHeader`
-  (`plugin/http/server.go`) is unchanged there, so until the matching change
-  lands a C++ service and a Go service behind the same nginx report different
-  proxy annotations to the same collector.
-
 - **The acceptor host falls back to the request endpoint without
   `Pinpoint-Host`.**
 
-  Java's `ServerRequestRecorder.recordParentInfo` reads `Pinpoint-Host` and
-  falls back to `requestAdaptor.getAcceptorHost(request)` when the peer sent
-  none. The agent recorded the header or nothing, so a continued trace from a
-  peer that omits it sent a **blank** acceptor host — and, because
-  `getEndPoint()` and `getRemoteAddr()` default through that field, a caller
-  who recorded neither sent `UNKNOWN` for both. The endpoint passed to
+  The agent recorded the header or nothing, so a continued trace from a peer
+  that omits it sent a **blank** acceptor host — and, because `getEndPoint()`
+  and `getRemoteAddr()` default through that field, a caller who recorded
+  neither sent `UNKNOWN` for both. The endpoint passed to
   `helper::TraceHttpServerRequest` now fills the gap
   ([src/http.cpp](src/http.cpp), [src/span.cpp](src/span.cpp)); a header that
-  is present still wins. The Go agent's `Extract` (`span.go`) still leaves it
-  blank.
+  is present still wins.
 
 - **`PSpan.err` now carries the error cause, not a flat `1`.**
 
   Up to and including v2.0.0 every failure set `err = 1`. It is now a bitmask
-  of error causes, matching the Java agent's `ErrorCategory`
-  (`commons/.../trace/ErrorCategory.java`): `2` for an exception, `4` for a
-  status code matching `Http.Server.StatusCodeErrors`, `8` for a
-  `Sql.ErrorCount` overflow. Causes accumulate, so a request that threw *and*
-  returned 503 reports `err = 6` ([src/span.h](src/span.h),
-  `markSpanError`). The same transactions are marked failed as before — only
-  the value naming the cause is new.
-
-  This is Java's **default** behaviour: `profiler.error.enable` defaults to
-  `true`, which loads `ConfigurableErrorRecorder` and ORs
-  `errorCategory.getBitMask()` into the shared error code. The flat `1` the
-  agent used to send is Java's `SimpleErrorRecorder`, reached only with
-  `profiler.error.enable=false`.
+  of error causes: `2` for an exception, `4` for a status code matching
+  `Http.Server.StatusCodeErrors`, `8` for a `Sql.ErrorCount` overflow. Causes
+  accumulate, so a request that threw *and* returned 503 reports `err = 6`
+  ([src/span.h](src/span.h), `markSpanError`). The same transactions are marked
+  failed as before — only the value naming the cause is new.
 
   **Symptom if you do not migrate:** anything that compares `err` against `1`
   — a dashboard query, a log filter, a test — stops matching failures whose
   cause is not `UNKNOWN`. Test `err != 0` instead.
 
-  **New configuration.** `Span.ErrorMark` and `Span.ErrorMarkExclude` (Java's
-  `profiler.error.mark` / `.mark.exclude`) select which causes may fail a
-  transaction, so a policy like "a 5xx is not by itself a failed transaction"
-  is now expressible: `Span.ErrorMarkExclude: [http-status]`. See
+  **New configuration.** `Span.ErrorMark` and `Span.ErrorMarkExclude` select
+  which causes may fail a transaction, so a policy like "a 5xx is not by itself
+  a failed transaction" is now expressible: `Span.ErrorMarkExclude:
+  [http-status]`. See
   [doc/config.md](doc/config.md#error-causes-spanerrormark-spanerrormarkexclude).
-
-  **The Go agent still sends `1`.** Until the matching change lands there, a
-  C++ service and a Go service that failed the same way report different `err`
-  values to the same collector.
 
 - **Continuing an inbound trace now requires all three trace headers.**
 
@@ -154,9 +119,7 @@
   came with it. `NewSpan()` now continues a trace only when the trace id
   parses **and** both id headers are present
   ([src/span.cpp](src/span.cpp), `readInboundTrace`); anything else starts a
-  new transaction. This is the Java agent's decision, which runs the same
-  checks in order and starts a new trace as soon as one fails
-  (`DefaultTraceHeaderReader.java:54-70`).
+  new transaction.
 
   A trace id without the two id headers describes a hop the agent cannot
   place. Adopting it recorded a non-root span whose parent was in no trace —
@@ -172,9 +135,8 @@
   accordingly.
 
   **Migration.** Make the peer send `Pinpoint-SpanID` and `Pinpoint-pSpanID`
-  as well. Both ports' `InjectContext()` (Go: `InjectContext`) already write
-  all three, so a call chain made only of Pinpoint agents needs no change; the
-  header set is documented in
+  as well. `InjectContext()` already writes all three, so a call chain made
+  only of Pinpoint agents needs no change; the header set is documented in
   [API Contracts §12](doc/api_contracts.md#12-continuing-an-inbound-trace-requires-three-headers).
 
   **Two related changes come with it.** An inbound trace id that does not
@@ -195,11 +157,7 @@
   so a transaction built from async spans got a fresh `Sql.ErrorCount` budget
   for every one of them — three async spans effectively allowed three times the
   configured number of statements. The counter now lives on the trace root's
-  shared data ([src/span.h](src/span.h), `SpanData::sql_count_`, reached
-  through `SpanImpl::traceRootData()`), so one transaction has one budget. This
-  is the Java agent's behaviour: `DefaultSqlCountService.recordSqlCount`
-  increments the trace root's `Shared` (`DefaultSqlCountService.java:15-25`,
-  `DefaultShared.java:185-187`), and the Go agent does the same.
+  shared data, so one transaction has one budget.
 
   **Who is affected:** services that use async spans *and* run
   `Sql.ErrorCount` or more SQL statements across a whole transaction. Those
@@ -222,18 +180,8 @@
   `-1` to switch the feature off kept counting and kept marking transactions
   failed at 100 statements — the exact opposite of what it asked for. A
   negative value now warns and is published as `0`
-  (`make_config()` in [src/config.cpp](src/config.cpp)), and the runtime's
-  existing `limit <= 0` guard (`SpanImpl::countSqlExecution()` in
-  [src/span.h](src/span.h)) disables marking.
-
-  `Sql.ErrorCount` merges the Java agent's two keys, where `0` means
-  `profiler.sql.error.enable=false` (`SqlCountServiceProvider.java:21-27`).
-  Once `0` carries "off", "off" is the only reading a negative threshold can
-  consistently carry. Java's literal arithmetic — `enable=true` with a count
-  of `0` or less marks the first statement failed, because
-  `DefaultSqlCountService` validates nothing and compares with `>=` — is not
-  expressible through one key, and is a gap in Java's validation rather than a
-  feature to port.
+  (`make_config()` in [src/config.cpp](src/config.cpp)), which disables
+  marking.
 
   **Symptom if you do not migrate:** a deployment with a negative
   `Sql.ErrorCount` stops marking transactions failed on SQL count, so N+1
@@ -253,13 +201,8 @@
   deployment that configured `0` kept collecting traces at 0.01%. That floor is
   gone (`make_config()` in [src/config.cpp](src/config.cpp)): `0` and below now
   disable percent sampling outright, and a positive rate below `0.01` (e.g.
-  `0.005`) truncates to `0` and disables it too, with a warning.
-
-  This matches the Java agent, where `parseSamplingRate` truncates the
-  configured rate and `createSampler` hands a non-positive result to
-  `FalseSampler` (`PercentSamplerFactory.java:40-48,56-58`). The other two
-  outcomes were already in place: `>= 100` is always-sample (Java's
-  `TrueSampler`) and everything between runs the percent sampler.
+  `0.005`) truncates to `0` and disables it too, with a warning. `>= 100` is
+  always-sample and everything between runs the percent sampler, as before.
 
   **Symptom if you do not migrate:** with `Sampling.Type: PERCENT` and
   `PercentRate` at `0` (or below `0.01`), the agent stops sampling new
@@ -273,56 +216,21 @@
 
   See [Sampling Configuration](doc/config.md#sampling-configuration).
 
-- **`ServiceName` is now required for `UidVersion: v4`.**
-
-  Up to and including v2.0.0, a v4 agent started with no `ServiceName`
-  silently registered under the fallback service name `DEFAULT` (mirroring
-  Java's `ServiceUid.DEFAULT_SERVICE_UID_NAME`). That fallback is gone:
-  `resolve_object_name()` now returns `std::nullopt` for a missing or invalid
-  `ServiceName`, and the caller aborts agent startup
-  (`resolve_object_name()` in [src/object_name.cpp](src/object_name.cpp) /
-  [src/object_name.h](src/object_name.h)). This matches Java's
-  `ObjectNameResolverV4` ("ServiceName not provided") and the Go agent.
-
-  **Symptom if you do not migrate:** the process does **not** start — this is a
-  startup failure, not a silent degradation to reduced tracing. The log shows:
-
-  ```
-  Failed to resolve ServiceName (required for uid.version=v4, max length 254)
-  ```
-
-  **Migration.** Any deployment running `UidVersion: v4` without a
-  `ServiceName` must do one of:
-
-  - Set the service name explicitly — YAML key `ServiceName`, or environment
-    variable `PINPOINT_CPP_SERVICE_NAME` (max 254 bytes, `[a-zA-Z0-9._-]`). Use
-    `DEFAULT` to keep registering under exactly the service the v2.0.0 fallback
-    produced.
-  - Or stay on the v1/v3 identity, which does not use `ServiceName` at all —
-    YAML key `UidVersion: v3`, or `PINPOINT_CPP_UID_VERSION=v3` (`v3` is the
-    default).
-
-  See [Identity Versions](doc/config.md#identity-versions).
-
 - **`Http.UrlStatEnableTrimPath` now defaults to `false`.**
 
   With trimming on at depth 3, a four-segment URI template such as
-  `/api/v1/users/{id}` was recorded as `/api/v1/users/*`, so a C++ service
-  and a Java service behind the same collector showed different URI lists.
-  Java and Go never trim. A caller that passes raw request URLs must now opt
-  in with `Http.UrlStatEnableTrimPath: true` to keep its previous keys; a
-  caller that passes templates gets its routes back. See
+  `/api/v1/users/{id}` was recorded as `/api/v1/users/*`. A caller that passes
+  raw request URLs must now opt in with `Http.UrlStatEnableTrimPath: true` to
+  keep its previous keys; a caller that passes templates gets its routes back.
+  See
   [doc/config.md](doc/config.md#turn-trimming-on-only-when-you-pass-a-raw-url).
 
-- **URL stat capacities follow Java.** Five completed ticks are retained
-  while the stats stream is down (was four: Java compares `size() > 4`
-  before offering) and `Http.UrlStatLimit` defaults to `1000` (was `1024`,
-  Java's `completed.data.limit.size`). The sharded input queue keeps its
-  shape. The Go agent made the same two moves.
+- **URL stat capacities changed.** Five completed ticks are retained while the
+  stats stream is down (was four) and `Http.UrlStatLimit` defaults to `1000`
+  (was `1024`).
 
-- **`Stat.BatchInterval` is capped at `10000` ms, Java's
-  `DefaultAgentStatMonitor` maximum** (was `60000`); a larger value falls back
-  to the default as before. The Go agent adopted the same cap.
+- **`Stat.BatchInterval` is capped at `10000` ms** (was `60000`); a larger
+  value falls back to the default as before.
 
 ### Fixed
 
@@ -339,16 +247,7 @@
   worker now uses `GrpcClient::channelReadyNow()` ([src/grpc.cpp](src/grpc.cpp)):
   READY sends, a connect in progress is waited for only as long as the RPC's
   own deadline, and TRANSIENT_FAILURE fails the attempt at once so the item
-  takes the retry schedule and the worker keeps draining. Java and Go fire
-  the RPC without waiting and let the failure schedule the retry; this is the
-  same shape.
-
-  The outage tests in [test/test_grpc_with_mocks.cpp](test/test_grpc_with_mocks.cpp)
-  mocked `readyChannel()` as an immediate `false`, a value production returns
-  only when the client is stopping, and so pinned a span drop that never
-  happens. The mocks now wait like production and the span test asserts what
-  the worker really does: the batch held through the outage and the queued
-  spans are delivered on recovery.
+  takes the retry schedule and the worker keeps draining.
 
 - **A queued SQL metadata item no longer holds a second, untruncated copy of
   the statement.**
@@ -359,8 +258,7 @@
   could pin the normalizer's 1 MiB cap — about 2 GB across a full new queue
   and retry schedule during an outage. The item now keeps the cache's hash of
   the key and evicts with `IdCache::removeByHash()` ([src/cache.h](src/cache.h)),
-  so a slot is bounded by the wire cap whatever the statement's length. The
-  Go agent dropped `sqlMeta.key` for the same reason.
+  so a slot is bounded by the wire cap whatever the statement's length.
 
 - **URL statistics queued when shutdown begins are aggregated, not lost.**
 
@@ -368,9 +266,7 @@
   left as soon as the agent was exiting, abandoning up to a tick of entries in
   its shard queues; the stats worker's shutdown flush, which runs after that
   thread is joined, never saw them. The worker now closes its gate and drains
-  the shards once on the way out, like Java's `AsyncQueueingExecutor.stop()`
-  falling through to `flushQueue()`. The Go agent's `collectUrlStatWorker`
-  drains `urlStatChan` on the stop signal the same way.
+  the shards once on the way out.
 
 - **`doc/getting_started.md` step 5 now names `SIGTERM`.** The default
   disposition kills the process before `install_atexit_shutdown` or anything
@@ -384,20 +280,17 @@
   limit, a later overflow that recorded no destination injected that stale
   host into `Pinpoint-Host`, drawing a server-map edge to a node the request
   never called. The destination is cleared when the last outstanding overflow
-  ends ([src/span.cpp](src/span.cpp)), as the Go agent already does.
+  ends ([src/span.cpp](src/span.cpp)).
 
 - **Exception chain links dropped by the per-span cap are counted and
   reported.** `SpanData::addException` refused silently past 100 links;
   `EndSpan` now logs (throttled) how many links the cap cut and on which
-  operation, as the Go agent does. The `seal()` comment in
-  [src/annotation.h](src/annotation.h) no longer promises a concurrency
-  guarantee the flag does not provide; it is a misuse guard under the
-  span's single-thread contract.
+  operation.
 
 - **The 1 MiB SQL cap is re-measured on the normalized text.** Literals become
   indexed placeholders (`1` -> `0#`), so a statement dense with short literals
   grows past the cap it passed on input; `AgentImpl::prepareSql` now drops it
-  whole instead of caching and queueing an over-cap key, as the Go agent does.
+  whole instead of caching and queueing an over-cap key.
 
 - **The metadata id sequence no longer wraps into negative ids.** Past
   `INT32_MAX` the id caches latch, log once, and hand out id 0 as a hit so no
@@ -406,9 +299,8 @@
 
 - **Every call-stack `SetError()` is now its own exception chain.** The
   span-wide chain sent every link under one `exceptionId` at depth 0, which
-  the collector cannot order (the Go agent's `errors.go` states the invariant:
-  no two entries of a chain share a depth). Each recorded exception now gets
-  its own id and its own `ANNOTATION_EXCEPTION_ID`, and asks the
+  the collector cannot order. Each recorded exception now gets its own id and
+  its own `ANNOTATION_EXCEPTION_ID`, and asks the
   `CallstackTraceNewThroughput` limiter on its own; a refusal is no longer
   latched for the rest of the span.
 
@@ -429,28 +321,12 @@
   spans the collector rejected, and batches cleared while the channel was
   down or on shutdown were logged but never counted. They now feed one
   cumulative `span drops: N in total (...)` line that says how many came
-  from the queue and how many were never sent, as the Go agent's `spanDrops`
-  does. `GrpcSpan::droppedSpans()` exposes the same total.
-
-- **The metadata rejection policy is locked as a port consensus.** Both ports
-  drop a `PResult.success=false` reply and release the cache entry after one
-  retry delay where Java retries it; the retry budget (3 attempts, 1 s, a
-  1000-entry queue) is Java's. `GrpcTest.MetadataRetryBudgetDefaults`
-  (`test/test_grpc.cpp`) pins the numbers so a change in either port is a
-  deliberate joint change; the Go suite carries the mirror group
-  (`Test_javaParityLock_MetadataRetryBudget`).
+  from the queue and how many were never sent. `GrpcSpan::droppedSpans()`
+  exposes the same total.
 
 - **`Http.Server.ProxyHeaderEnable` switches proxy header recording off.**
-  Java's `profiler.proxy.http.header.enable` and the Go agent's key of the
-  same name had no counterpart, so the three built-in parsers ran on every
-  request even with `ProxyUserHeaderNames` empty. Default `true`, reloadable.
+  The three built-in parsers used to run on every request even with
+  `ProxyUserHeaderNames` empty. Default `true`, reloadable.
 
 - **An unparseable `Pinpoint-pSpanID` is warned about like an unparseable
-  `Pinpoint-SpanID`** (throttled). It used to be silent here and logged in
-  the Go agent, so the two agents each reported a different half of the
-  same broken hop.
-
-- **The active-span registry keeps its warning and takes no cap.** The Go
-  agent adopted Java's 10240-entry eviction; this agent's registry is an
-  intrusive list of nodes the spans own, so eviction would free nothing and
-  cost a heap copy per request.
+  `Pinpoint-SpanID`** (throttled). It used to be silent.

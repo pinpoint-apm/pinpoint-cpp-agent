@@ -118,10 +118,8 @@ pinpoint::StartAgent(options);
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. Max 24 chars for `UidVersion: v1`, otherwise max 254 chars. |
-| `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars; 254 for v4). Falls back to the agent id when omitted. |
-| `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
-| `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4`** (max 254 chars); a missing value aborts agent startup. Unused for v1/v3. |
-| `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | **Required for `UidVersion: v4`**. Unused for v1/v3. Never logged in plaintext. |
+| `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars). Falls back to the agent id when omitted. |
+| `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1` or `v3` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
 | `ActiveProfile` | `PINPOINT_CPP_ACTIVE_PROFILE` | string | `""` | Name of the `Profile.<name>` subtree applied over the top-level keys. See [Profiles](#profiles). Reloadable. |
 | `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](troubleshooting.md#disabling-the-agent). Startup-only: read once when the agent is constructed, so a reload cannot start or stop tracing. |
 
@@ -133,16 +131,17 @@ pinpoint::StartAgent(options);
 
 `UidVersion` selects how the agent identifies itself to the Collector:
 
-| | v1 | v3 (default) | v4 |
-|---|---|---|---|
-| `ApplicationName` max length | 24 | 254 | 254 |
-| Agent id | auto Base64(UUIDv7) | same as v1 | auto Base64(UUIDv7) |
-| `ServiceName` | not used | not used | required |
-| `ApiKey` | not used | not used | **required** |
-| gRPC `protocol.version` header | 100 | 100 | 400 |
-| gRPC `servicename` / `apikey` headers | not sent | not sent | sent |
+| | v1 | v3 (default) |
+|---|---|---|
+| `ApplicationName` max length | 24 | 254 |
+| Agent id | auto Base64(UUIDv7) | same as v1 |
+| gRPC `protocol.version` header | 100 | 100 |
 
-v1 and v3 are identical on the wire (both `protocol.version=100`); they differ only in the `ApplicationName` length limit. A missing/invalid required value (e.g. `ApplicationName`, or `ServiceName`/`ApiKey` for v4) aborts agent startup (the agent degrades to a no-op).
+v1 and v3 are identical on the wire (both `protocol.version=100`); they differ only in the `ApplicationName` length limit. A missing/invalid `ApplicationName` aborts agent startup (the agent degrades to a no-op).
+
+> **`v4` is not supported.** The Collector has not released the v4 identity
+> protocol, so the value is not usable and is not documented here. Use `v1` or
+> `v3`.
 
 > **Note:** because the agent id is generated afresh on every startup, it changes across restarts. Use `AgentName` for a stable label.
 
@@ -560,7 +559,7 @@ are **non-reloadable** — changing them requires an application restart.
 | Category | Options | Reloadable? |
 |---|---|---|
 | Agent toggle | `Enable` | No — it is read once, when the agent is constructed, so a reload could neither start nor stop tracing. The running value is retained and the attempt is warned about, like any other non-reloadable field. |
-| Agent identity | `ApplicationName`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
+| Agent identity | `ApplicationName`, `AgentName`, `UidVersion` | No |
 | Collector / gRPC transport | `Collector.Host`, `Collector.AgentPort`, `Collector.SpanPort`, `Collector.StatPort`, `Collector.Grpc.*`, `Collector.AgentInfo.*`, `Collector.SpanBatch.*` | No |
 | Stat pipeline | `Stat.Enable`, `Stat.BatchCount`, `Stat.BatchInterval` | No |
 | URL statistics | `Http.CollectUrlStat`, `Http.UrlStat*` | No |
