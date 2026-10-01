@@ -204,13 +204,16 @@ namespace pinpoint {
         // plus once per named span event, so a single rwlock's cache line
         // would ping-pong across all request threads.
         //
-        // Sql.CacheLengthLimit additionally caps what the SQL caches may retain
-        // (see kNoCacheLengthLimit): the normalizer admits statements up to
-        // kMaxNormalizedSqlLength, so without it a 1024-entry cache is ~1GB in
-        // the worst case, twice over. Startup-only, like the cache sizes
-        // themselves. Deliberately not applied to sql_cache_: its ids come from
-        // a sequence, so a bypassed statement would burn a fresh id — and a
-        // fresh StringMeta — on every single use.
+        // Sql.CacheLengthLimit additionally caps what the text-keyed SQL
+        // caches (raw, uid) may retain (see kNoCacheLengthLimit): the
+        // normalizer admits statements up to kMaxNormalizedSqlLength, so
+        // without it a 1024-entry text-keyed cache is ~1GB in the worst case.
+        // Startup-only, like the cache sizes themselves. Deliberately not
+        // applied to sql_cache_: its ids come from a sequence, so a bypassed
+        // statement would burn a fresh id — and a fresh StringMeta — on every
+        // single use. It needs no such bound either: it is keyed by the
+        // statement's 16-byte SqlUid (see SqlIdCache), so an entry costs the
+        // same whatever the statement's length.
         //
         // Sql.CacheSize sizes the three SQL caches only (see kDefaultCacheSize
         // for why api/error keep the ctor parameter). make_config() has
@@ -232,7 +235,7 @@ namespace pinpoint {
                 : CacheExpiry::Clock::duration::zero()};
         api_cache_ = std::make_unique<ApiIdCache>(cache_size);
         error_cache_ = std::make_unique<IdCache>(cache_size);
-        sql_cache_ = std::make_unique<IdCache>(sql_cache_size);
+        sql_cache_ = std::make_unique<SqlIdCache>(sql_cache_size);
         sql_uid_cache_ = std::make_unique<SqlUidCache>(
             sql_cache_size, kDefaultCacheShardCount, sql_cache_length_limit,
             sql_uid_expiry);
@@ -1562,7 +1565,7 @@ namespace pinpoint {
 
     void AgentImpl::removeCacheError(const StringMeta& error_meta) const try {
         if (enabled_) {
-            error_cache_->removeByHash(error_meta.cache_key_hash_, error_meta.id_);
+            error_cache_->remove(error_meta.error_key_, error_meta.id_);
         }
     } CATCH_AND_LOG("failed to remove cached error meta:")
 
@@ -1571,11 +1574,17 @@ namespace pinpoint {
             return 0;
         }
 
-        const auto [id, found] = sql_cache_->get(sql_query);
+        // Keyed by the hash of the whole normalized statement, not by the
+        // text (see SqlIdCache): the text would be retained for the life of
+        // the entry, bounded only by kMaxNormalizedSqlLength. Hashing is O(n)
+        // like the string hash it replaces, so a hit costs the same.
+        const auto [id, found] = sql_cache_->get(generate_sql_uid(sql_query));
         if (found) {
             return id;
         }
 
+        // The StringMeta re-derives the same key from the text; a miss is
+        // rare enough that the second hash is noise next to the send.
         auto meta = std::make_unique<MetaData>(StringMeta(id, sql_query, STRING_META_SQL));
         grpc_metadata_->enqueueMeta(std::move(meta));
 
@@ -1645,7 +1654,7 @@ namespace pinpoint {
             // The raw cache needs no invalidation: it holds no ids, so the
             // next use of any raw variant re-resolves through this cache and
             // picks up the fresh id on its own.
-            sql_cache_->removeByHash(sql_meta.cache_key_hash_, sql_meta.id_);
+            sql_cache_->remove(sql_meta.sql_key_, sql_meta.id_);
         }
     } CATCH_AND_LOG("failed to remove cached sql meta:")
 

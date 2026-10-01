@@ -23,6 +23,12 @@
 #include <future>
 #include <set>
 #include <string>
+#include <iostream>
+#if defined(__APPLE__)
+#include <malloc/malloc.h>
+#elif defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 namespace pinpoint {
 
@@ -388,30 +394,6 @@ TEST_F(CacheTest, BasicRemoveTest) {
     auto result3 = cache.get("key1");
     EXPECT_EQ(result3.value, 2) << "Removed key should get new ID";
     EXPECT_FALSE(result3.found) << "Removed key should be cache miss";
-}
-
-// removeByHash: the eviction path a queued StringMeta uses, which keeps only
-// the key's hash and the id (C-1). It evicts exactly the entry holding the
-// id, leaves other entries alone even in a one-shard cache, and ignores a
-// stale id whose entry was already re-registered under a new id.
-TEST_F(CacheTest, RemoveByHashEvictsOnlyTheMatchingIdTest) {
-    IdCache cache(5, 1);
-    const std::string long_sql(70000, 'a');
-
-    const auto sql = cache.get(long_sql);   // ID: 1
-    cache.get("other");                     // ID: 2
-    ASSERT_FALSE(sql.found);
-
-    cache.removeByHash(IdCache::hashKey(long_sql), sql.value);
-    auto again = cache.get(long_sql);
-    EXPECT_FALSE(again.found) << "the entry holding the id must be evicted";
-    EXPECT_EQ(again.value, 3) << "the next use mints a fresh id";
-    EXPECT_TRUE(cache.get("other").found) << "an unrelated entry in the same shard survives";
-
-    // Stale release: id 1 is gone, the key now maps to 3. Nothing is evicted.
-    cache.removeByHash(IdCache::hashKey(long_sql), 1);
-    EXPECT_TRUE(cache.get(long_sql).found) << "a stale id must not evict the re-registered entry";
-    EXPECT_NO_THROW(cache.removeByHash(12345, 99));
 }
 
 // C-5: the int32 id sequence must not wrap into negative ids that alias
@@ -1278,13 +1260,115 @@ TEST_F(CacheTest, CacheLengthLimitAppliesToTheUidCacheOnlyTest) {
     EXPECT_FALSE(uid_cache.get(under_limit).found);
     EXPECT_TRUE(uid_cache.get(under_limit).found) << "a short statement is stored";
 
-    IdCache id_cache(/*max_size=*/64);
+    SqlIdCache id_cache(/*max_size=*/64);
     const std::string very_long(kLengthLimit * 100, 'c');
-    const auto first = id_cache.get(very_long);
+    const auto first = id_cache.get(generate_sql_uid(very_long));
     EXPECT_FALSE(first.found) << "first sight of a statement is a miss";
-    const auto second = id_cache.get(very_long);
+    const auto second = id_cache.get(generate_sql_uid(very_long));
     EXPECT_TRUE(second.found) << "the id cache takes no length limit";
     EXPECT_EQ(first.value, second.value) << "and the id is stable";
+}
+
+// SqlIdCache Test Suite
+//
+// The SQL id cache shares IdCacheImpl with the error cache; the LRU and id
+// sequence mechanics are pinned above. This suite covers what its key traits
+// add: a SqlUid key that distinguishes statements, and key + id removal,
+// which is what a queued StringMeta evicts by.
+class SqlIdCacheTest : public ::testing::Test {};
+
+TEST_F(SqlIdCacheTest, DistinctStatementsGetDistinctKeysAndIds) {
+    SqlIdCache cache(5);
+    const auto select = generate_sql_uid("SELECT * FROM users WHERE id = 0#");
+    const auto update = generate_sql_uid("UPDATE users SET name = '0$' WHERE id = 0#");
+    ASSERT_NE(select, update) << "different normalized SQL hashes to different keys";
+
+    const auto first = cache.get(select);
+    const auto second = cache.get(update);
+    EXPECT_FALSE(first.found);
+    EXPECT_FALSE(second.found);
+    EXPECT_NE(first.value, second.value);
+
+    const auto hit = cache.get(select);
+    EXPECT_TRUE(hit.found);
+    EXPECT_EQ(hit.value, first.value);
+    EXPECT_EQ(cache.get(generate_sql_uid("SELECT * FROM users WHERE id = 0#")).value, first.value)
+        << "the same text re-hashed is the same key";
+}
+
+TEST_F(SqlIdCacheTest, RemoveEvictsOnlyTheEntryStillHoldingTheId) {
+    SqlIdCache cache(5, 1);  // one shard: the other entry shares it
+    const auto key = generate_sql_uid(std::string(70000, 'a'));
+    const auto other = generate_sql_uid("other");
+
+    const auto sql = cache.get(key);     // ID: 1
+    cache.get(other);                    // ID: 2
+    ASSERT_FALSE(sql.found);
+
+    cache.remove(key, sql.value);
+    const auto again = cache.get(key);
+    EXPECT_FALSE(again.found) << "the entry holding the id must be evicted";
+    EXPECT_EQ(again.value, 3) << "the next use mints a fresh id";
+    EXPECT_TRUE(cache.get(other).found) << "an unrelated entry in the same shard survives";
+
+    // Stale release: id 1 is gone, the key now maps to 3. Nothing is evicted.
+    cache.remove(key, 1);
+    EXPECT_TRUE(cache.get(key).found) << "a stale id must not evict the re-registered entry";
+    EXPECT_NO_THROW(cache.remove(SqlUid{}, 99)) << "an unknown key is a no-op";
+}
+
+namespace {
+    // Bytes the allocator currently hands out, or 0 where no such counter is
+    // reachable (other libcs, or a sanitizer that owns malloc).
+    size_t heap_bytes_in_use() {
+#if defined(__APPLE__)
+        return mstats().bytes_used;
+#elif defined(__GLIBC__)
+        return mallinfo2().uordblks;
+#else
+        return 0;
+#endif
+    }
+}
+
+// The reason the key is a SqlUid: a 1024-entry text-keyed cache of 64 KiB
+// statements pins the statements, ~64 MiB, for the process lifetime, where
+// the same statements cost the SqlUid-keyed cache 16 bytes of key each.
+TEST_F(SqlIdCacheTest, HoldsNoStatementTextHoweverLongTheStatements) {
+    constexpr size_t kEntries = 1024;
+    constexpr size_t kStatementLength = 64 * 1024;
+    std::vector<std::string> statements;
+    statements.reserve(kEntries);
+    for (size_t i = 0; i < kEntries; ++i) {
+        statements.push_back("SELECT c FROM t" + std::to_string(i) + " WHERE p = " +
+                             std::string(kStatementLength, 'x'));
+    }
+
+    const auto before_text_keyed = heap_bytes_in_use();
+    IdCache text_keyed(kEntries, 1);
+    for (const auto& statement : statements) {
+        text_keyed.get(statement);
+    }
+    const auto text_keyed_bytes = heap_bytes_in_use() - before_text_keyed;
+
+    const auto before_uid_keyed = heap_bytes_in_use();
+    SqlIdCache uid_keyed(kEntries, 1);
+    for (const auto& statement : statements) {
+        uid_keyed.get(generate_sql_uid(statement));
+    }
+    const auto uid_keyed_bytes = heap_bytes_in_use() - before_uid_keyed;
+
+    if (text_keyed_bytes < kEntries * kStatementLength) {
+        GTEST_SKIP() << "allocator statistics unavailable here (text-keyed delta "
+                     << text_keyed_bytes << " bytes)";
+    }
+    std::cout << "[  METRIC  ] " << kEntries << " x " << kStatementLength
+              << "-byte statements: text-keyed IdCache retains " << text_keyed_bytes
+              << " bytes, SqlUid-keyed SqlIdCache retains " << uid_keyed_bytes
+              << " bytes" << std::endl;
+    EXPECT_LT(uid_keyed_bytes, size_t{1024 * 1024})
+        << "the SqlUid-keyed cache must not retain the statements";
+    EXPECT_LT(uid_keyed_bytes * 100, text_keyed_bytes);
 }
 
 } // namespace pinpoint

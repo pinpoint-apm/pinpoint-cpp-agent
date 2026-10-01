@@ -239,7 +239,10 @@ namespace pinpoint {
         inline static std::atomic<uint64_t> next_api_cache_owner_{1};
         const uint64_t api_cache_owner_{next_api_cache_owner_.fetch_add(1, std::memory_order_relaxed)};
         std::unique_ptr<IdCache> error_cache_{};
-        std::unique_ptr<IdCache> sql_cache_{};
+        // Keyed by SqlUid, not the normalized text (see SqlIdCache): this is
+        // the one SQL cache Sql.CacheLengthLimit does not bound, so the key
+        // has to be small on its own.
+        std::unique_ptr<SqlIdCache> sql_cache_{};
         std::unique_ptr<SqlUidCache> sql_uid_cache_{};
         // One cache for both SqlMetaModes: a PreparedSql holds only the
         // normalization result (parameters + normalized text), which the same

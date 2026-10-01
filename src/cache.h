@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <list>
 #include <memory>
@@ -231,6 +232,52 @@ namespace pinpoint {
         }
     };
 
+    /**
+     * Key traits for the SQL id cache, which keys a statement by its SqlUid
+     * (generate_sql_uid: the murmur3 x64 128 hash of the normalized text, the
+     * same bytes the UID metadata carries). Two statements share a key with
+     * probability 2^-128, which is no collision in practice, and an entry
+     * holds 16 bytes whatever the statement's length — so the cache needs no
+     * Sql.CacheLengthLimit bypass, and a queued StringMeta can carry the key.
+     *
+     * The key is already a uniformly distributed hash, so the shard-selecting
+     * size_t is its first bytes read as-is, not a rehash; the stored key is
+     * the same 16 bytes by value, with no indirection to view.
+     */
+    struct SqlIdCacheKeyHash {
+        size_t operator()(const SqlUid& key) const noexcept {
+            size_t hash;
+            static_assert(sizeof(hash) <= std::tuple_size_v<SqlUid>);
+            std::memcpy(&hash, key.data(), sizeof(hash));
+            return hash;
+        }
+    };
+
+    struct SqlIdCacheKeyTraits {
+        using LookupKey = SqlUid;
+        using StoredKey = SqlUid;
+        using Hash = SqlIdCacheKeyHash;
+        using Equal = std::equal_to<SqlUid>;
+
+        static StoredKey store(LookupKey key) noexcept { return key; }
+        static LookupKey map_key(const StoredKey& key) noexcept { return key; }
+    };
+
+    struct SqlIdCacheShardTraits {
+        using LookupKey = SqlUid;
+        using InnerTraits = SqlIdCacheKeyTraits;
+
+        static size_t hash(LookupKey key) noexcept {
+            return SqlIdCacheKeyHash{}(key);
+        }
+
+        // The key carries its own hash (see SqlIdCacheKeyHash), so the
+        // shard's map re-reads those 8 bytes instead of being handed them.
+        static SqlUid with_hash(LookupKey key, size_t /*hash*/) noexcept {
+            return key;
+        }
+    };
+
     /// @brief Result returned from `SqlUidCache::get`. SqlUid is a fixed
     ///        16-byte array, so copying one out on a hit is allocation-free.
     using SqlUidCacheResult = LruCacheResult<SqlUid>;
@@ -414,28 +461,6 @@ namespace pinpoint {
             }
         }
 
-        /**
-         * @brief Removes the entry holding @p expected, found by value.
-         *
-         * A linear scan under the exclusive lock, for callers that no longer
-         * have the key: a queued SQL metadata item keeps only the key's hash
-         * (see StringMeta), so it cannot hold a 1 MiB normalized statement
-         * twice. Runs only on the rare release path (retry exhaustion,
-         * collector rejection, queue overflow), never on a lookup.
-         */
-        void remove_value(const ValueType& expected) {
-            std::list<Node> removed;
-            std::unique_lock<std::shared_mutex> lock(mutex_);
-
-            const auto it = std::find_if(cache_list_.begin(), cache_list_.end(),
-                                         [&expected](const Node& node) { return node.value == expected; });
-            if (it != cache_list_.end()) {
-                cache_map_.erase(KeyTraits::map_key(it->key));
-                removed.splice(removed.begin(), cache_list_, it);
-                note_invalidation();
-            }
-        }
-
     private:
         /**
          * @brief Inserts the staged node, or promotes an existing entry.
@@ -451,7 +476,8 @@ namespace pinpoint {
          * evicted victim is spliced onto `staged` too, so both die after unlock.
          *
          * Hashes the key once: try_emplace checks and inserts in one operation.
-         * The map key views the node's owned storage, which splice never moves.
+         * The map key views the node's owned storage (or copies it, for a
+         * by-value key such as SqlUid), which splice never moves.
          */
         LruCacheResult<ValueType> insert_or_promote(std::list<Node>& staged) {
             const auto list_it = staged.begin();
@@ -636,18 +662,6 @@ namespace pinpoint {
             shard_for(hash).remove(ShardTraits::with_hash(key, hash), expected);
         }
 
-        /// @brief Removes the entry holding @p expected from the shard that
-        ///        @p key_hash (from hashKey()) selects, without the key
-        ///        (see LruCacheImpl::remove_value).
-        void removeByHash(size_t key_hash, const ValueType& expected) {
-            shard_for(key_hash).remove_value(expected);
-        }
-
-        /// @brief The shard-selecting hash get()/remove() derive from @p key.
-        static size_t hashKey(LookupKey key) noexcept {
-            return ShardTraits::hash(key);
-        }
-
         size_t shardCount() const noexcept {
             return shards_.size();
         }
@@ -799,25 +813,6 @@ namespace pinpoint {
             cache_.remove(key, expected_id);
         }
 
-        /**
-         * @brief Evicts the entry that still maps to @p expected_id, located
-         *        by the key's hash (hashKey()) instead of the key.
-         *
-         * For callers that must not retain the key: a queued metadata item
-         * evicting a 1 MiB SQL statement keeps 8 bytes instead of a second
-         * copy. Same id-compared-first guarantee as remove(): ids are minted
-         * once from the sequence, so the only entry holding @p expected_id
-         * is the one that was registered for it.
-         */
-        void removeByHash(size_t key_hash, int32_t expected_id) {
-            cache_.removeByHash(key_hash, expected_id);
-        }
-
-        /// @brief The hash removeByHash() expects for @p key.
-        static size_t hashKey(LookupKey key) noexcept {
-            return ShardedLruCache<int32_t, ShardTraits>::hashKey(key);
-        }
-
         size_t shardCount() const noexcept {
             return cache_.shardCount();
         }
@@ -833,8 +828,14 @@ namespace pinpoint {
         std::atomic<bool> wrapped_{false};
     };
 
+    /// Error names: keyed by the text. Bounded by the error name length,
+    /// which in practice is a class name.
     using IdCache = IdCacheImpl<StringCacheShardTraits>;
     using ApiIdCache = IdCacheImpl<ApiCacheShardTraits>;
+    /// SQL ids: keyed by the statement's SqlUid, 16 bytes per entry, so the
+    /// cache is bounded by Sql.CacheSize x 16 bytes of key however long the
+    /// normalized statements are (see SqlIdCacheKeyTraits).
+    using SqlIdCache = IdCacheImpl<SqlIdCacheShardTraits>;
 
     /**
      * @brief LRU cache that assigns binary UIDs to normalized SQL statements.

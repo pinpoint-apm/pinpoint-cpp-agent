@@ -817,8 +817,9 @@ TEST_F(AgentImplTest, PrepareSqlMetadataFailureLeavesUnrelatedRawEntriesIntact) 
 }
 
 // The queued StringMeta abbreviates its transmitted copy of an oversize SQL,
-// but the cache stored the whole statement: the release must evict by the
-// uncut key, or the failed id would stay cached and never be re-registered.
+// but the cache keyed the whole statement (by its SqlUid): the release must
+// evict by the uncut statement's key, or the failed id would stay cached and
+// never be re-registered.
 TEST_F(AgentImplTest, RemoveCacheSqlEvictsAnOversizeStatementByItsUncutKey) {
     const std::string long_sql(70000, 'a');
     const auto sql_id = agent_->cacheSql(long_sql);

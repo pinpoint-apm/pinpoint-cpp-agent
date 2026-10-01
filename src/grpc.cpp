@@ -873,8 +873,8 @@ namespace pinpoint {
                         auto* request = google::protobuf::Arena::Create<v1::PSqlMetaData>(&call->arena);
                         request->set_sqlid(value.id_);
                         // StringMeta abbreviated str_val_ on construction
-                        // (removeCacheSql() evicts by cache_key_hash_ + id
-                        // after retry exhaustion, not by the text). Do not
+                        // (removeCacheSql() evicts by sql_key_ + id after
+                        // retry exhaustion, not by the text). Do not
                         // abbreviate again: a second cut would append a
                         // second "...(<length>)" marker and eat the real
                         // length. toValidUtf8 may still grow the text

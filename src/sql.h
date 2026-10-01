@@ -37,9 +37,10 @@ namespace pinpoint {
     /**
     * @brief Hard memory cap on the SQL text the normalizer will process.
     *
-    * This is not the metadata cap: the whole statement is normalized and the
-    * result is the SQL id/UID cache key in full; only the copy that travels in
-    * PSqlMetaData.sql is abbreviated (kMaxSqlMetaLength). This cap exists purely
+    * This is not the metadata cap: the whole statement is normalized, the
+    * result is hashed in full for the SQL id cache key and the UID, and is the
+    * UID cache key in full; only the copy that travels in PSqlMetaData.sql is
+    * abbreviated (kMaxSqlMetaLength). This cap exists purely
     * so a pathological multi-megabyte statement cannot make one span allocate
     * without bound.
     *
@@ -53,7 +54,8 @@ namespace pinpoint {
     * SQL normalizer for APM tracing. Replaces numeric literals with indexed
     * placeholders (0#, 1#, ...) and string literals with '0$', '1$', ...,
     * optionally strips comments, and extracts both literal kinds in order
-    * (comma-separated). The output is the SQL id/UID cache key.
+    * (comma-separated). The output is what the SQL id/UID is derived from and
+    * the UID cache key.
     */
     class SqlNormalizer {
     public:

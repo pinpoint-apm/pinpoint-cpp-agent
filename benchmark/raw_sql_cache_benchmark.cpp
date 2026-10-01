@@ -161,13 +161,15 @@ int main(int argc, char** argv) {
     }
 
     SqlNormalizer normalizer(kMaxNormalizedSqlLength);
-    IdCache canonical_cache(1024);
+    // SqlUid-keyed like AgentImpl::sql_cache_: every lookup, hit or miss,
+    // pays the murmur3 hash of the normalized text as its key.
+    SqlIdCache canonical_cache(1024);
     auto warm_normalized = normalizer.normalize(kRawSql);
-    canonical_cache.get(warm_normalized.normalized_sql);
+    canonical_cache.get(generate_sql_uid(warm_normalized.normalized_sql));
 
     auto baseline = run(iterations, [&] {
         auto normalized = normalizer.normalize(kRawSql);
-        const auto id = canonical_cache.get(normalized.normalized_sql).value;
+        const auto id = canonical_cache.get(generate_sql_uid(normalized.normalized_sql)).value;
         return static_cast<uint64_t>(id) + normalized.parameters.size();
     });
 
@@ -184,7 +186,7 @@ int main(int argc, char** argv) {
     };
     auto cached_lookup = [&] {
         const auto& entry = raw_cache.get(kRawSql, factory).value;
-        const auto id = canonical_cache.get(entry->normalized_sql).value;
+        const auto id = canonical_cache.get(generate_sql_uid(entry->normalized_sql)).value;
         return static_cast<uint64_t>(id) + entry->parameters.size();
     };
     raw_cache.get(kRawSql, factory);
@@ -198,7 +200,7 @@ int main(int argc, char** argv) {
     auto baseline_parallel = run_parallel(
         parallel_threads, operations_per_thread, [&] {
             auto normalized = normalizer.normalize(kRawSql);
-            const auto id = canonical_cache.get(normalized.normalized_sql).value;
+            const auto id = canonical_cache.get(generate_sql_uid(normalized.normalized_sql)).value;
             return static_cast<uint64_t>(id) + normalized.parameters.size();
         });
     auto cached_parallel = run_parallel(
@@ -224,7 +226,7 @@ int main(int argc, char** argv) {
     auto baseline_miss = run(iterations, [&] {
         const auto& raw = miss_pool[miss_index++ % miss_pool.size()];
         auto normalized = normalizer.normalize(raw);
-        const auto id = canonical_cache.get(normalized.normalized_sql).value;
+        const auto id = canonical_cache.get(generate_sql_uid(normalized.normalized_sql)).value;
         return static_cast<uint64_t>(id) + normalized.parameters.size();
     });
 
@@ -237,7 +239,7 @@ int main(int argc, char** argv) {
                 std::move(normalized.parameters),
                 std::move(normalized.normalized_sql)});
         }).value;
-        const auto id = canonical_cache.get(entry->normalized_sql).value;
+        const auto id = canonical_cache.get(generate_sql_uid(entry->normalized_sql)).value;
         return static_cast<uint64_t>(id) + entry->parameters.size();
     });
     const auto miss_overhead = cached_miss.nanoseconds_per_operation /
