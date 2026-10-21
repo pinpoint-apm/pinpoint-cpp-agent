@@ -181,6 +181,47 @@ TEST(AgentLifetimeTest, UnsampledSpanDoesNotPinAgentAndOutlivesItSafely) {
     span.reset();
 }
 
+// The production path for an async child of an unsampled request: NewSpan
+// admits an UnsampledSpan with a runtime snapshot, and its async child must
+// still propagate `Pinpoint-Sampled: s0`. The child is ended on another thread
+// after the parent and the agent are both gone.
+TEST(AgentLifetimeTest, UnsampledSpanAsyncChildPropagatesS0AndOutlivesParentAndAgent) {
+    auto cfg = make_test_config();
+    cfg->sampling.counter_rate = 0;  // never sample → NewSpan yields UnsampledSpan
+    auto agent = make_test_agent(cfg);
+    ASSERT_TRUE(wait_for_condition([&] { return agent->Enable(); }, std::chrono::seconds(3)));
+
+    auto span = agent->NewSpan("async-parent", "/async");
+    ASSERT_FALSE(span->IsSampled());
+    ASSERT_NE(span->GetSpanId(), 0);
+    auto child = span->NewAsyncSpan("async-child");
+    ASSERT_NE(child, nullptr);
+    EXPECT_NE(child, noopSpan());
+    EXPECT_EQ(child->GetSpanId(), span->GetSpanId());
+
+    span->EndSpan();
+    span.reset();
+    agent->Shutdown();
+    agent.reset();
+
+    std::optional<std::string> sampled;
+    size_t header_count = 0;
+    std::thread([&, child = std::move(child)]() mutable {
+        MockTraceContextWriter writer;
+        child->NewAsyncSpan("nested")->NewSpanEvent("call")->InjectContext(writer);
+        child->NewSpanEvent("call")->InjectContext(writer);
+        if (auto value = writer.Get(HEADER_SAMPLED)) {
+            sampled.emplace(*value);
+        }
+        header_count = writer.Size();
+        child->EndSpan();
+        child.reset();
+    }).join();
+
+    EXPECT_EQ(sampled, std::optional<std::string>("s0"));
+    EXPECT_EQ(header_count, 1u);
+}
+
 // Start() blocks signals only while it spawns the agent threads (so they
 // inherit a blocked mask); the calling thread's own mask must be restored
 // before Start() returns — the host's signal handling must not be altered.

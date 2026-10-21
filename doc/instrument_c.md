@@ -790,6 +790,11 @@ Rules:
 - Each async span must be ended with `pt_span_end()` **exactly once**.
 - Create the async span before the parent span ends.
 - The async span's lifetime is independent of the parent span after creation.
+- An unsampled parent returns an unsampled async child, a handle of its own to
+  end and destroy like any other. Its events still write
+  `Pinpoint-Sampled: s0` on `pt_span_event_inject_context()`, so keep
+  injecting on its outbound calls
+  ([Contracts §11](api_contracts.md#11-noop-and-unsampled-spans-are-deliberately-silent)).
 
 ---
 

@@ -27,6 +27,24 @@
   list of categories, as [the reload docs](doc/config.md#configuration-hot-reload)
   already said it did.
 
+### Fixed
+
+- **An async span of an unsampled span now propagates the unsampled
+  decision.** `NewAsyncSpan()` on an unsampled span returned the no-op span,
+  from both overloads and from `pt_span_new_async_span()`. The no-op span's
+  events inject nothing, so an outbound call made through that async child
+  carried no Pinpoint headers, and the downstream agent started a trace of its
+  own and sampled it by itself. An unsampled span now returns an unsampled
+  async child whose events write `Pinpoint-Sampled: s0`, as do the events of
+  its own async children. The child is not a transaction: it registers no
+  active request, records no URL stat or response time, and an error on it
+  does not fail the parent's URL stat. It holds nothing of the parent, so it
+  may outlive the parent and end on another thread. `RecordSpanEvent()` on an
+  unsampled span likewise returns an event that writes `s0`. Sampled spans and
+  no-op spans (agent disabled, URL excluded) are unchanged; a no-op span's
+  async child still writes nothing. Documented in
+  [API Contracts §11](doc/api_contracts.md#11-noop-and-unsampled-spans-are-deliberately-silent).
+
 ## 2.1.0 (2026-09-17)
 
 ### Breaking

@@ -132,6 +132,8 @@ public:
         return std::nullopt;
     }
 
+    std::size_t Size() const { return context_.size(); }
+
 private:
     std::map<std::string, std::string> context_;
 };

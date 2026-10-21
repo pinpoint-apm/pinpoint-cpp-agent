@@ -923,6 +923,12 @@ void safeAsyncOperation() {
 
 - Each async span must be **ended exactly once**.
 - Ensure the original span outlives any span events created on it.
+- Create the async span whether or not the parent is sampled, and call
+  `InjectContext()` on its outbound calls as usual. An unsampled parent hands
+  out an unsampled async child whose events write `Pinpoint-Sampled: s0`, so
+  the downstream service does not start a trace of its own. The child records
+  nothing and is not counted as a request
+  ([Contracts §11](api_contracts.md#11-noop-and-unsampled-spans-are-deliberately-silent)).
 - For long-running worker loops, create a **new span per iteration** rather than keeping a single span open indefinitely.
 
 ---

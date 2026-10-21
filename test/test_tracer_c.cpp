@@ -1074,6 +1074,53 @@ TEST_F(TracerCApiTest, NewAsyncSpan) {
     pt_span_destroy(parent);
 }
 
+// The async child of an unsampled span (inbound `Pinpoint-Sampled: s0`) still
+// propagates the unsampled decision, and so does its own async child: their
+// events inject exactly `Pinpoint-Sampled: s0`. They are owned handles of
+// their own, so they outlive the parent and end on another thread.
+TEST_F(TracerCApiTest, NewAsyncSpanOfUnsampledSpanPropagatesS0) {
+    HeaderMap inbound{{PT_HEADER_SAMPLED, "s0"}};
+    pt_context_reader_t reader{&inbound, hmap_get};
+
+    pt_span_t parent = pt_agent_new_span_with_reader(agent_, "op", "/rpc", &reader);
+    ASSERT_NE(parent, nullptr);
+    ASSERT_EQ(pt_span_is_sampled(parent), 0);
+
+    pt_span_t async_span = pt_span_new_async_span(parent, "bg_task");
+    ASSERT_NE(async_span, nullptr);
+    pt_span_t nested = pt_span_new_async_span(async_span, "bg_nested");
+    ASSERT_NE(nested, nullptr);
+    EXPECT_NE(async_span, nested);
+    for (pt_span_t span : {async_span, nested}) {
+        EXPECT_EQ(pt_span_is_sampled(span), 0);
+        // The noop sentinel reports span id 0; this child carries the parent's.
+        EXPECT_EQ(pt_span_get_span_id(span), pt_span_get_span_id(parent));
+    }
+
+    pt_span_end(parent);
+    pt_span_destroy(parent);
+
+    std::vector<HeaderMap> injected;
+    std::thread([&] {
+        for (pt_span_t span : {async_span, nested}) {
+            HeaderMap outbound;
+            pt_context_writer_t writer{&outbound, hmap_set};
+            pt_span_event_t event = pt_span_new_event(span, "call");
+            pt_span_event_inject_context(event, &writer);
+            pt_span_event_end(event);
+            pt_span_end(span);
+            pt_span_end(span);
+            pt_span_destroy(span);
+            injected.push_back(std::move(outbound));
+        }
+    }).join();
+
+    ASSERT_EQ(injected.size(), 2u);
+    for (const auto& outbound : injected) {
+        EXPECT_EQ(outbound, (HeaderMap{{PT_HEADER_SAMPLED, "s0"}}));
+    }
+}
+
 // ============================================================================
 // 14. HTTP helper functions
 // ============================================================================
@@ -1321,9 +1368,15 @@ TEST_F(TracerCNoopPathTest, NoopChainSharesSentinelsAndIsSafeToDestroy) {
     ASSERT_NE(e1, nullptr);
     EXPECT_EQ(e1, e2);
 
-    // The async child of a noop span is still the same span sentinel.
+    // The async child of a noop span is still the same span sentinel, and its
+    // event still writes nothing: the noop span stands for "agent off / URL
+    // excluded", where a proxy must pass the inbound headers on untouched.
     pt_span_t async = pt_span_new_async_span(s1, "bg");
     EXPECT_EQ(async, s1);
+    HeaderMap outbound;
+    pt_context_writer_t writer{&outbound, hmap_set};
+    pt_span_event_inject_context(pt_span_new_event(async, "call"), &writer);
+    EXPECT_TRUE(outbound.empty());
 
     // Distinct types must not share a handle value: the span sentinel wrapper
     // and the singleton pointee are two different addresses.

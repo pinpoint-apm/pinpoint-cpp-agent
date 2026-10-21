@@ -81,12 +81,12 @@ namespace pinpoint {
     class UnsampledSpan;
 
     /**
-     * @brief Span event handed out by UnsampledSpan: records nothing, but still
-     *        propagates the unsampled decision (`Pinpoint-Sampled: s0`) to
-     *        downstream services on InjectContext.
+     * @brief Span event handed out by UnsampledSpan and its async children:
+     *        records nothing, but still propagates the unsampled decision
+     *        (`Pinpoint-Sampled: s0`) to downstream services on InjectContext.
      *
-     * One instance per span, held by value inside the UnsampledSpan, so its
-     * lifetime is the span's — the same contract a real SpanEventPtr carries
+     * One instance per span, held by value inside the span, so its lifetime
+     * is the span's — the same contract a real SpanEventPtr carries
      * (api_contracts.md section 4).
      */
     class UnsampledSpanEvent final : public NoopSpanEvent {
@@ -141,8 +141,56 @@ namespace pinpoint {
         bool IsSampled() override { return false; }
     };
 
+    /**
+     * @brief What every span of an unsampled request shares, the request's
+     *        own UnsampledSpan and its async children alike: it records
+     *        nothing, but every event it hands out propagates the unsampled
+     *        decision (`Pinpoint-Sampled: s0`), and so does every async child
+     *        it creates.
+     *
+     * Without this, an async child would be NoopSpan's shared noop span, whose
+     * events inject nothing: the downstream agent would start a trace of its
+     * own and sample it by itself. (A NoopSpan writing nothing is correct: it
+     * stands for "agent off / URL excluded", where a proxy must let the
+     * inbound headers pass through untouched.)
+     */
+    class UnsampledSpanBase : public NoopSpan {
+    public:
+        // Hand out this span's own unsampled event so that InjectContext on
+        // the event still propagates the `s0` sampling decision downstream.
+        // Everything else on it, SetError included, is a no-op.
+        SpanEventPtr NewSpanEvent(std::string_view operation) override { return &event_; }
+        SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override { return &event_; }
+        SpanEventPtr GetSpanEvent() override { return &event_; }
+        // Replayed events are not recorded either; the event is handed out so
+        // that a caller injecting through it still writes `s0`.
+        SpanEventPtr RecordSpanEvent(std::string_view operation, int32_t service_type,
+                                     int32_t sequence, int32_t depth,
+                                     int64_t start_time_ms, int64_t end_time_ms,
+                                     int32_t async_id) override { return &event_; }
+
+        // Both overloads return an UnsampledAsyncSpan carrying this span's
+        // id, as a sampled async child carries its parent's. The unsampled
+        // decision does not expire, so a finished span still hands one out.
+        SpanPtr NewAsyncSpan(std::string_view async_operation) override;
+        SpanPtr NewAsyncSpan(std::string_view async_operation,
+                             int32_t async_id, int32_t async_sequence) override;
+
+        int64_t GetSpanId() override { return span_id_; }
+
+    protected:
+        explicit UnsampledSpanBase(int64_t span_id) noexcept : span_id_(span_id) {}
+
+        const int64_t span_id_;
+
+    private:
+        // Handed out by the event getters above; by value, so an unsampled
+        // span pays no allocation for it.
+        UnsampledSpanEvent event_;
+    };
+
     /// @brief Lightweight span used when requests are explicitly marked as unsampled.
-    class UnsampledSpan final : public NoopSpan {
+    class UnsampledSpan final : public UnsampledSpanBase {
     public:
         // `runtime` is the creator's already-loaded runtime snapshot (see
         // SpanImpl); with it, SetUrlStat and EndSpan resolve config and
@@ -151,13 +199,6 @@ namespace pinpoint {
         explicit UnsampledSpan(AgentService *agent,
                                std::shared_ptr<const AgentRuntime> runtime = nullptr);
         ~UnsampledSpan() override;
-
-        // Hand out this span's own unsampled event so that InjectContext on
-        // the event still propagates the `s0` sampling decision downstream.
-        // Everything else on it, SetError included, is a no-op.
-        SpanEventPtr NewSpanEvent(std::string_view operation) override { return &event_; }
-        SpanEventPtr NewSpanEvent(std::string_view operation, int32_t service_type) override { return &event_; }
-        SpanEventPtr GetSpanEvent() override { return &event_; }
 
         // An unsampled span records nothing and is never sent, but it still
         // produces a URL stat entry, so a span-level error fails that entry.
@@ -171,10 +212,6 @@ namespace pinpoint {
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
         void ForceUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
 
-        int64_t GetSpanId() override {
-            return span_id_;
-        }
-
     private:
         // Single point that flips err_, so the Span.IgnoreErrors filter is
         // applied in exactly one place, as SpanImpl::markSpanError does.
@@ -186,16 +223,12 @@ namespace pinpoint {
         // else the agent's own (tests), else null (no agent at all).
         AgentStats* statsSink() const;
 
-        int64_t span_id_;
         int64_t start_time_;
         std::atomic<bool> finished_{false};
         // The whole of this span's error state: no span is ever sent, so the
         // flag exists only to fail the URL stat entry. Atomic like finished_,
         // since EndSpan reads it from a possibly different thread.
         std::atomic<bool> err_{false};
-        // Handed out by NewSpanEvent/GetSpanEvent; by value, so an unsampled
-        // request pays no allocation for it.
-        UnsampledSpanEvent event_;
         // Registration in the active-request registry (see active_span.h):
         // linked by the constructor, unlinked by EndSpan; the destructor and
         // releaseActiveSpanOnError unlink as idempotent backstops.
@@ -218,6 +251,24 @@ namespace pinpoint {
         // keep-alive this pointer may dangle once the host releases the
         // agent, and EndSpan/the destructor must not touch it.
         AgentService *agent_;
+    };
+
+    /**
+     * @brief Async child of an unsampled span (UnsampledSpanBase::NewAsyncSpan).
+     *
+     * Not a transaction: it registers no active request, records no URL stat
+     * or response time, and an error set on it is dropped rather than failing
+     * the parent's URL stat — the parent has typically consumed that entry at
+     * its own EndSpan by then. EndSpan is therefore the inherited no-op, cheap
+     * and idempotent.
+     *
+     * Self-contained: it holds a copy of the parent's span id and nothing else
+     * of the parent, so it may outlive the parent and be used and ended on
+     * another thread, which is what an async span is for.
+     */
+    class UnsampledAsyncSpan final : public UnsampledSpanBase {
+    public:
+        explicit UnsampledAsyncSpan(int64_t span_id) noexcept : UnsampledSpanBase(span_id) {}
     };
 
     /// @brief Agent implementation that always returns noop spans.

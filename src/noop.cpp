@@ -69,9 +69,18 @@ namespace pinpoint {
         return *agent;
     }
 
+    SpanPtr UnsampledSpanBase::NewAsyncSpan(std::string_view async_operation) try {
+        return std::make_shared<UnsampledAsyncSpan>(span_id_);
+    } CATCH_AND_LOG_RETURN("new async span", noopSpan())
+
+    SpanPtr UnsampledSpanBase::NewAsyncSpan(std::string_view async_operation,
+                                            int32_t async_id, int32_t async_sequence) try {
+        return std::make_shared<UnsampledAsyncSpan>(span_id_);
+    } CATCH_AND_LOG_RETURN("new async span", noopSpan())
+
     UnsampledSpan::UnsampledSpan(AgentService *agent,
-                                 std::shared_ptr<const AgentRuntime> runtime) : NoopSpan(),
-        span_id_(generate_span_id()),
+                                 std::shared_ptr<const AgentRuntime> runtime) :
+        UnsampledSpanBase(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         runtime_(std::move(runtime)),
         // With a runtime snapshot carrying the stats sinks (every

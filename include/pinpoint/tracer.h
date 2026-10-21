@@ -396,6 +396,11 @@ namespace pinpoint {
         /// parent span. Call it on the thread that owns this span; the returned
         /// child is a distinct instance that the other thread then uses
         /// exclusively. See the Span thread-safety contract above.
+        ///
+        /// The child of an unsampled span is unsampled too, from both
+        /// overloads: it records nothing, but its events still write
+        /// `Pinpoint-Sampled: s0` on InjectContext, so keep injecting on its
+        /// outbound calls (doc/api_contracts.md section 11).
         virtual SpanPtr NewAsyncSpan(std::string_view async_operation) = 0;
         /// @brief Creates an asynchronous child span linked by caller-supplied
         ///        async ids, for wrappers that manage span events outside this

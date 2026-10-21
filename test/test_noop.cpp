@@ -15,12 +15,14 @@
  */
 
 #include <gtest/gtest.h>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <functional>
 #include <map>
 #include <new>
+#include <optional>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -931,6 +933,216 @@ TEST_F(NoopTest, UnsampledSpanEventNoErrorOverloadFailsTheUrlStatTest) {
         ASSERT_EQ(mock_agent_service_->recorded_url_stats_, 1) << "overload " << i;
         EXPECT_FALSE(mock_agent_service_->last_url_stat_failed_)
             << "SetError overload " << i << " must not fail the url stat";
+    }
+}
+
+// Async children of an unsampled span
+
+namespace {
+
+// Every event @p span hands out must inject exactly `Pinpoint-Sampled: s0`:
+// the downstream agent must be told not to trace, and nothing else.
+void expectEventsInjectOnlyS0(Span& span) {
+    for (SpanEventPtr event : {span.NewSpanEvent("call"), span.NewSpanEvent("call", 1000),
+                               span.GetSpanEvent()}) {
+        ASSERT_NE(event, nullptr);
+        MockTraceContextWriter writer;
+        event->InjectContext(writer);
+        EXPECT_EQ(writer.Size(), 1u) << "only the sampling decision is written";
+        EXPECT_EQ(writer.Get(HEADER_SAMPLED), std::optional<std::string_view>("s0"));
+    }
+}
+
+bool injectsOnlyS0(Span& span) {
+    MockTraceContextWriter writer;
+    span.NewSpanEvent("call")->InjectContext(writer);
+    return writer.Size() == 1 && writer.Get(HEADER_SAMPLED) == std::optional<std::string_view>("s0");
+}
+
+}  // namespace
+
+TEST_F(NoopTest, UnsampledSpanAsyncChildPropagatesS0Test) {
+    UnsampledSpan parent(mock_agent_service_.get());
+
+    const SpanPtr children[] = {parent.NewAsyncSpan("async"),
+                                parent.NewAsyncSpan("async", 7, 1)};
+    for (const auto& child : children) {
+        ASSERT_NE(child, nullptr);
+        EXPECT_NE(child, noopSpan()) << "the noop span's events inject nothing";
+        EXPECT_FALSE(child->IsSampled());
+        EXPECT_TRUE(child->GetTraceId().empty());
+        EXPECT_EQ(child->GetSpanId(), parent.GetSpanId())
+            << "carries the parent's span id, as a sampled async child does";
+        expectEventsInjectOnlyS0(*child);
+    }
+    EXPECT_NE(children[0], children[1]) << "each call hands out a child of its own";
+    EXPECT_NE(children[0]->GetSpanEvent(), parent.GetSpanEvent())
+        << "the child's event lives in the child, not in the parent";
+}
+
+TEST_F(NoopTest, UnsampledAsyncSpanNestedAsyncChildPropagatesS0Test) {
+    UnsampledSpan parent(mock_agent_service_.get());
+    auto child = parent.NewAsyncSpan("async");
+
+    for (const auto& nested : {child->NewAsyncSpan("nested"),
+                               child->NewAsyncSpan("nested", 3, 2)}) {
+        ASSERT_NE(nested, nullptr);
+        EXPECT_NE(nested, noopSpan());
+        EXPECT_FALSE(nested->IsSampled());
+        EXPECT_EQ(nested->GetSpanId(), parent.GetSpanId());
+        expectEventsInjectOnlyS0(*nested);
+    }
+
+    // The intermediate child is released at the end of the full expression,
+    // before the grandchild is used.
+    auto grandchild = child->NewAsyncSpan("nested")->NewAsyncSpan("deeper");
+    expectEventsInjectOnlyS0(*grandchild);
+}
+
+// The unsampled decision does not expire with the parent's EndSpan: the
+// parent's own event keeps writing s0 afterwards, and so must a late child.
+TEST_F(NoopTest, FinishedUnsampledSpanStillHandsOutUnsampledAsyncChildTest) {
+    UnsampledSpan parent(mock_agent_service_.get());
+    parent.EndSpan();
+
+    auto child = parent.NewAsyncSpan("late");
+    ASSERT_NE(child, nullptr);
+    EXPECT_NE(child, noopSpan());
+    expectEventsInjectOnlyS0(*child);
+}
+
+// The async child is not a transaction: whatever is called on it, and whenever
+// it ends, it registers no active request, records no URL stat or response
+// time, and leaves the parent's error state alone.
+TEST_F(NoopTest, UnsampledAsyncSpanHasNoTransactionSideEffectsTest) {
+    auto& stats = mock_agent_service_->getAgentStats();
+    AgentStatsSnapshot snapshot;
+    auto active_count = [&]() {
+        stats.collectAgentStat(snapshot);
+        return snapshot.active_requests_[0] + snapshot.active_requests_[1] +
+               snapshot.active_requests_[2] + snapshot.active_requests_[3];
+    };
+
+    UnsampledSpan parent(mock_agent_service_.get());
+    parent.SetUrlStat("/api/parent", "GET", 200);
+    ASSERT_EQ(active_count(), 1);  // also drains the response-time accumulators
+
+    auto child = parent.NewAsyncSpan("async");
+    auto nested = child->NewAsyncSpan("nested", 1, 1);
+    EXPECT_EQ(active_count(), 1) << "an async child is not an active request";
+
+    // Long enough that a recorded response time would show in the max.
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    for (const auto& span : {child, nested}) {
+        span->SetStatusCode(500);
+        span->SetUrlStat("/api/child", "POST", 500);
+        span->ForceUrlStat("/api/child", "POST", 500);
+        span->SetError("child failed");
+        span->SetError("ChildError", "child failed");
+        span->MarkError("ChildError", "child failed");
+        span->GetSpanEvent()->SetError("ChildEventError", "child failed");
+        span->EndSpan();
+        span->EndSpan();  // idempotent
+    }
+
+    EXPECT_EQ(active_count(), 1) << "ending a child must not drop the parent's entry";
+    EXPECT_EQ(snapshot.response_time_max_, 0) << "an async child records no response time";
+    EXPECT_EQ(mock_agent_service_->recorded_url_stats_, 0) << "an async child records no URL stat";
+
+    parent.EndSpan();
+    EXPECT_EQ(active_count(), 0);
+    ASSERT_EQ(mock_agent_service_->recorded_url_stats_, 1) << "only the parent's own entry";
+    EXPECT_EQ(mock_agent_service_->last_url_stat_status_code_, 200);
+    EXPECT_FALSE(mock_agent_service_->last_url_stat_failed_)
+        << "an error on an async child must not fail the parent's URL stat";
+}
+
+// What an async span is for: it is handed to another thread and may outlive
+// its parent. The child holds nothing of the parent, so it may be used while
+// the parent ends and is destroyed concurrently (round 1), and after the
+// parent is gone (round 2). Under TSan/ASan this is the race and
+// use-after-free probe.
+TEST_F(NoopTest, UnsampledAsyncSpanOutlivesParentOnAnotherThreadTest) {
+    auto parent = std::make_shared<UnsampledSpan>(mock_agent_service_.get(), makeRuntime(true));
+    const auto parent_span_id = parent->GetSpanId();
+
+    constexpr int kWorkers = 4;
+    std::atomic<bool> go{false};
+    std::atomic<bool> parent_gone{false};
+    std::atomic<int> passed{0};
+    std::vector<std::thread> workers;
+    for (int i = 0; i < kWorkers; ++i) {
+        workers.emplace_back([child = parent->NewAsyncSpan("async"), parent_span_id,
+                              &go, &parent_gone, &passed]() mutable {
+            while (!go.load()) {
+                std::this_thread::yield();
+            }
+            bool ok = injectsOnlyS0(*child);
+            while (!parent_gone.load()) {
+                std::this_thread::yield();
+            }
+            auto nested = child->NewAsyncSpan("nested");
+            ok = ok && injectsOnlyS0(*child) && injectsOnlyS0(*nested) &&
+                 child->GetSpanId() == parent_span_id && !child->IsSampled();
+            nested->EndSpan();
+            child->EndSpan();
+            child->EndSpan();
+            child.reset();
+            nested.reset();
+            if (ok) {
+                passed.fetch_add(1);
+            }
+        });
+    }
+
+    go.store(true);
+    parent->EndSpan();
+    parent.reset();
+    parent_gone.store(true);
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    EXPECT_EQ(passed.load(), kWorkers);
+}
+
+// RecordSpanEvent is the batch-replay counterpart of NewSpanEvent; an event
+// it hands out on an unsampled span injects s0 like any other.
+TEST_F(NoopTest, UnsampledSpanRecordSpanEventPropagatesS0Test) {
+    UnsampledSpan parent(mock_agent_service_.get());
+    auto child = parent.NewAsyncSpan("async", 7, 1);
+
+    for (Span* span : {static_cast<Span*>(&parent), child.get()}) {
+        auto* event = span->RecordSpanEvent("replayed", 1000, 1, 1, 1, 2, NONE_ASYNC_ID);
+        ASSERT_NE(event, nullptr);
+        EXPECT_NE(event, noopSpanEvent());
+        MockTraceContextWriter writer;
+        event->InjectContext(writer);
+        EXPECT_EQ(writer.Size(), 1u);
+        EXPECT_EQ(writer.Get(HEADER_SAMPLED), std::optional<std::string_view>("s0"));
+        event->EndEvent();
+    }
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.size(), 0u);
+}
+
+// A noop span stands for "agent off / URL excluded", where writing nothing is
+// right: a proxy then passes the inbound headers on untouched. Its async
+// children stay the noop span and keep injecting nothing.
+TEST_F(NoopTest, NoopSpanAsyncChildStillInjectsNothingTest) {
+    NoopSpan plain;
+    auto shared = noopSpan();
+
+    for (Span* span : {static_cast<Span*>(&plain), shared.get()}) {
+        for (const auto& child : {span->NewAsyncSpan("async"), span->NewAsyncSpan("async", 7, 1)}) {
+            EXPECT_EQ(child, noopSpan());
+            EXPECT_EQ(child->NewAsyncSpan("nested"), noopSpan());
+            for (SpanEventPtr event : {child->NewSpanEvent("call"), child->GetSpanEvent(),
+                                       child->RecordSpanEvent("replayed", 1000, 1, 1, 1, 2,
+                                                              NONE_ASYNC_ID)}) {
+                MockTraceContextWriter writer;
+                event->InjectContext(writer);
+                EXPECT_EQ(writer.Size(), 0u) << "a noop span's event writes nothing";
+            }
+        }
     }
 }
 
