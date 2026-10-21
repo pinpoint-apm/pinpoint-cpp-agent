@@ -3356,4 +3356,248 @@ Log:
         << "and an unset MaxFileSize stays at 10 MB";
 }
 
+// ========== make_reload_config() (ReloadAgentConfig) Tests ==========
+
+class ReloadConfigTest : public ConfigTest {
+protected:
+    static constexpr const char* kRunningYaml = R"(
+ApplicationName: ReloadApp
+Collector:
+  Host: collector.running
+  AgentPort: 9991
+Stat:
+  BatchCount: 3
+Sampling:
+  CounterRate: 10
+  NewThroughput: 50
+)";
+
+    std::shared_ptr<const Config> start(std::string_view yaml = kRunningYaml) {
+        set_config_string(yaml);
+        auto running = make_config();
+        EXPECT_NE(running, nullptr);
+        return running;
+    }
+
+    std::shared_ptr<Config> reload(const std::shared_ptr<const Config>& running,
+                                   std::string_view yaml, ConfigReloadResult& result) {
+        set_config_string(yaml);
+        return make_reload_config(options_, running, result);
+    }
+};
+
+TEST_F(ReloadConfigTest, AppliesReloadableFieldsAndReportsFixedOnes) {
+    const auto running = start();
+    ASSERT_NE(running, nullptr);
+
+    ConfigReloadResult result;
+    const auto reloaded = reload(running, R"(
+ApplicationName: OtherApp
+Collector:
+  Host: collector.other
+  AgentPort: 9991
+Stat:
+  BatchCount: 3
+Sampling:
+  CounterRate: 20
+  NewThroughput: 50
+Http:
+  Server:
+    ExcludeUrl: [/health]
+)", result);
+    ASSERT_NE(reloaded, nullptr) << result.message;
+
+    EXPECT_EQ(reloaded->sampling.counter_rate, 20);
+    EXPECT_EQ(reloaded->http.server.exclude_url, std::vector<std::string>{"/health"});
+    EXPECT_EQ(reloaded->app_name_, "ReloadApp") << "identity is retained";
+    EXPECT_EQ(reloaded->collector.host, "collector.running") << "the collector is retained";
+    EXPECT_EQ(reloaded->agent_id_, running->agent_id_);
+    EXPECT_EQ(reloaded->revision, running->revision + 1);
+    EXPECT_EQ(result.restart_required,
+              (std::vector<std::string>{"ApplicationName", "Collector.Host"}))
+        << "the attempted changes are named by YAML path, in table order";
+    EXPECT_TRUE(result.message.empty());
+}
+
+// The YAML replaces the configuration: a key it omits takes its default, as
+// it would in a fresh StartAgent(), instead of keeping the running value the
+// way a config-file watcher reload does.
+TEST_F(ReloadConfigTest, OmittedKeysTakeTheirDefaults) {
+    const auto running = start();
+    ASSERT_NE(running, nullptr);
+    ASSERT_EQ(running->sampling.new_throughput, 50);
+
+    ConfigReloadResult result;
+    const auto reloaded = reload(running, R"(
+ApplicationName: ReloadApp
+Collector:
+  Host: collector.running
+)", result);
+    ASSERT_NE(reloaded, nullptr) << result.message;
+
+    const Config defaults_only;
+    EXPECT_EQ(reloaded->sampling.counter_rate, defaults_only.sampling.counter_rate);
+    EXPECT_EQ(reloaded->sampling.new_throughput, defaults_only.sampling.new_throughput);
+    // A non-reloadable key the YAML no longer names resolves to its default
+    // too, which differs from the running value: a restart would change it.
+    EXPECT_EQ(reloaded->stat.batch_count, 3) << "but its running value is kept";
+    EXPECT_EQ(result.restart_required, std::vector<std::string>{"Stat.BatchCount"});
+}
+
+TEST_F(ReloadConfigTest, EnvironmentOutranksTheReloadedYaml) {
+    setenv(full_env(env::SAMPLING_COUNTER_RATE).c_str(), "7", 1);
+    setenv(full_env(env::COLLECTOR_HOST).c_str(), "collector.env", 1);
+    const auto running = start();
+    ASSERT_NE(running, nullptr);
+    ASSERT_EQ(running->sampling.counter_rate, 7);
+    ASSERT_EQ(running->collector.host, "collector.env");
+
+    ConfigReloadResult result;
+    const auto reloaded = reload(running, R"(
+ApplicationName: ReloadApp
+Collector:
+  Host: collector.yaml
+  AgentPort: 9991
+Stat:
+  BatchCount: 3
+Sampling:
+  CounterRate: 30
+  NewThroughput: 80
+)", result);
+    ASSERT_NE(reloaded, nullptr) << result.message;
+
+    EXPECT_EQ(reloaded->sampling.counter_rate, 7) << "the environment still wins";
+    EXPECT_EQ(reloaded->sampling.new_throughput, 80) << "a YAML-only key still applies";
+    EXPECT_EQ(reloaded->collector.host, "collector.env");
+    EXPECT_TRUE(result.restart_required.empty())
+        << "a non-reloadable key the environment pins is not a change a restart "
+           "would make";
+}
+
+// Enough for check(): the environment alone may supply what the YAML lacks.
+TEST_F(ReloadConfigTest, EnvironmentCanSupplyRequiredKeys) {
+    setenv(full_env(env::APPLICATION_NAME).c_str(), "ReloadApp", 1);
+    setenv(full_env(env::COLLECTOR_HOST).c_str(), "collector.running", 1);
+    const auto running = start("{}");
+    ASSERT_NE(running, nullptr);
+
+    ConfigReloadResult result;
+    const auto reloaded = reload(running, "Sampling:\n  CounterRate: 4\n", result);
+    ASSERT_NE(reloaded, nullptr) << result.message;
+    EXPECT_EQ(reloaded->sampling.counter_rate, 4);
+    EXPECT_TRUE(result.restart_required.empty());
+
+    ConfigReloadResult empty_result;
+    EXPECT_NE(reload(running, "", empty_result), nullptr)
+        << "an empty document is an empty configuration: " << empty_result.message;
+}
+
+TEST_F(ReloadConfigTest, RejectsTextThatIsNotAYamlMapping) {
+    const auto running = start();
+    ASSERT_NE(running, nullptr);
+
+    for (const char* yaml : {"Sampling: [1, 2", "just a scalar", "- a\n- b\n", "{ApplicationName: x"}) {
+        ConfigReloadResult result;
+        EXPECT_EQ(reload(running, yaml, result), nullptr) << yaml;
+        EXPECT_EQ(result.status, ConfigReloadResult::Status::kInvalidYaml) << yaml;
+        EXPECT_FALSE(result.message.empty()) << yaml;
+        EXPECT_TRUE(result.restart_required.empty()) << yaml;
+    }
+}
+
+// make_config() degrades a value of the wrong type to the current one with a
+// warning; a reload is refused instead, so the host learns about it.
+TEST_F(ReloadConfigTest, RejectsAValueOfTheWrongType) {
+    const auto running = start();
+    ASSERT_NE(running, nullptr);
+
+    ConfigReloadResult result;
+    EXPECT_EQ(reload(running, R"(
+ApplicationName: ReloadApp
+Collector:
+  Host: collector.running
+Sampling:
+  CounterRate: often
+)", result), nullptr);
+    EXPECT_EQ(result.status, ConfigReloadResult::Status::kInvalidConfig);
+    EXPECT_NE(result.message.find("Sampling.CounterRate"), std::string::npos) << result.message;
+}
+
+TEST_F(ReloadConfigTest, RejectsWhatStartAgentWouldRefuse) {
+    const auto running = start();
+    ASSERT_NE(running, nullptr);
+
+    ConfigReloadResult no_name;
+    EXPECT_EQ(reload(running, "Collector:\n  Host: collector.running\n", no_name), nullptr);
+    EXPECT_EQ(no_name.status, ConfigReloadResult::Status::kInvalidConfig);
+    EXPECT_EQ(no_name.message, "application name is required");
+
+    ConfigReloadResult no_collector;
+    EXPECT_EQ(reload(running, "ApplicationName: ReloadApp\n", no_collector), nullptr);
+    EXPECT_EQ(no_collector.status, ConfigReloadResult::Status::kInvalidConfig);
+    EXPECT_EQ(no_collector.message, "address of collector is required");
+
+    ConfigReloadResult bad_identity;
+    EXPECT_EQ(reload(running, "ApplicationName: \"has space\"\nCollector:\n  Host: c\n",
+                     bad_identity), nullptr);
+    EXPECT_EQ(bad_identity.status, ConfigReloadResult::Status::kInvalidConfig);
+    EXPECT_EQ(bad_identity.message, "agent identity resolution failed");
+}
+
+TEST_F(ReloadConfigTest, RefusalLeavesTheLoggerUntouched) {
+    const auto running = start();
+    ASSERT_NE(running, nullptr);
+    Logger::getInstance().setLogLevel("info");
+    ASSERT_FALSE(Logger::getInstance().debugEnabled());
+
+    ConfigReloadResult result;
+    EXPECT_EQ(reload(running, R"(
+ApplicationName: ReloadApp
+Collector:
+  Host: collector.running
+Log:
+  Level: debug
+Sampling:
+  CounterRate: often
+)", result), nullptr);
+    EXPECT_FALSE(Logger::getInstance().debugEnabled())
+        << "a refused reload must not reconfigure the logger";
+
+    ConfigReloadResult applied;
+    EXPECT_NE(reload(running, R"(
+ApplicationName: ReloadApp
+Collector:
+  Host: collector.running
+Log:
+  Level: debug
+)", applied), nullptr) << applied.message;
+    EXPECT_TRUE(Logger::getInstance().debugEnabled()) << "an applied one does";
+    Logger::getInstance().setLogLevel("info");
+}
+
+TEST_F(ConfigTest, RetainNonReloadableFromNamesTheDiscardedFields) {
+    auto old_config = std::make_shared<Config>();
+    old_config->app_name_ = "OldApp";
+    old_config->collector.host = "old.host";
+
+    Config same = *old_config;
+    EXPECT_TRUE(same.retainNonReloadableFrom(old_config).empty());
+
+    Config changed = *old_config;
+    changed.app_name_ = "NewApp";
+    changed.span.queue_size = old_config->span.queue_size + 1;
+    changed.sampling.counter_rate = old_config->sampling.counter_rate + 1;  // reloadable
+
+    testing::internal::CaptureStdout();
+    const auto discarded = changed.retainNonReloadableFrom(old_config);
+    const std::string log_output = testing::internal::GetCapturedStdout();
+
+    EXPECT_EQ(discarded, (std::vector<std::string>{"ApplicationName", "Span.QueueSize"}));
+    EXPECT_NE(log_output.find("non-reloadable config fields changed at runtime: "
+                              "ApplicationName, Span.QueueSize"),
+              std::string::npos)
+        << log_output;
+    EXPECT_EQ(changed.app_name_, "OldApp");
+}
+
 } // namespace pinpoint

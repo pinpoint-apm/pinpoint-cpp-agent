@@ -501,6 +501,56 @@ void pt_agent_options_set_server_metadata(pt_agent_options_t options,
 int pt_start_agent(pt_agent_options_t options);
 
 /**
+ * @brief Outcome of pt_reload_agent_config().
+ *
+ * Mirrors pinpoint::ConfigReloadResult::Status.
+ */
+typedef enum {
+    PT_RELOAD_APPLIED            = 0, /**< Reloadable settings applied. */
+    PT_RELOAD_NO_AGENT           = 1, /**< No running agent in this process. */
+    PT_RELOAD_CONFIG_FILE_ACTIVE = 2, /**< A config file is the source; YAML not used. */
+    PT_RELOAD_INVALID_YAML       = 3, /**< Not a YAML mapping. */
+    PT_RELOAD_INVALID_CONFIG     = 4, /**< Wrong value type or failed validation. */
+    PT_RELOAD_ERROR              = 5  /**< Unexpected internal failure. */
+} pt_reload_status_t;
+
+/**
+ * @brief Re-resolves the running global agent's configuration from @p yaml
+ *        and applies the settings that can change at runtime.
+ *
+ * Resolved like pt_start_agent() with the running agent's own options and
+ * only the YAML replaced: environment variables still outrank the YAML, and
+ * a setting the YAML omits takes its default, not its previous value.
+ * Non-reloadable settings (identity, collector, ...) keep their running
+ * values; those the YAML would change are reported in @p restart_required.
+ * Any status but PT_RELOAD_APPLIED leaves the agent unchanged, and the
+ * reason is logged. Thread-safe; call it from a control thread, not per
+ * request. See pinpoint::ReloadAgentConfig() for the full contract.
+ *
+ * @param yaml                  NUL-terminated YAML (JSON is valid YAML).
+ *                              NULL is an empty configuration.
+ * @param restart_required      Optional buffer that receives the
+ *                              non-reloadable settings the YAML would change,
+ *                              as a comma-separated list of YAML paths
+ *                              ("ApplicationName,Collector.Host"), with
+ *                              snprintf semantics: at most
+ *                              @p restart_required_size - 1 bytes are copied
+ *                              and the result is always NUL-terminated. It is
+ *                              set to the empty string unless the status is
+ *                              PT_RELOAD_APPLIED. May be NULL.
+ * @param restart_required_size Size of @p restart_required in bytes.
+ * @param restart_required_len  Optional; receives the full length of the
+ *                              list, so a value >= @p restart_required_size
+ *                              means it was truncated. May be NULL.
+ *
+ * Mirrors pinpoint::ReloadAgentConfig().
+ */
+pt_reload_status_t pt_reload_agent_config(const char* yaml,
+                                          char* restart_required,
+                                          size_t restart_required_size,
+                                          size_t* restart_required_len);
+
+/**
  * @brief Returns a handle to the singleton global agent.
  *
  * For a live global agent, each call returns a distinct owning handle that

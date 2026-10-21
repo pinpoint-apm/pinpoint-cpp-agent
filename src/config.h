@@ -491,6 +491,9 @@ namespace pinpoint {
          * @return true when the configuration is valid.
          */
         bool check() const;
+        /// @brief The first requirement check() fails, as the message it
+        ///        logs, or empty when the configuration is valid.
+        std::string validationError() const;
 
         /// @brief Whether a reload from @p old is allowed.
         bool isReloadable(const std::shared_ptr<const Config>& old) const;
@@ -504,8 +507,11 @@ namespace pinpoint {
          * reload may carry different values, so they are overwritten with the
          * running ones — the reload never disturbs the live agent — and an
          * attempted change is logged by name. No-op when @p old is null.
+         *
+         * @return The YAML paths of the fields whose value differed from
+         *         @p old, in table order. Empty when nothing was discarded.
          */
-        void retainNonReloadableFrom(const std::shared_ptr<const Config>& old);
+        std::vector<std::string> retainNonReloadableFrom(const std::shared_ptr<const Config>& old);
     };
 
     /**
@@ -601,6 +607,32 @@ namespace pinpoint {
      */
     std::shared_ptr<Config> make_config(const AgentOptions& options,
                                         const std::shared_ptr<const Config>& old = nullptr);
+
+    /**
+     * @brief Builds the config ReloadAgentConfig() applies on top of @p old,
+     *        the running agent's config.
+     *
+     * Resolved like a first load from `options.config_yaml` (no config file
+     * is read): defaults, then the YAML, then the environment for every
+     * field, the identity resolved against @p old's agent id. Unlike
+     * make_config(options, old) it is NOT seeded from @p old, so a key the
+     * YAML omits takes its default rather than its running value. The
+     * non-reloadable fields are then retained from @p old and the logger is
+     * reconfigured, as on any reload; the result is final.
+     *
+     * Strict where make_config() degrades to defaults: a YAML syntax error or
+     * a document that is not a mapping fails with kInvalidYaml, and a value
+     * of the wrong type or a config that fails check() fails with
+     * kInvalidConfig. A failure returns nullptr with `result.status` and
+     * `result.message` set and changes nothing, the logger included.
+     *
+     * @param result On success receives `restart_required` (the
+     *        non-reloadable fields whose resolved value differs from @p old);
+     *        `status` is then left for the caller, which publishes the config.
+     */
+    std::shared_ptr<Config> make_reload_config(const AgentOptions& options,
+                                               const std::shared_ptr<const Config>& old,
+                                               ConfigReloadResult& result);
 
     /**
      * @brief Serializes a `Config` back into its YAML representation.

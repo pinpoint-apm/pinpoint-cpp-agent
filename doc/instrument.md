@@ -138,6 +138,36 @@ pinpoint::StartAgent();
 auto agent = pinpoint::GlobalAgent();
 ```
 
+### Reloading the Configuration at Runtime
+
+`StartAgent()` is one-shot: calling it again leaves the running agent and its
+configuration untouched. A host that owns the configuration — a control plane,
+a proxy that receives it dynamically — applies a new one with
+`ReloadAgentConfig()`:
+
+```cpp
+const auto result = pinpoint::ReloadAgentConfig(new_yaml);
+if (!result.ok()) {
+    log_warn("pinpoint config not reloaded: " + result.message);  // nothing changed
+}
+// e.g. "ApplicationName", "Collector.Host": kept until the process restarts
+for (const auto& setting : result.restart_required) {
+    log_warn("pinpoint setting needs a restart to change: " + setting);
+}
+```
+
+The YAML is resolved the way `StartAgent()` resolves it — the running agent's
+own `AgentOptions` with only `config_yaml` replaced, so environment variables
+still outrank it — and the [reloadable settings](config.md#reloadable-vs-non-reloadable-options)
+take effect for spans created afterwards. It is the complete configuration: a
+key it omits takes its default, not its previous value. Non-reloadable settings
+keep their running values and are listed in `restart_required` when the YAML
+would change them. A refusal (`kNoAgent`, `kConfigFileActive`, `kInvalidYaml`,
+`kInvalidConfig`, `kError`) changes nothing. The call is thread-safe but parses
+YAML, so make it from a control thread, not per request. Details and the
+comparison with the config-file watcher are in
+[Configuration Guide § Reloading from YAML](config.md#reloading-from-yaml-reloadagentconfig).
+
 ---
 
 ## 3. Creating Spans for Incoming Work
@@ -261,7 +291,8 @@ computing event positions, formatting bind values, capturing stack frames — an
 must gate that work on the same settings the agent uses. Application
 instrumentation does not need it: the agent applies every one of these itself.
 
-Because a [hot reload](config.md#configuration-hot-reload) can change them,
+Because a [hot reload](config.md#configuration-hot-reload) or
+`ReloadAgentConfig()` can change them,
 cache the snapshot and re-fetch it only when a span reports a newer revision:
 
 ```cpp

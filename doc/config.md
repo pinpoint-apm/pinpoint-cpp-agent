@@ -15,7 +15,7 @@ The agent merges configuration from four sources. **Later sources override earli
 
 Values are normalised (clamped into range) after the merge.
 
-> **A [hot reload](#configuration-hot-reload) keeps this precedence.** Environment variables are re-read on every load, so a value set by a `PINPOINT_CPP_*` variable is never taken over by the config file — not even when the file starts naming that key after the agent has started. Only options whose value came from the config file or the built-in default are updated by a reload.
+> **A [hot reload](#configuration-hot-reload) — and a [`ReloadAgentConfig()`](#reloading-from-yaml-reloadagentconfig) — keeps this precedence.** Environment variables are re-read on every load, so a value set by a `PINPOINT_CPP_*` variable is never taken over by the config file — not even when the file starts naming that key after the agent has started. Only options whose value came from the config file or the built-in default are updated by a reload.
 
 ### Profiles
 
@@ -547,7 +547,8 @@ re-applied on top of the file, so they keep outranking it (see
 Requirements: the watcher toggle must be on (it is evaluated once at agent start
 and cannot itself be reloaded), and a config file path must be set — via
 `AgentOptions::config_file_path` or `PINPOINT_CPP_CONFIG_FILE` — and exist at
-startup. Inline YAML strings are not watched.
+startup. Inline YAML strings are not watched; a host that supplies YAML itself
+applies a new one with [`ReloadAgentConfig()`](#reloading-from-yaml-reloadagentconfig).
 
 ### Reloadable vs. Non-Reloadable Options
 
@@ -629,6 +630,59 @@ logs a `yaml parsing exception` **error** and the reload continues with the
 running values, and a change to a non-reloadable field logs a warning naming
 the retained fields while reloadable changes in the same file still take
 effect.
+
+### Reloading from YAML (`ReloadAgentConfig()`)
+
+`StartAgent()` is one-shot per process: calling it again leaves the running
+agent and its configuration untouched. A host that owns the configuration — a
+control plane, or a proxy such as Envoy that receives it over xDS — applies a
+new one with `pinpoint::ReloadAgentConfig(yaml)` (C: `pt_reload_agent_config()`):
+
+```cpp
+const auto result = pinpoint::ReloadAgentConfig(yaml);
+// result.ok(), result.status, result.message,
+// result.restart_required  e.g. {"ApplicationName", "Collector.Host"}
+```
+
+The YAML is resolved exactly as `StartAgent()` would resolve it from the
+running agent's own `AgentOptions` with only `config_yaml` replaced: defaults,
+then the YAML (and the `Profile.<name>` its `ActiveProfile` selects), then the
+`<env_prefix>_*` environment variables, which still outrank it. The
+[reloadable options](#reloadable-vs-non-reloadable-options) are applied
+through the same atomic swap as a file reload ([What Is Rebuilt](#what-is-rebuilt)),
+so spans already in flight keep the generation they started with. The
+non-reloadable options keep their running values; those the YAML would change
+are returned in `restart_required` — by YAML path, in the order of this guide's
+tables — and logged as a warning, so the host can report that a restart is
+needed. A non-reloadable option pinned by an environment variable is never
+listed: a restart would not change it either.
+
+It differs from the config-file watcher in three ways:
+
+| | Config-file watcher | `ReloadAgentConfig()` |
+|---|---|---|
+| A key the new YAML omits | keeps its running value | takes its default (or environment) value, as at startup |
+| YAML that does not parse, or a value of the wrong type | logged; the reload continues with the running values | **refused**, nothing changes |
+| A config that `StartAgent()` would refuse (no `ApplicationName` or `Collector.Host`, invalid identity) | n/a (identity is retained) | **refused**, nothing changes |
+
+Out-of-range values and unknown keys are handled as at startup — clamped or
+ignored, with a warning. The result's `status`:
+
+| Status | Meaning |
+|---|---|
+| `kApplied` | Reloadable options applied; `restart_required` lists what was not. |
+| `kNoAgent` | No running agent in this process: `StartAgent()` was never called or failed, the agent was shut down, its initialization failed, or it was inherited across `fork()`. |
+| `kConfigFileActive` | The agent reads a config file (`AgentOptions::config_file_path` or `PINPOINT_CPP_CONFIG_FILE`), which replaces YAML wholesale; edit the file instead. |
+| `kInvalidYaml` | A YAML syntax error, or a document that is not a mapping. |
+| `kInvalidConfig` | A value of the wrong type, or a config `StartAgent()` would refuse. |
+| `kError` | Unexpected internal failure, or a call from the log sink while a reload runs on the same thread. |
+
+Every status but `kApplied` leaves the agent exactly as it was — settings,
+logger and config revision — and `message` says why. The call is thread-safe:
+it may run while request threads create spans, and it is serialized with
+`StartAgent()`, `Shutdown()` and the config-file watcher. It parses YAML and
+may reopen the log file, so make it from a control thread, not per request.
+An applied reload logs `agent config reloaded (revision N)`.
 
 ---
 

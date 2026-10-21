@@ -672,6 +672,50 @@ int pt_start_agent(pt_agent_options_t options) {
     });
 }
 
+pt_reload_status_t pt_reload_agent_config(const char* yaml,
+                                          char* restart_required,
+                                          size_t restart_required_size,
+                                          size_t* restart_required_len) {
+    // Valid outputs on every path, including an exception before the lambda
+    // below writes them.
+    if (restart_required && restart_required_size > 0) {
+        restart_required[0] = '\0';
+    }
+    if (restart_required_len) {
+        *restart_required_len = 0;
+    }
+    return pt_api_call(__func__, PT_RELOAD_ERROR, [&] {
+        using Status = pinpoint::ConfigReloadResult::Status;
+        const auto result = pinpoint::ReloadAgentConfig(yaml ? std::string_view(yaml) : std::string_view());
+
+        std::string list;
+        for (const auto& field : result.restart_required) {
+            if (!list.empty()) {
+                list += ',';
+            }
+            list += field;
+        }
+        if (restart_required && restart_required_size > 0) {
+            const size_t n = std::min(list.size(), restart_required_size - 1);
+            std::memcpy(restart_required, list.data(), n);
+            restart_required[n] = '\0';
+        }
+        if (restart_required_len) {
+            *restart_required_len = list.size();
+        }
+
+        switch (result.status) {
+            case Status::kApplied:          return PT_RELOAD_APPLIED;
+            case Status::kNoAgent:          return PT_RELOAD_NO_AGENT;
+            case Status::kConfigFileActive: return PT_RELOAD_CONFIG_FILE_ACTIVE;
+            case Status::kInvalidYaml:      return PT_RELOAD_INVALID_YAML;
+            case Status::kInvalidConfig:    return PT_RELOAD_INVALID_CONFIG;
+            case Status::kError:            break;
+        }
+        return PT_RELOAD_ERROR;
+    });
+}
+
 pt_agent_t pt_global_agent(void) {
     return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [] {
         // A missing global agent collapses to the shared noop-agent sentinel; an

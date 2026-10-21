@@ -287,6 +287,47 @@ TEST(ForkLifecycleTest, StartAgentInChildEvictsInheritedGlobal) {
     agent->Shutdown();
 }
 
+// ReloadAgentConfig() in a forked child that inherited a started global agent
+// is refused like any other use of it, and — unlike StartAgent() — changes
+// nothing: the inherited handle stays installed and its config untouched.
+TEST(ForkLifecycleTest, ReloadAgentConfigInChildIsRefused) {
+    reset_global_agent();
+
+    auto cfg = make_fork_config();
+    auto agent = make_cold_agent(cfg);
+    agent->Start();
+    wait_enabled(agent);
+    ASSERT_TRUE(agent->Enable());
+    set_global_agent(agent);
+
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        const auto before = agent->getConfig();
+        const auto result = ReloadAgentConfig(R"(
+ApplicationName: fork-app
+Collector:
+  GrpcHost: 127.0.0.1
+Sampling:
+  CounterRate: 9
+)");
+        const bool refused = result.status == ConfigReloadResult::Status::kNoAgent;
+        const bool unchanged = agent->getConfig().get() == before.get();
+        const bool still_installed =
+            std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get() == agent.get();
+        _exit((refused && unchanged && still_installed) ? 0 : 1);
+    }
+
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    EXPECT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0)
+        << "ReloadAgentConfig() in the child must refuse the inherited agent and change nothing";
+
+    reset_global_agent();
+    agent->Shutdown();
+}
+
 // Safety net: an agent that was STARTED in the master is inherited by a child
 // and torn down there. The child's worker threads do not exist, so teardown
 // must abandon the handles (never join or detach) — the child must not abort.

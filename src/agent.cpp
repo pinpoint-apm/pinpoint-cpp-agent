@@ -82,6 +82,19 @@ namespace pinpoint {
         std::chrono::milliseconds agent_shutdown_deadline() {
             return std::chrono::milliseconds{shutdown_deadline_ms.load(std::memory_order_relaxed)};
         }
+
+        // Set while this thread runs a config reload under some agent's
+        // reload_mutex_. The host log sink may call ReloadAgentConfig() from a
+        // line the reload logs, and taking reload_mutex_ again on the same
+        // thread would deadlock; reloadConfigFromYaml() refuses instead.
+        thread_local bool config_reload_in_progress = false;
+
+        struct ConfigReloadScope {
+            ConfigReloadScope() noexcept { config_reload_in_progress = true; }
+            ~ConfigReloadScope() { config_reload_in_progress = false; }
+            ConfigReloadScope(const ConfigReloadScope&) = delete;
+            ConfigReloadScope& operator=(const ConfigReloadScope&) = delete;
+        };
     }
 
     namespace {
@@ -341,9 +354,13 @@ namespace pinpoint {
                 // — and re-reads the file itself. Runs on the watcher thread;
                 // teardown_workers() joins the watcher while the agent is
                 // still guaranteed alive, so `this` stays valid throughout.
+                // Built under reload_mutex_ (see there): a ReloadAgentConfig()
+                // between the build and the store would otherwise be lost.
+                std::lock_guard<std::mutex> reload_lock(reload_mutex_);
+                ConfigReloadScope reload_scope;
                 auto new_cfg = make_config(options_, getConfig());
                 if (new_cfg) {
-                    reloadConfig(std::move(new_cfg));
+                    apply_config(std::move(new_cfg));
                     LOG_INFO("agent config reloaded");
                 }
             });
@@ -536,6 +553,66 @@ namespace pinpoint {
         // take reload_mutex_.
         std::lock_guard<std::mutex> reload_lock(reload_mutex_);
         apply_config(std::move(cfg));
+    }
+
+    ConfigReloadResult AgentImpl::reloadConfigFromYaml(std::string_view config_yaml) {
+        ConfigReloadResult result;
+        result.status = ConfigReloadResult::Status::kNoAgent;
+        // Checked before taking any lock: a mutex inherited across fork() may
+        // be held by a parent thread that does not exist in this process.
+        if (!ownedByThisProcess()) {
+            result.message = "the agent was started in another process and inherited across "
+                             "fork(); call StartAgent() in this process";
+            return result;
+        }
+        if (config_reload_in_progress) {
+            result.status = ConfigReloadResult::Status::kError;
+            result.message = "called from inside a config reload on the same thread "
+                             "(e.g. from the log sink)";
+            return result;
+        }
+
+        // reload_mutex_, then global_agent_mutex (the order is documented at
+        // reload_mutex_). With the global lock held, Shutdown() cannot begin
+        // unpublishing this agent and StartAgent() cannot install a successor
+        // while the reload runs, so it never reconfigures the process-wide
+        // logger behind a successor's back.
+        std::lock_guard<std::mutex> reload_lock(reload_mutex_);
+        std::lock_guard<std::recursive_mutex> global_lock(global_agent_mutex);
+        ConfigReloadScope reload_scope;
+        // Both states are terminal: such an agent never comes back online.
+        if (isExiting()) {
+            result.message = "the agent is shut down";
+            return result;
+        }
+        if (initFailed()) {
+            result.message = "the agent failed to initialize; call StartAgent() to replace it";
+            return result;
+        }
+
+        // StartAgent()'s precedence: a config file replaces the YAML
+        // wholesale, so the YAML would be ignored here and the file re-read
+        // instead. Resolved now, not at Start(), the way make_config() would.
+        if (const auto path = resolve_config_file_path(options_); !path.empty()) {
+            result.status = ConfigReloadResult::Status::kConfigFileActive;
+            result.message = "the agent reads its configuration from the config file " + path +
+                             ", which outranks YAML";
+            return result;
+        }
+
+        // Only the YAML changes: the env prefix and the rest of the options
+        // are the running agent's own.
+        AgentOptions options = options_;
+        options.config_yaml = std::string(config_yaml);
+        auto cfg = make_reload_config(options, getConfig(), result);
+        if (!cfg) {
+            return result;
+        }
+        const auto revision = cfg->revision;
+        apply_config(std::move(cfg));
+        result.status = ConfigReloadResult::Status::kApplied;
+        LOG_INFO("agent config reloaded (revision {})", revision);
+        return result;
     }
 
     void AgentImpl::init_grpc_workers() try {
@@ -1808,6 +1885,37 @@ namespace pinpoint {
             return noopAgent();
         }
         return agent;
+    }
+
+    // Public entry point: every failure is a result, never an exception in the
+    // host, and every refusal leaves the agent as it was.
+    ConfigReloadResult ReloadAgentConfig(std::string_view config_yaml) try {
+        // Lock-free, like GlobalAgent(): reloadConfigFromYaml() takes
+        // global_agent_mutex itself, after reload_mutex_ (the order every
+        // reload path uses), and checks the agent's state under it.
+        const auto agent = global_agent().load();
+
+        ConfigReloadResult result;
+        if (agent == nullptr) {
+            result.status = ConfigReloadResult::Status::kNoAgent;
+            result.message = "no agent is running in this process (StartAgent() was not called, "
+                             "failed, or the agent was shut down)";
+        } else {
+            // Refuses the agents StartAgent() would replace (shut down, init
+            // failed, inherited across fork()) without evicting them: a
+            // refusal must not change state.
+            result = agent->reloadConfigFromYaml(config_yaml);
+        }
+        if (!result.ok()) {
+            LOG_WARN("agent config reload refused, nothing changed: {}", result.message);
+        }
+        return result;
+    } catch (const std::exception& e) {
+        ConfigReloadResult failed;
+        try { failed.message = e.what(); } catch (...) {}
+        return failed;
+    } catch (...) {
+        return {};
     }
 
     void set_global_agent(std::shared_ptr<AgentImpl> agent) {

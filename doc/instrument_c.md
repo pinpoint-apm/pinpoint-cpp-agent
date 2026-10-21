@@ -218,6 +218,38 @@ void handle_request(request_t* req) {
 }
 ```
 
+### Reloading the configuration at runtime
+
+A host that owns the configuration (a control plane, a proxy that receives it
+dynamically) re-applies it with `pt_reload_agent_config()` instead of calling
+`pt_start_agent()` again, which never reloads anything. The YAML is resolved
+the way `pt_start_agent()` resolves it — the running agent's own options with
+only the YAML replaced, environment variables still on top — and the
+reloadable settings are applied. Non-reloadable settings keep their running
+values; the ones the YAML would change are written to the optional buffer, so
+the host can ask for a restart:
+
+```c
+char restart_required[512];
+size_t len = 0;
+pt_reload_status_t status = pt_reload_agent_config(
+    yaml, restart_required, sizeof(restart_required), &len);
+if (status != PT_RELOAD_APPLIED) {
+    /* nothing changed; the agent log has the reason */
+} else if (restart_required[0] != '\0') {
+    host_log_warn("pinpoint: restart required: %s", restart_required);  /* "ApplicationName,Collector.Host" */
+}
+```
+
+The buffer follows `snprintf` semantics (`len >= sizeof(restart_required)`
+means the list was truncated). Any status but `PT_RELOAD_APPLIED`
+(`PT_RELOAD_NO_AGENT`, `PT_RELOAD_CONFIG_FILE_ACTIVE`, `PT_RELOAD_INVALID_YAML`,
+`PT_RELOAD_INVALID_CONFIG`, `PT_RELOAD_ERROR`) leaves the agent unchanged. The
+call is thread-safe but parses YAML: make it from a control thread, not per
+request. The full contract — a key the YAML omits takes its default, how it
+differs from the config-file watcher — is in
+[Configuration Guide § Reloading from YAML](config.md#reloading-from-yaml-reloadagentconfig).
+
 ---
 
 ## 4. Propagation Carriers

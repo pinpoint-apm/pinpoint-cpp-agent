@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`ReloadAgentConfig()`: apply a new YAML configuration to the running
+  agent.** `StartAgent()` stays one-shot — a repeated call still never reloads
+  — so a host that owns the configuration (a control plane, Envoy over xDS)
+  had no way to change it without the config-file watcher. The YAML is
+  resolved as `StartAgent()` would resolve it from the running agent's own
+  `AgentOptions` (environment variables still outrank it; a key it omits takes
+  its default), the reloadable options are applied, and the non-reloadable
+  ones are kept and returned in `ConfigReloadResult::restart_required` by YAML
+  path (`"ApplicationName"`, `"Collector.Host"`). YAML that does not parse, a
+  value of the wrong type, or a config `StartAgent()` would refuse is refused
+  with nothing changed, as is a call with no running agent or while a config
+  file is the source. Thread-safe, and serialized with the config-file
+  watcher. C counterpart: `pt_reload_agent_config()`. Documented in
+  [Configuration Guide § Reloading from YAML](doc/config.md#reloading-from-yaml-reloadagentconfig).
+
+### Changed
+
+- **The non-reloadable-change warning names the fields.** A reload that tries
+  to change a non-reloadable option now logs `non-reloadable config fields
+  changed at runtime: ApplicationName, Collector.Host; ...` instead of a fixed
+  list of categories, as [the reload docs](doc/config.md#configuration-hot-reload)
+  already said it did.
+
 ## 2.1.0 (2026-09-17)
 
 ### Breaking

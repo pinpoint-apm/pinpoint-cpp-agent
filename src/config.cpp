@@ -36,6 +36,7 @@
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/str_replace.h"
 #include "absl/strings/str_split.h"
 
@@ -444,6 +445,11 @@ namespace pinpoint {
         }
     }
 
+    // Values the yaml loader could not convert, one description each. Only
+    // make_reload_config() collects them, to refuse the reload; every other
+    // load passes null and degrades to the current value with a warning.
+    using YamlErrors = std::vector<std::string>;
+
     // The getter guards the whole lookup, not just the conversion: yaml-cpp
     // throws from the subscript itself (BadSubscript on scalar nodes) and from
     // element-level conversions (TypedBadConversion<Element> inside vector
@@ -451,14 +457,19 @@ namespace pinpoint {
     // must degrade to defaults, never throw into the embedding application.
     template <typename T>
     static T get_yaml(const YAML::Node& yaml, std::string_view cname, T default_value,
-                      const char* type_name) {
+                      const char* type_name, YamlErrors* errors) {
         try {
             if (auto node = find_path(yaml, cname)) {
                 return node.as<T>();
             }
         } catch (const YAML::Exception& e) {
-            LOG_WARN("Failed to read '{}' as {}: {}. Using default value",
-                     std::string(cname), type_name, e.what());
+            if (errors) {
+                errors->push_back(absl::StrCat("'", cname, "' is not a valid ", type_name,
+                                               " (", e.what(), ")"));
+            } else {
+                LOG_WARN("Failed to read '{}' as {}: {}. Using default value",
+                         std::string(cname), type_name, e.what());
+            }
         }
 
         return default_value;
@@ -470,18 +481,28 @@ namespace pinpoint {
     // pre-seeded with the defaults (first load) or the running config (reload).
     // size_t members parse through int so a negative value survives to the
     // range checks in make_config() instead of wrapping.
-    static void get_into(const YAML::Node& y, std::string_view key, bool& v) { v = get_yaml(y, key, v, "boolean"); }
-    static void get_into(const YAML::Node& y, std::string_view key, int& v) { v = get_yaml(y, key, v, "int"); }
-    static void get_into(const YAML::Node& y, std::string_view key, double& v) { v = get_yaml(y, key, v, "double"); }
-    static void get_into(const YAML::Node& y, std::string_view key, std::string& v) { v = get_yaml(y, key, v, "string"); }
-    static void get_into(const YAML::Node& y, std::string_view key, std::vector<std::string>& v) {
-        v = get_yaml(y, key, v, "string vector");
+    static void get_into(const YAML::Node& y, std::string_view key, bool& v, YamlErrors* e) {
+        v = get_yaml(y, key, v, "boolean", e);
     }
-    static void get_into(const YAML::Node& y, std::string_view key, size_t& v) {
-        v = static_cast<size_t>(get_yaml(y, key, static_cast<int>(v), "int"));
+    static void get_into(const YAML::Node& y, std::string_view key, int& v, YamlErrors* e) {
+        v = get_yaml(y, key, v, "int", e);
     }
-    static void get_into(const YAML::Node& y, std::string_view key, std::vector<IgnoreErrorRule>& v) {
-        v = drop_empty_rules(get_yaml(y, key, v, "ignore error rule vector"));
+    static void get_into(const YAML::Node& y, std::string_view key, double& v, YamlErrors* e) {
+        v = get_yaml(y, key, v, "double", e);
+    }
+    static void get_into(const YAML::Node& y, std::string_view key, std::string& v, YamlErrors* e) {
+        v = get_yaml(y, key, v, "string", e);
+    }
+    static void get_into(const YAML::Node& y, std::string_view key, std::vector<std::string>& v,
+                         YamlErrors* e) {
+        v = get_yaml(y, key, v, "string vector", e);
+    }
+    static void get_into(const YAML::Node& y, std::string_view key, size_t& v, YamlErrors* e) {
+        v = static_cast<size_t>(get_yaml(y, key, static_cast<int>(v), "int", e));
+    }
+    static void get_into(const YAML::Node& y, std::string_view key, std::vector<IgnoreErrorRule>& v,
+                         YamlErrors* e) {
+        v = drop_empty_rules(get_yaml(y, key, v, "ignore error rule vector", e));
     }
 
     // ---- Configuration field table ------------------------------------
@@ -621,8 +642,8 @@ namespace pinpoint {
     // find_path() makes both "Profile" and the name case-insensitive and lets a
     // dotted name select a nested subtree, matching viper's `profile.<name>`.
     static YAML::Node select_profile(const YAML::Node& yaml, const std::string& prefix,
-                                     std::string& active_profile) {
-        get_into(yaml, "ActiveProfile", active_profile);
+                                     std::string& active_profile, YamlErrors* errors) {
+        get_into(yaml, "ActiveProfile", active_profile, errors);
         if (auto e = get_env(prefix, env::ACTIVE_PROFILE)) {
             active_profile = e.value;
         }
@@ -637,7 +658,8 @@ namespace pinpoint {
         return profile;
     }
 
-    static void load_yaml_config(const YAML::Node& yaml, Config& config, bool& is_container_set) {
+    static void load_yaml_config(const YAML::Node& yaml, Config& config, bool& is_container_set,
+                                 YamlErrors* errors) {
         if (yaml.size() < 1) {
             return;
         }
@@ -646,9 +668,9 @@ namespace pinpoint {
                 auto& value = mut(ref(config));
                 // Deprecated key first: the preferred name then overrides it.
                 if (!f.alias.empty()) {
-                    get_into(yaml, f.alias, value);
+                    get_into(yaml, f.alias, value, errors);
                 }
-                get_into(yaml, f.path, value);
+                get_into(yaml, f.path, value, errors);
             }, f.ref);
         }
         // The IsContainer key being present (even malformed) means the user
@@ -892,27 +914,45 @@ namespace pinpoint {
         }
     }
 
-    // Reached from the public StartAgent() entry point, so a parsing problem
-    // must never escape into the host: yaml errors degrade to defaults and the
-    // function-level handler below is the last-resort backstop. See the
-    // contract in config.h for `old` and the finality of the result.
-    std::shared_ptr<Config> make_config(const AgentOptions& options,
-                                        const std::shared_ptr<const Config>& old) try {
-        // Seed the config with the running values on a reload so every setting
-        // absent from the file keeps its current value (including env-sourced
-        // ones applied at first load) instead of reverting to its default.
-        // On a first load the Config member initializers are the defaults.
-        auto config = old ? std::make_shared<Config>(*old) : std::make_shared<Config>();
+    // The shared body of make_config() and make_reload_config() (see their
+    // contracts in config.h). `replace` selects the latter: @p old is then
+    // non-null, the config is resolved from the defaults instead of seeded
+    // from @p old, and every input error is reported through `replace` and
+    // returns nullptr instead of degrading. Callers own exception handling.
+    static std::shared_ptr<Config> build_config(const AgentOptions& options,
+                                                const std::shared_ptr<const Config>& old,
+                                                ConfigReloadResult* replace) {
+        // Seed the config with the running values on a watcher reload so every
+        // setting absent from the file keeps its current value (including
+        // env-sourced ones applied at first load) instead of reverting to its
+        // default. On a first load and a replacement the Config member
+        // initializers are the defaults.
+        const bool seed_from_old = old && !replace;
+        auto config = seed_from_old ? std::make_shared<Config>(*old) : std::make_shared<Config>();
         // Each generation gets a distinguishable revision (see Config::revision).
         config->revision = old ? old->revision + 1 : 1;
+        if (replace) {
+            // Not a configuration input: resolving against the running id keeps
+            // a defaulted AgentName equal to it, where a freshly minted id would
+            // read as an attempted AgentName change.
+            config->agent_id_ = old->agent_id_;
+        }
         bool is_container_set = false;
         const auto prefix = effective_env_prefix(options);
+
+        const auto fail = [replace](ConfigReloadResult::Status status,
+                                    std::string message) -> std::shared_ptr<Config> {
+            replace->status = status;
+            replace->message = std::move(message);
+            return nullptr;
+        };
 
         // File-over-string precedence, documented at AgentOptions: the file's
         // content replaces options.config_yaml wholesale (the sources are
         // never merged), and the path may come from the CONFIG_FILE env var
-        // rather than from the embedder itself.
-        const auto config_path = resolve_config_file_path(options);
+        // rather than from the embedder itself. A replacement reads the YAML
+        // only; its caller refuses while a file is the source.
+        const auto config_path = replace ? std::string() : resolve_config_file_path(options);
         const std::string user_config =
             !config_path.empty() ? read_config_file(config_path) : options.config_yaml;
 
@@ -921,33 +961,56 @@ namespace pinpoint {
             try {
                 yaml = YAML::Load(user_config);
             } catch (const YAML::Exception& e) {
+                if (replace) {
+                    return fail(ConfigReloadResult::Status::kInvalidYaml,
+                                absl::StrCat("yaml parsing exception = ", e.what()));
+                }
                 LOG_ERROR("yaml parsing exception = {} - continuing with defaults", e.what());
             }
         }
+        // A scalar or sequence document names no setting; the loader would
+        // silently find nothing in it. Null is an empty document.
+        if (replace && !yaml.IsNull() && !yaml.IsMap()) {
+            return fail(ConfigReloadResult::Status::kInvalidYaml,
+                        "the yaml document is not a mapping of config keys");
+        }
 
+        YamlErrors yaml_errors;
+        YamlErrors* const errors = replace ? &yaml_errors : nullptr;
         try {
             // Precedence: defaults < file top level < file profile < env.
             // The profile is selected before the file is loaded so its own
             // keys can be read with the same table-driven loader.
-            const auto profile = select_profile(yaml, prefix, config->active_profile);
-            load_yaml_config(yaml, *config, is_container_set);
+            const auto profile = select_profile(yaml, prefix, config->active_profile, errors);
+            load_yaml_config(yaml, *config, is_container_set, errors);
             if (profile) {
-                load_yaml_config(profile, *config, is_container_set);
+                load_yaml_config(profile, *config, is_container_set, errors);
             }
             warn_unknown_keys(yaml, "", 0);
         } catch (const std::exception& e) {
             // E.g. a section node of the wrong shape (BadSubscript) that the
             // per-key getters cannot intercept. Keep whatever was parsed so
             // far and continue with defaults plus environment overrides.
+            if (replace) {
+                return fail(ConfigReloadResult::Status::kInvalidConfig,
+                            absl::StrCat("failed to load yaml config: ", e.what()));
+            }
             LOG_ERROR("failed to load yaml config: {} - continuing with defaults", e.what());
+        }
+        if (!yaml_errors.empty()) {
+            return fail(ConfigReloadResult::Status::kInvalidConfig,
+                        absl::StrJoin(yaml_errors, "; "));
         }
         // Environment variables outrank the config file (doc/config.md) and keep
         // doing so across a reload, so they are re-applied on top of the file on
         // every load: seeding from the running config alone would let the file
         // take an env-sourced key over the moment it starts naming it. Only
         // variables actually present in the process environment are applied, so
-        // a file-only key still reloads normally.
-        load_env_config(prefix, *config, is_container_set, /*reloadable_only=*/old != nullptr);
+        // a file-only key still reloads normally. A replacement applies them to
+        // every field, as a start would: its non-reloadable values are compared
+        // against the running ones, and a value the environment pins is not a
+        // change a restart would make.
+        load_env_config(prefix, *config, is_container_set, /*reloadable_only=*/seed_from_old);
 
         // Configure the logger immediately on the first load so the rest of
         // make_config() (identity resolution, range checks) already logs to
@@ -1148,14 +1211,23 @@ namespace pinpoint {
             clamp_min(channel.idle_timeout_ms, MIN_GRPC_IDLE_TIMEOUT_MS, "grpc idle timeout");
         }
 
-        // Auto-detect only on the first load. On a reload the value is already
-        // seeded from the running config (env- or file-sourced) at the top of
-        // make_config(); re-running is_container_env() here would clobber an
-        // env-set value that the file does not explicitly override. is_container
-        // is reloadable and is NOT restored by retainNonReloadableFrom(), so
-        // that clobber would otherwise persist across the reload.
-        if (!old && !is_container_set) {
+        // Auto-detect only when the config was not seeded. On a watcher reload
+        // the value is already seeded from the running config (env- or
+        // file-sourced) at the top; re-running is_container_env() there would
+        // clobber an env-set value that the file does not explicitly override.
+        // is_container is reloadable and is NOT restored by
+        // retainNonReloadableFrom(), so that clobber would otherwise persist
+        // across the reload. A replacement resolves it like a first load.
+        if (!seed_from_old && !is_container_set) {
             config->is_container = is_container_env();
+        }
+
+        // Refuse what StartAgent() would refuse, while nothing has been
+        // retained or applied yet.
+        if (replace) {
+            if (auto error = config->validationError(); !error.empty()) {
+                return fail(ConfigReloadResult::Status::kInvalidConfig, std::move(error));
+            }
         }
 
         if (old) {
@@ -1164,17 +1236,52 @@ namespace pinpoint {
             // any attempted change), then reconfigure the logger for the log
             // settings that actually changed. The "config:" line below already
             // goes to the new sink/level and shows the final merged config.
-            config->retainNonReloadableFrom(old);
+            auto discarded = config->retainNonReloadableFrom(old);
+            if (replace) {
+                replace->restart_required = std::move(discarded);
+            }
             apply_log_config(*config, old.get());
         }
 
         LOG_INFO("config: {}", "\n" + to_config_string(*config));
         return config;
+    }
+
+    // Reached from the public StartAgent() entry point, so a parsing problem
+    // must never escape into the host: yaml errors degrade to defaults and the
+    // function-level handler below is the last-resort backstop. See the
+    // contract in config.h for `old` and the finality of the result.
+    std::shared_ptr<Config> make_config(const AgentOptions& options,
+                                        const std::shared_ptr<const Config>& old) try {
+        return build_config(options, old, nullptr);
     } catch (const std::exception& e) {
         try { LOG_ERROR("make config exception = {}", e.what()); } catch (...) {}
         return nullptr;
     } catch (...) {
         try { LOG_ERROR("make config unknown exception"); } catch (...) {}
+        return nullptr;
+    }
+
+    // Reached from the public ReloadAgentConfig() entry point: an exception is
+    // reported as kError, never thrown into the host.
+    std::shared_ptr<Config> make_reload_config(const AgentOptions& options,
+                                               const std::shared_ptr<const Config>& old,
+                                               ConfigReloadResult& result) try {
+        if (!old) {
+            result.status = ConfigReloadResult::Status::kError;
+            result.message = "no running config to reload";
+            return nullptr;
+        }
+        return build_config(options, old, &result);
+    } catch (const std::exception& e) {
+        result.status = ConfigReloadResult::Status::kError;
+        result.restart_required.clear();
+        try { result.message = absl::StrCat("make config exception = ", e.what()); } catch (...) {}
+        return nullptr;
+    } catch (...) {
+        result.status = ConfigReloadResult::Status::kError;
+        result.restart_required.clear();
+        try { result.message = "make config unknown exception"; } catch (...) {}
         return nullptr;
     }
 
@@ -1220,13 +1327,20 @@ namespace pinpoint {
     }
 
     bool Config::check() const {
-        if (collector.host.empty()) {
-            LOG_ERROR("address of collector is required");
+        const auto error = validationError();
+        if (!error.empty()) {
+            LOG_ERROR("{}", error);
             return false;
         }
+        return true;
+    }
+
+    std::string Config::validationError() const {
+        if (collector.host.empty()) {
+            return "address of collector is required";
+        }
         if (app_name_.empty()) {
-            LOG_ERROR("application name is required");
-            return false;
+            return "application name is required";
         }
         // Identity fields (agent_id_/agent_name_/app_name_ and, for v4,
         // service_name_/api_key_) are validated and length-checked per uid version
@@ -1234,11 +1348,9 @@ namespace pinpoint {
         // v3 applicationName limit) in a way check() cannot reproduce here. A failed
         // resolution sets identity_resolved_ = false and aborts startup.
         if (!identity_resolved_) {
-            LOG_ERROR("agent identity resolution failed");
-            return false;
+            return "agent identity resolution failed";
         }
-
-        return true;
+        return {};
     }
 
     // The reload policy is the table's `reloadable` column. The runtime
@@ -1258,31 +1370,39 @@ namespace pinpoint {
         return agent_id_ == old->agent_id_ && object_name_version_ == old->object_name_version_;
     }
 
-    void Config::retainNonReloadableFrom(const std::shared_ptr<const Config>& old) {
+    std::vector<std::string> Config::retainNonReloadableFrom(const std::shared_ptr<const Config>& old) {
+        std::vector<std::string> changed;
         if (!old) {
-            return;
+            return changed;
         }
 
-        // isReloadable() returns true only when every non-reloadable field
-        // already matches, so a false result means the incoming config tried to
-        // change at least one of them. We cannot honor that on a live agent, so
-        // warn and fall through to overwrite them with the running values.
-        if (!isReloadable(old)) {
-            LOG_WARN("non-reloadable config fields changed at runtime "
-                     "(enable, identity, collector, stat, http url_stat, span "
-                     "queue size or config-file watcher); retaining the "
-                     "existing values and reloading the rest");
-        }
-
+        // A differing non-reloadable field means the incoming config tried to
+        // change it. We cannot honor that on a live agent, so name it and
+        // overwrite it with the running value. The identity pair below sits
+        // outside the table (see isReloadable()) and is named as a whole.
         for (const auto& f : kConfigFields) {
-            if (!f.reloadable) {
-                std::visit([&](auto ref) { mut(ref(*this)) = ref(*old); }, f.ref);
+            if (f.reloadable) {
+                continue;
             }
+            std::visit([&](auto ref) {
+                if (!(ref(*this) == ref(*old))) {
+                    changed.emplace_back(f.path);
+                    mut(ref(*this)) = ref(*old);
+                }
+            }, f.ref);
         }
+        if (!changed.empty() || agent_id_ != old->agent_id_ ||
+            object_name_version_ != old->object_name_version_) {
+            LOG_WARN("non-reloadable config fields changed at runtime: {}; retaining the "
+                     "existing values and reloading the rest (a restart applies them)",
+                     changed.empty() ? std::string("agent identity") : absl::StrJoin(changed, ", "));
+        }
+
         agent_id_ = old->agent_id_;
         object_name_version_ = old->object_name_version_;
         // Identity was resolved for the running agent; keep that outcome so a
         // reload whose new identity failed resolution still passes check().
         identity_resolved_ = old->identity_resolved_;
+        return changed;
     }
 }

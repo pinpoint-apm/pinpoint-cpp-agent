@@ -31,9 +31,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -254,6 +256,56 @@ TEST_F(TracerCApiTest, StartAgentReportsSuccessWhileAgentRuns) {
     ASSERT_NE(agent, nullptr);
     EXPECT_NE(pt_agent_is_enabled(agent), 0);
     pt_agent_destroy(agent);
+}
+
+static constexpr const char* kReloadConfigYaml = R"(
+ApplicationName: c-api-renamed
+AgentName: c-api-agent-name
+Collector:
+  GrpcHost: 127.0.0.1
+Sampling:
+  Type: COUNTER
+  CounterRate: 5
+)";
+
+TEST_F(TracerCApiTest, ReloadAgentConfigAppliesAndListsRestartRequiredFields) {
+    char buf[512];
+    size_t len = 0;
+    EXPECT_EQ(pt_reload_agent_config(kReloadConfigYaml, buf, sizeof(buf), &len),
+              PT_RELOAD_APPLIED);
+    EXPECT_EQ(mock_agent_->getConfig()->sampling.counter_rate, 5);
+    EXPECT_EQ(mock_agent_->getAppName(), "c-api-test") << "identity is not reloadable";
+    // The fixture's config was built by hand, so other non-reloadable fields
+    // may differ from their defaults too; ApplicationName comes first.
+    EXPECT_EQ(std::string_view(buf).substr(0, 15), "ApplicationName") << buf;
+    EXPECT_EQ(len, std::strlen(buf));
+
+    // snprintf semantics: truncated but terminated, with the full length.
+    char small[4];
+    size_t full = 0;
+    EXPECT_EQ(pt_reload_agent_config(kReloadConfigYaml, small, sizeof(small), &full),
+              PT_RELOAD_APPLIED);
+    EXPECT_STREQ(small, "App");
+    EXPECT_EQ(full, len);
+
+    EXPECT_EQ(pt_reload_agent_config(kReloadConfigYaml, nullptr, 0, nullptr), PT_RELOAD_APPLIED);
+}
+
+TEST_F(TracerCApiTest, ReloadAgentConfigRefusalsReportTheirStatus) {
+    char buf[64] = "stale";
+    size_t len = 42;
+    EXPECT_EQ(pt_reload_agent_config("Sampling: [1, 2", buf, sizeof(buf), &len),
+              PT_RELOAD_INVALID_YAML);
+    EXPECT_STREQ(buf, "");
+    EXPECT_EQ(len, 0u);
+    EXPECT_EQ(pt_reload_agent_config("Sampling:\n  CounterRate: often\n", buf, sizeof(buf), &len),
+              PT_RELOAD_INVALID_CONFIG);
+    EXPECT_EQ(mock_agent_->getConfig().get(), cfg_.get()) << "nothing was applied";
+
+    pinpoint::reset_global_agent();
+    EXPECT_EQ(pt_reload_agent_config(kReloadConfigYaml, buf, sizeof(buf), &len),
+              PT_RELOAD_NO_AGENT);
+    EXPECT_EQ(pt_reload_agent_config(nullptr, nullptr, 0, nullptr), PT_RELOAD_NO_AGENT);
 }
 
 TEST_F(TracerCApiTest, StartAgentWithNullOptionsReportsSuccessWhileAgentRuns) {

@@ -166,6 +166,13 @@ namespace pinpoint {
         int64_t getStartTime() const override { return start_time_; }
         /// @brief Reloads configuration-dependent helpers (samplers, filters, recorders).
         void reloadConfig(std::shared_ptr<const Config> cfg) override;
+        /// @brief ReloadAgentConfig() for this agent: resolves @p config_yaml
+        /// with the stored options (make_reload_config()) and publishes the
+        /// result, serialized with the config-file watcher. Refuses with
+        /// kNoAgent when this agent is shut down, failed to initialize or was
+        /// inherited across fork(), and with kConfigFileActive while a config
+        /// file is the YAML source.
+        ConfigReloadResult reloadConfigFromYaml(std::string_view config_yaml);
 
         TraceId generateTraceId() override;
         void recordSpan(std::unique_ptr<SpanChunk> span) const override;
@@ -316,10 +323,17 @@ namespace pinpoint {
         /// runner is join()ing them (a data race on the thread object).
         std::atomic<unsigned> running_workers_{0};
 
-        // Serializes reloadConfig() writers. Building a new AgentRuntime is a
+        // Serializes reload writers: reloadConfig(), the config-file watcher
+        // and reloadConfigFromYaml(). Building a new AgentRuntime is a
         // load-build-store on runtime_, so two concurrent reloads could both
-        // build from the same old runtime and lose one update. Readers do not
-        // take this mutex; an unchanged generation-cache hit also avoids
+        // build from the same old runtime and lose one update. The watcher and
+        // reloadConfigFromYaml() hold it across make_config() as well, since
+        // that builds from the running config too (and stamps its revision).
+        // Lock order: this mutex first, then global_agent_mutex (agent.cpp) —
+        // reloadConfigFromYaml() takes both, and a log sink may call
+        // Shutdown() from a line logged under this mutex. Nothing may take
+        // this mutex while holding global_agent_mutex. Readers do not take
+        // this mutex; an unchanged generation-cache hit also avoids
         // AtomicSharedPtr's shared source.
         std::mutex reload_mutex_;
 
@@ -346,9 +360,9 @@ namespace pinpoint {
         // One-time fork-inheritance diagnostic (see warn_fork_inheritance()).
         mutable std::atomic<bool> fork_misuse_warned_{false};
 
-        // StartAgent() inputs, kept for the config-file watcher's reloads.
-        // Written once by setOptions() before Start(); read by the watcher
-        // thread afterwards.
+        // StartAgent() inputs, kept for the config-file watcher's reloads and
+        // reloadConfigFromYaml(). Written once by setOptions() before Start();
+        // only read afterwards.
         AgentOptions options_;
         // Per-agent config-file watcher; null when no config file is watched.
         std::unique_ptr<ConfigFileWatcher> config_watcher_;

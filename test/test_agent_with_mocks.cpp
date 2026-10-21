@@ -2555,6 +2555,427 @@ TEST_F(StartAgentTest, MakeConfigKeepsEnvSeededLogLevelOnReload) {
         << "env-seeded log settings must survive a config rebuild for reload";
 }
 
+// --- ReloadAgentConfig() ---
+
+namespace {
+
+// Sets environment variables for one test and removes them again.
+class ScopedEnv {
+public:
+    ScopedEnv() = default;
+    ScopedEnv(const ScopedEnv&) = delete;
+    ScopedEnv& operator=(const ScopedEnv&) = delete;
+    ~ScopedEnv() {
+        for (const auto& name : names_) {
+            unsetenv(name.c_str());
+        }
+    }
+    void set(const std::string& name, const std::string& value) {
+        setenv(name.c_str(), value.c_str(), 1);
+        names_.push_back(name);
+    }
+
+private:
+    std::vector<std::string> names_;
+};
+
+// A prefix of its own, so a variable set here can never leak into the
+// default-prefixed environment other tests read.
+constexpr const char* kReloadEnvPrefix = "PINPOINT_CPP_RELOAD_TEST";
+
+std::string reload_env(const char* suffix) {
+    return std::string(kReloadEnvPrefix) + "_" + suffix;
+}
+
+}  // namespace
+
+class ReloadAgentConfigTest : public StartAgentTest {
+protected:
+    // The running agent the way StartAgent() builds it: make_config() from
+    // the options, and the same options stored on the agent, so
+    // ReloadAgentConfig() resolves against them.
+    std::shared_ptr<AgentImpl> start_reloadable_agent(std::string_view yaml = kBaseConfigYaml) {
+        options_.env_prefix = kReloadEnvPrefix;
+        set_config_string(yaml);
+        auto cfg = make_config();
+        EXPECT_NE(cfg, nullptr);
+        return install_mock_agent(cfg, options_);
+    }
+
+    // kBaseConfigYaml with `extra` appended.
+    static std::string base_yaml_with(std::string_view extra) {
+        return std::string(kBaseConfigYaml) + std::string(extra);
+    }
+
+    // Destroyed after TearDown() has shut the agent down, so no agent thread
+    // reads the environment while it is being changed back.
+    ScopedEnv scoped_env_;
+};
+
+TEST_F(ReloadAgentConfigTest, AppliesReloadableFieldsToNewSpansOnly) {
+    auto agent = start_reloadable_agent();
+    ASSERT_TRUE(agent->Enable());
+    const auto before = agent->getConfig();
+    auto in_flight = agent->NewSpan("reload.before", "/reload-excluded");
+    ASSERT_TRUE(in_flight->IsSampled());
+
+    const auto result = ReloadAgentConfig(base_yaml_with(R"(
+Span:
+  MaxEventSequence: 64
+Http:
+  Server:
+    ExcludeUrl: [/reload-excluded]
+)"));
+    ASSERT_TRUE(result.ok()) << result.message;
+    EXPECT_EQ(result.status, ConfigReloadResult::Status::kApplied);
+    EXPECT_TRUE(result.restart_required.empty());
+    EXPECT_TRUE(result.message.empty());
+
+    const auto after = agent->getConfig();
+    EXPECT_EQ(after->revision, before->revision + 1);
+    EXPECT_EQ(after->span.max_event_sequence, 64);
+    EXPECT_EQ(agent->getAgentId(), before->agent_id_) << "the agent keeps its identity";
+
+    auto excluded = agent->NewSpan("reload.after", "/reload-excluded");
+    EXPECT_FALSE(excluded->IsSampled()) << "the reloaded ExcludeUrl applies to new spans";
+    excluded->EndSpan();
+    auto fresh = agent->NewSpan("reload.after", "/other");
+    ASSERT_TRUE(fresh->IsSampled());
+    EXPECT_EQ(fresh->GetConfigRevision(), after->revision);
+    EXPECT_EQ(fresh->GetConfigSnapshot().max_event_sequence, 64);
+    fresh->EndSpan();
+
+    EXPECT_EQ(in_flight->GetConfigRevision(), before->revision)
+        << "a span in flight keeps the generation it started with";
+    EXPECT_EQ(in_flight->GetConfigSnapshot().max_event_sequence,
+              before->span.max_event_sequence);
+    in_flight->EndSpan();
+}
+
+TEST_F(ReloadAgentConfigTest, RetainsAndReportsNonReloadableFields) {
+    auto agent = start_reloadable_agent();
+    ASSERT_TRUE(agent->Enable());
+
+    const auto result = ReloadAgentConfig(R"(
+ApplicationName: renamed-app
+AgentName: test-agent-name
+Collector:
+  GrpcHost: collector.elsewhere
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 7
+)");
+    ASSERT_TRUE(result.ok()) << result.message;
+    EXPECT_EQ(result.restart_required,
+              (std::vector<std::string>{"ApplicationName", "Collector.Host"}))
+        << "reported by YAML path even when the YAML used the GrpcHost alias";
+
+    EXPECT_EQ(agent->getAppName(), "test-app");
+    EXPECT_EQ(agent->getConfig()->app_name_, "test-app");
+    EXPECT_EQ(agent->getConfig()->collector.host, "127.0.0.1");
+    EXPECT_EQ(agent->getConfig()->sampling.counter_rate, 7) << "the reloadable part still applies";
+}
+
+TEST_F(ReloadAgentConfigTest, EnvironmentOutranksTheReloadedYaml) {
+    scoped_env_.set(reload_env(env::SAMPLING_COUNTER_RATE), "3");
+    // The agent's own prefix is used: a default-prefixed variable is not.
+    scoped_env_.set(std::string(env::DEFAULT_PREFIX) + "_" + env::SAMPLING_NEW_THROUGHPUT, "99");
+    auto agent = start_reloadable_agent();
+    ASSERT_TRUE(agent->Enable());
+    ASSERT_EQ(agent->getConfig()->sampling.counter_rate, 3);
+
+    const auto result = ReloadAgentConfig(R"(
+ApplicationName: test-app
+AgentName: test-agent-name
+Collector:
+  GrpcHost: 127.0.0.1
+  GrpcAgentPort: 9991
+  GrpcSpanPort: 9993
+  GrpcStatPort: 9992
+Sampling:
+  Type: COUNTER
+  CounterRate: 50
+  NewThroughput: 20
+)");
+    ASSERT_TRUE(result.ok()) << result.message;
+    EXPECT_EQ(agent->getConfig()->sampling.counter_rate, 3)
+        << "<prefix>_SAMPLING_COUNTER_RATE still outranks the YAML";
+    EXPECT_EQ(agent->getConfig()->sampling.new_throughput, 20)
+        << "a key only the YAML sets applies, and another prefix's variable does not";
+}
+
+TEST_F(ReloadAgentConfigTest, RefusesInvalidInputWithoutChange) {
+    auto agent = start_reloadable_agent();
+    ASSERT_TRUE(agent->Enable());
+    const auto before = agent->getConfig();
+
+    using Status = ConfigReloadResult::Status;
+    const struct {
+        std::string yaml;
+        Status status;
+    } cases[] = {
+        {"Sampling: [1, 2", Status::kInvalidYaml},
+        {"- not\n- a mapping\n", Status::kInvalidYaml},
+        {base_yaml_with("Span:\n  MaxEventDepth: deep\n"), Status::kInvalidConfig},
+        // Complete enough to parse, not to start an agent: no ApplicationName.
+        {"Collector:\n  GrpcHost: 127.0.0.1\nSampling:\n  CounterRate: 50\n", Status::kInvalidConfig},
+    };
+    for (const auto& c : cases) {
+        const auto result = ReloadAgentConfig(c.yaml);
+        EXPECT_EQ(result.status, c.status) << c.yaml;
+        EXPECT_FALSE(result.ok()) << c.yaml;
+        EXPECT_FALSE(result.message.empty()) << c.yaml;
+        EXPECT_TRUE(result.restart_required.empty()) << c.yaml;
+        EXPECT_EQ(agent->getConfig().get(), before.get())
+            << "a refused reload must publish nothing: " << c.yaml;
+    }
+}
+
+TEST_F(ReloadAgentConfigTest, RefusesWithoutARunningAgent) {
+    using Status = ConfigReloadResult::Status;
+
+    // Never started.
+    auto never_started = ReloadAgentConfig(kBaseConfigYaml);
+    EXPECT_EQ(never_started.status, Status::kNoAgent);
+    EXPECT_FALSE(never_started.message.empty());
+
+    // StartAgent() failed: check() rejects the empty application name.
+    set_config_string("ApplicationName: \"\"\nCollector:\n  GrpcHost: 127.0.0.1\n");
+    ASSERT_FALSE(StartAgent());
+    EXPECT_EQ(ReloadAgentConfig(kBaseConfigYaml).status, Status::kNoAgent);
+
+    // Shut down: Shutdown() unpublishes the global agent.
+    auto agent = start_reloadable_agent();
+    ASSERT_TRUE(agent->Enable());
+    agent->Shutdown();
+    EXPECT_EQ(ReloadAgentConfig(kBaseConfigYaml).status, Status::kNoAgent);
+
+    // A shut-down agent left installed (see StartAgentReplacesShutdownGlobalAgent)
+    // is refused, not reloaded, and refusing evicts nothing.
+    set_global_agent(agent);
+    const auto dead_config = agent->getConfig();
+    EXPECT_EQ(ReloadAgentConfig(kBaseConfigYaml).status, Status::kNoAgent);
+    EXPECT_EQ(agent->getConfig().get(), dead_config.get());
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get(), agent.get());
+    reset_global_agent();
+}
+
+TEST_F(ReloadAgentConfigTest, RefusesAnAgentWhoseInitializationFailed) {
+    auto dead_agent = make_init_failed_agent(make_test_config_for_create_agent());
+    ASSERT_TRUE(dead_agent->initFailed());
+    set_global_agent(dead_agent);
+    const auto dead_config = dead_agent->getConfig();
+
+    const auto result = ReloadAgentConfig(kBaseConfigYaml);
+    EXPECT_EQ(result.status, ConfigReloadResult::Status::kNoAgent);
+    EXPECT_EQ(dead_agent->getConfig().get(), dead_config.get());
+}
+
+// StartAgent()'s precedence: a config file replaces the YAML wholesale, so a
+// YAML reload would silently read the file instead. Refused up front.
+TEST_F(ReloadAgentConfigTest, RefusesWhileAConfigFileIsTheSource) {
+    write_watcher_config(1, "test-app", false, /*enable_watcher=*/false);
+    set_config_file_path(watcher_config_file_.string());
+    auto cfg = make_config();
+    ASSERT_NE(cfg, nullptr);
+    auto agent = install_mock_agent(cfg, options_);
+    ASSERT_TRUE(agent->Enable());
+    const auto before = agent->getConfig();
+
+    const auto result = ReloadAgentConfig(base_yaml_with("Span:\n  MaxEventSequence: 64\n"));
+    EXPECT_EQ(result.status, ConfigReloadResult::Status::kConfigFileActive);
+    EXPECT_NE(result.message.find(watcher_config_file_.string()), std::string::npos)
+        << result.message;
+    EXPECT_EQ(agent->getConfig().get(), before.get());
+}
+
+// The LogSink contract lets the sink call into the agent. A ReloadAgentConfig()
+// from a line a reload logs is refused rather than deadlocking on the reload
+// lock its own thread holds, and the outer reload still applies.
+TEST_F(ReloadAgentConfigTest, LogSinkCanCallReloadAgentConfigDuringAReload) {
+    auto agent = start_reloadable_agent();
+    ASSERT_TRUE(agent->Enable());
+
+    bool nested_called = false;
+    ConfigReloadResult nested;
+    Logger::getInstance().setSink([&](const char*, const char* message) {
+        if (!nested_called &&
+            std::string_view(message).find("resolved agent identity") != std::string_view::npos) {
+            nested_called = true;
+            nested = ReloadAgentConfig(kBaseConfigYaml);
+        }
+    });
+    const auto result = ReloadAgentConfig(base_yaml_with("Span:\n  MaxEventSequence: 64\n"));
+    Logger::getInstance().setSink({});
+
+    EXPECT_TRUE(result.ok()) << result.message;
+    ASSERT_TRUE(nested_called);
+    EXPECT_EQ(nested.status, ConfigReloadResult::Status::kError) << nested.message;
+    EXPECT_EQ(agent->getConfig()->span.max_event_sequence, 64);
+}
+
+TEST_F(ReloadAgentConfigTest, LogSinkCanShutdownDuringAReload) {
+    auto agent = start_reloadable_agent();
+    ASSERT_TRUE(agent->Enable());
+
+    bool shutdown_called = false;
+    Logger::getInstance().setSink([&](const char*, const char* message) {
+        if (!shutdown_called &&
+            std::string_view(message).find("resolved agent identity") != std::string_view::npos) {
+            shutdown_called = true;
+            GlobalAgent()->Shutdown();
+        }
+    });
+    ReloadAgentConfig(base_yaml_with("Span:\n  MaxEventSequence: 64\n"));
+    Logger::getInstance().setSink({});
+
+    EXPECT_TRUE(shutdown_called);
+    EXPECT_TRUE(agent->isExiting());
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()), nullptr);
+}
+
+// Request threads keep creating spans through GlobalAgent() while two control
+// threads reload. Every span sees one consistent generation, never an older
+// one than its thread saw before, and the reloads serialize: each gets its own
+// revision, none is lost.
+TEST_F(ReloadAgentConfigTest, ConcurrentReloadsAndSpanCreation) {
+    auto agent = start_reloadable_agent();
+    ASSERT_TRUE(agent->Enable());
+    const int64_t first_revision = agent->getConfig()->revision;
+
+    // Two configurations that differ in the sampler, the URL filter and the
+    // header recorders, so every reload rebuilds them. Log.Level keeps the
+    // per-reload config dump out of the test output.
+    const std::string yaml_a = base_yaml_with(R"(
+Log:
+  Level: warn
+Http:
+  Server:
+    RecordRequestHeader: [X-Reload-A]
+)");
+    const std::string yaml_b = base_yaml_with(R"(
+Log:
+  Level: warn
+Sampling:
+  NewThroughput: 100000
+Http:
+  Server:
+    ExcludeUrl: [/never-requested]
+    RecordRequestHeader: [X-Reload-B]
+)");
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> sampled_spans{0};
+    std::atomic<bool> revision_went_back{false};
+    std::vector<std::thread> request_threads;
+    for (int t = 0; t < 4; ++t) {
+        request_threads.emplace_back([&] {
+            int64_t last_revision = 0;
+            while (!stop.load(std::memory_order_relaxed)) {
+                auto span = GlobalAgent()->NewSpan("reload.concurrent", "/concurrent");
+                if (span->IsSampled()) {
+                    const int64_t revision = span->GetConfigRevision();
+                    if (revision < last_revision) {
+                        revision_went_back = true;
+                    }
+                    last_revision = revision;
+                    auto* event = span->NewSpanEvent("reload.work");
+                    event->SetAnnotation(ANNOTATION_API, std::string_view("value"));
+                    event->EndEvent();
+                    sampled_spans.fetch_add(1, std::memory_order_relaxed);
+                }
+                span->EndSpan();
+            }
+        });
+    }
+
+    constexpr int kReloadsPerThread = 100;
+    std::atomic<int> failed_reloads{0};
+    std::vector<std::thread> reload_threads;
+    for (int t = 0; t < 2; ++t) {
+        reload_threads.emplace_back([&, t] {
+            for (int i = 0; i < kReloadsPerThread; ++i) {
+                if (!ReloadAgentConfig((i + t) % 2 ? yaml_a : yaml_b).ok()) {
+                    failed_reloads.fetch_add(1);
+                }
+            }
+        });
+    }
+    for (auto& thread : reload_threads) {
+        thread.join();
+    }
+    stop = true;
+    for (auto& thread : request_threads) {
+        thread.join();
+    }
+
+    EXPECT_EQ(failed_reloads.load(), 0);
+    EXPECT_EQ(agent->getConfig()->revision, first_revision + 2 * kReloadsPerThread)
+        << "every reload must publish its own generation";
+    EXPECT_FALSE(revision_went_back) << "a thread must never see an older generation again";
+    EXPECT_GT(sampled_spans.load(), 0);
+}
+
+// The config-file watcher builds from the running config too, so it must not
+// interleave with ReloadAgentConfig(): every reload either path applies gets
+// its own revision. The two only meet when the watched file came from
+// <prefix>_CONFIG_FILE and the variable is gone by the time
+// ReloadAgentConfig() resolves the source; the watcher keeps its path.
+TEST_F(ReloadAgentConfigTest, SerializedWithTheConfigFileWatcher) {
+    struct ScopedPollInterval {
+        ~ScopedPollInterval() { set_config_watcher_poll_interval(std::chrono::milliseconds(0)); }
+    } reset_poll_interval;
+    set_config_watcher_poll_interval(std::chrono::milliseconds(2));
+
+    write_watcher_config(1, "test-app", false);
+    options_.env_prefix = kReloadEnvPrefix;
+    setenv(reload_env(env::CONFIG_FILE).c_str(), watcher_config_file_.string().c_str(), 1);
+    auto cfg = make_config();
+    ASSERT_NE(cfg, nullptr);
+    ASSERT_TRUE(cfg->enable_config_file_watcher);
+    auto agent = install_mock_agent(cfg, options_);
+    unsetenv(reload_env(env::CONFIG_FILE).c_str());
+    ASSERT_TRUE(agent->Enable());
+    const int64_t first_revision = agent->getConfig()->revision;
+
+    std::atomic<int> reload_lines{0};
+    Logger::getInstance().setSink([&](const char*, const char* message) {
+        if (std::string_view(message).find("agent config reloaded") != std::string_view::npos) {
+            reload_lines.fetch_add(1);
+        }
+    });
+
+    std::error_code ec;
+    const auto base_mtime = std::filesystem::last_write_time(watcher_config_file_, ec);
+    ASSERT_FALSE(ec);
+    std::thread toucher([&] {
+        for (int i = 1; i <= 20; ++i) {
+            std::error_code touch_ec;
+            std::filesystem::last_write_time(watcher_config_file_,
+                                             base_mtime + std::chrono::seconds(i), touch_ec);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    });
+    int applied = 0;
+    for (int i = 0; i < 20; ++i) {
+        applied += ReloadAgentConfig(base_yaml_with(i % 2 ? "Span:\n  MaxEventSequence: 64\n" : ""))
+                       .ok() ? 1 : 0;
+    }
+    toucher.join();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // Shutdown() joins the watcher: no reload can run past this point.
+    agent->Shutdown();
+    Logger::getInstance().setSink({});
+
+    EXPECT_EQ(applied, 20);
+    EXPECT_GT(reload_lines.load(), applied) << "the watcher must have reloaded too";
+    EXPECT_EQ(agent->getConfig()->revision, first_revision + reload_lines.load())
+        << "a revision was reused or a reload lost";
+}
+
 
 // The cache* APIs return 0 until the boot AgentInfo registration enables the
 // agent, so each test must wait for enablement first.

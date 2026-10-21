@@ -331,7 +331,8 @@ namespace pinpoint {
         /// answer has to be "do not capture".
         bool sql_trace_bind_value = false;
         /// Config generation this snapshot was built from: 1 for the initial
-        /// load, incremented by each config-file hot reload. 0 means the
+        /// load, incremented by each config-file hot reload and each applied
+        /// ReloadAgentConfig(). 0 means the
         /// snapshot carries no resolved config (default-constructed). Binding
         /// layers cache the agent snapshot and compare this against
         /// Span::GetConfigRevision() to refresh only when a reload happened.
@@ -798,8 +799,9 @@ namespace pinpoint {
      * from scratch.
      *
      * Calling StartAgent() again in the same process leaves the already
-     * running agent untouched and returns true (with a warning). After
-     * Shutdown() a new StartAgent() call builds a fresh agent.
+     * running agent untouched and returns true (with a warning); use
+     * ReloadAgentConfig() to change its configuration. After Shutdown() a new
+     * StartAgent() call builds a fresh agent.
      *
      * @warning Pair every StartAgent() with a Shutdown() before the process
      * ends — through helper::ScopedAgent, an explicit call, or the opt-in
@@ -820,6 +822,83 @@ namespace pinpoint {
     /// @brief Returns the singleton global agent instance installed by
     ///        StartAgent(), or the noop agent when none is installed.
     AgentPtr GlobalAgent();
+
+    /// @brief Outcome of ReloadAgentConfig().
+    struct ConfigReloadResult {
+        enum class Status {
+            /// The reloadable settings were applied: spans created from now
+            /// on use them, spans already in flight keep the generation they
+            /// started with. Settings listed in restart_required were not.
+            kApplied,
+            /// No running agent in this process: StartAgent() was never
+            /// called or failed, the agent was shut down, its initialization
+            /// failed, or it was inherited across fork().
+            kNoAgent,
+            /// The running agent reads its configuration from a file
+            /// (AgentOptions::config_file_path or `<env_prefix>_CONFIG_FILE`),
+            /// which outranks YAML exactly as it does in StartAgent(), so the
+            /// YAML would not be used.
+            kConfigFileActive,
+            /// The text is not a YAML mapping: a syntax error, or a document
+            /// that is a scalar or a sequence.
+            kInvalidYaml,
+            /// The YAML parses, but a value cannot be read as its setting's
+            /// type, or the configuration fails the validation StartAgent()
+            /// applies (ApplicationName and Collector.Host are required, the
+            /// agent identity must resolve).
+            kInvalidConfig,
+            /// Unexpected internal failure (e.g. out of memory), or a call
+            /// from the log sink while a reload runs on the same thread.
+            kError,
+        };
+
+        Status status = Status::kError;
+        /// Non-reloadable settings whose value in the new configuration
+        /// differs from the running one, by their YAML path as documented in
+        /// doc/config.md ("ApplicationName", "Collector.Host", ...), in
+        /// that document's order. They were NOT applied: the running values
+        /// are kept until the process restarts. Empty unless kApplied.
+        std::vector<std::string> restart_required;
+        /// Why the reload was refused, for the host's own log. Empty when
+        /// kApplied.
+        std::string message;
+
+        /// @brief True when status is kApplied.
+        bool ok() const { return status == Status::kApplied; }
+    };
+
+    /**
+     * @brief Re-resolves the running global agent's configuration from
+     *        @p config_yaml and applies the settings that can change at
+     *        runtime.
+     *
+     * The configuration is resolved the way StartAgent() resolves it, with
+     * the running agent's own AgentOptions and only `config_yaml` replaced:
+     * defaults, then the YAML (with its ActiveProfile), then the
+     * `<env_prefix>_*` environment variables, which keep outranking the YAML.
+     * The YAML is the complete configuration — a setting it omits takes its
+     * default (or environment) value, not the value it had before the call.
+     * Out-of-range values and unknown keys are handled as at startup:
+     * clamped or ignored, with a warning in the agent log.
+     *
+     * Reloadable settings (sampling, span limits and error policy, HTTP
+     * recording and filters, SQL recording, logging, ... — see the table in
+     * doc/config.md) take effect for spans created after the call. The other
+     * settings (identity, collector, stat, URL statistics, queue and cache
+     * sizes, `Enable`, `EnableConfigFileWatcher`) keep their running values;
+     * those the YAML would change are returned in
+     * ConfigReloadResult::restart_required and logged with a warning.
+     *
+     * Every refusal (any status but kApplied) leaves the agent exactly as it
+     * was: no setting, logger or config revision changes.
+     *
+     * Thread-safe: may be called from any thread while request threads
+     * create spans, and is serialized with StartAgent(), Shutdown() and the
+     * config-file watcher. It parses YAML and may reopen the log file, so
+     * call it from a control thread, not per request. StartAgent() itself
+     * stays one-shot: calling it again never reloads anything.
+     */
+    ConfigReloadResult ReloadAgentConfig(std::string_view config_yaml);
 
     namespace helper {
         /// @brief Records an inbound request on @p span: the endpoint, the
