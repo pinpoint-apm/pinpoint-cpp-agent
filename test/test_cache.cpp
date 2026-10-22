@@ -1319,11 +1319,12 @@ TEST_F(SqlIdCacheTest, RemoveEvictsOnlyTheEntryStillHoldingTheId) {
 
 namespace {
     // Bytes the allocator currently hands out, or 0 where no such counter is
-    // reachable (other libcs, or a sanitizer that owns malloc).
+    // reachable (other libcs, glibc before 2.33 which has no mallinfo2(), or a
+    // sanitizer that owns malloc). The test skips itself on 0.
     size_t heap_bytes_in_use() {
 #if defined(__APPLE__)
         return mstats().bytes_used;
-#elif defined(__GLIBC__)
+#elif defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
         return mallinfo2().uordblks;
 #else
         return 0;

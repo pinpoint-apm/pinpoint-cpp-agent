@@ -27,6 +27,20 @@
   list of categories, as [the reload docs](doc/config.md#configuration-hot-reload)
   already said it did.
 
+- **The SQL id cache keys a statement by its 128-bit UID, not by its text.**
+
+  The id cache kept the whole normalized statement as its key and is exempt
+  from `Sql.CacheLengthLimit` (a bypassed statement would burn a fresh id per
+  use), so `Sql.CacheSize` statements of up to the normalizer's 1 MiB cap could
+  pin up to a gigabyte for the life of the process. The key is now the
+  statement's SQL UID (MurmurHash3-128 of the normalized text, the same bytes
+  the UID metadata carries): 16 bytes per entry whatever the statement's
+  length, so 1024 statements of 64 KiB each retain about 120 KiB instead of
+  about 96 MiB. The id and UID a statement resolves to are unchanged. A queued
+  SQL metadata item carries that key instead of a hash of the text, and a
+  failed send evicts with `remove(key, id)` like every other metadata kind;
+  `IdCache::removeByHash()` is gone.
+
 ### Fixed
 
 - **An async span of an unsampled span now propagates the unsampled
@@ -305,6 +319,8 @@
   and retry schedule during an outage. The item now keeps the cache's hash of
   the key and evicts with `IdCache::removeByHash()` ([src/cache.h](src/cache.h)),
   so a slot is bounded by the wire cap whatever the statement's length.
+  (Superseded: the id cache now keys by the statement's UID and the queued
+  item carries that 16-byte key; `removeByHash()` no longer exists.)
 
 - **URL statistics queued when shutdown begins are aggregated, not lost.**
 
