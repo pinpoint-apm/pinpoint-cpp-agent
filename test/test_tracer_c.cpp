@@ -1094,7 +1094,11 @@ TEST_F(TracerCApiTest, NewAsyncSpanOfUnsampledSpanPropagatesS0) {
     ASSERT_NE(async_span, nullptr);
     pt_span_t nested = pt_span_new_async_span(async_span, "bg_nested");
     ASSERT_NE(nested, nullptr);
-    EXPECT_NE(async_span, nested);
+    // One shared immortal span behind one static sentinel handle, like the
+    // noop span: no handle allocation per async child, nested or not.
+    EXPECT_EQ(async_span, nested);
+    EXPECT_EQ(pt_span_new_async_span(parent, "bg_again"), async_span);
+    EXPECT_NE(async_span, parent);
     for (pt_span_t span : {async_span, nested}) {
         EXPECT_EQ(pt_span_is_sampled(span), 0);
         // Shared and stateless like the noop span: span id 0.
@@ -1123,6 +1127,16 @@ TEST_F(TracerCApiTest, NewAsyncSpanOfUnsampledSpanPropagatesS0) {
     for (const auto& outbound : injected) {
         EXPECT_EQ(outbound, (HeaderMap{{PT_HEADER_SAMPLED, "s0"}}));
     }
+
+    // The sentinel is never owned: the destroys above and these are no-ops,
+    // and the handle stays usable and still injects s0 afterwards.
+    pt_span_destroy(async_span);
+    pt_span_destroy(async_span);
+    EXPECT_EQ(pt_span_is_sampled(async_span), 0);
+    HeaderMap outbound;
+    pt_context_writer_t writer{&outbound, hmap_set};
+    pt_span_event_inject_context(pt_span_new_event(async_span, "late"), &writer);
+    EXPECT_EQ(outbound, (HeaderMap{{PT_HEADER_SAMPLED, "s0"}}));
 }
 
 // ============================================================================

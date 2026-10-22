@@ -113,7 +113,7 @@ static R pt_api_call(const char* func, R fallback, F&& fn) noexcept {
 // a shared wrapper. A lookup copies that shared_ptr under the shard lock, so a
 // concurrent destroy can remove the token without freeing the wrapper out from
 // under a call in progress. Odd values cannot collide with the aligned
-// addresses of the two leaked noop sentinels.
+// addresses of the leaked sentinels.
 // ============================================================================
 
 struct pt_agent_s { pinpoint::AgentPtr ptr; };
@@ -132,6 +132,15 @@ static pt_agent_s* noop_agent_sentinel() {
 
 static pt_span_s* noop_span_sentinel() {
     static pt_span_s* sentinel = new pt_span_s{pinpoint::noopSpan()};
+    return sentinel;
+}
+
+// The async child of every unsampled span is one immortal object too
+// (pinpoint::unsampledAsyncSpan()), so it gets a static sentinel of its own.
+// Unlike the noop sentinel it is never short-circuited: its calls go through
+// the virtual functions, since its events still inject `Pinpoint-Sampled: s0`.
+static pt_span_s* unsampled_async_span_sentinel() {
+    static pt_span_s* sentinel = new pt_span_s{pinpoint::unsampledAsyncSpan()};
     return sentinel;
 }
 
@@ -248,11 +257,17 @@ static auto& handle_registry_for(pt_agent_t) { return agent_handle_registry(); }
 static auto& handle_registry_for(pt_span_t) { return span_handle_registry(); }
 static pt_agent_t noop_sentinel_for(pt_agent_t) { return noop_agent_sentinel(); }
 static pt_span_t noop_sentinel_for(pt_span_t) { return noop_span_sentinel(); }
+// Every static sentinel: never in a registry, never owned by the caller, and
+// safe to call through (each wraps a live immortal object).
+static bool is_sentinel(pt_agent_t h) { return h == noop_agent_sentinel(); }
+static bool is_sentinel(pt_span_t h) {
+    return h == noop_span_sentinel() || h == unsampled_async_span_sentinel();
+}
 
 template <typename Handle, typename F>
 static void pt_handle_call(Handle handle, F&& fn) {
     if (handle == nullptr) return;
-    if (handle == noop_sentinel_for(handle)) {
+    if (is_sentinel(handle)) {
         std::forward<F>(fn)(handle);
         return;
     }
@@ -264,7 +279,7 @@ static void pt_handle_call(Handle handle, F&& fn) {
 template <typename Handle, typename R, typename F>
 static R pt_handle_call(Handle handle, R fallback, F&& fn) {
     if (handle == nullptr) return fallback;
-    if (handle == noop_sentinel_for(handle)) {
+    if (is_sentinel(handle)) {
         return std::forward<F>(fn)(handle);
     }
     auto owned = handle_registry_for(handle).find(handle);
@@ -284,8 +299,8 @@ static R pt_handle_call_or_noop(Handle handle, R noop_result, F&& fn) {
 }
 
 template <typename Handle>
-static void destroy_handle(Handle handle, Handle noop_handle) {
-    if (handle == nullptr || handle == noop_handle) return;
+static void destroy_handle(Handle handle) {
+    if (handle == nullptr || is_sentinel(handle)) return;
     if (!handle_registry_for(handle).erase(handle)) {
         LOG_WARN("destroying an unknown or already-destroyed handle: ignored");
     }
@@ -353,6 +368,7 @@ static pt_agent_t make_agent_handle(pinpoint::AgentPtr ptr) {
 static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
     if (!ptr) return nullptr;
     if (ptr.get() == noop_span_sentinel()->ptr.get()) return noop_span_sentinel();
+    if (ptr.get() == unsampled_async_span_sentinel()->ptr.get()) return unsampled_async_span_sentinel();
     return span_handle_registry().insert(
         std::make_shared<pt_span_s>(pt_span_s{std::move(ptr)}));
 }
@@ -735,7 +751,7 @@ pt_agent_t pt_global_agent(void) {
 
 void pt_agent_destroy(pt_agent_t agent) {
     pt_api_call(__func__, [&] {
-        destroy_handle(agent, noop_agent_sentinel());
+        destroy_handle(agent);
     });
 }
 
@@ -826,7 +842,7 @@ pt_span_t pt_agent_new_span_with_method(pt_agent_t agent, const char* operation,
 
 void pt_span_destroy(pt_span_t span) {
     pt_api_call(__func__, [&] {
-        destroy_handle(span, noop_span_sentinel());
+        destroy_handle(span);
     });
 }
 
