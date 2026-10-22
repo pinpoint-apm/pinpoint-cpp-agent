@@ -142,6 +142,7 @@ pt_agent_options_free(opts);
 |---|---|
 | `pt_agent_options_set_app_type(opts, type)` | Application type reported to the collector. Defaults to `PT_APP_TYPE_CPP` (`1300`). |
 | `pt_agent_options_set_env_prefix(opts, prefix)` | Reads `<prefix>_*` instead of `PINPOINT_CPP_*` (e.g. `"MYAPP"` → `MYAPP_APPLICATION_NAME`). `NULL` or `""` selects the default. |
+| `pt_agent_options_set_agent_version(opts, version)` | Agent version reported in AgentInfo. `NULL` or `""` reports this library's own version (the default). |
 | `pt_agent_options_set_log_sink(opts, sink, userdata)` | Routes the agent's own log lines to the host's logger. See below. |
 
 ### Routing the agent log into the host's logger

@@ -325,6 +325,7 @@ TEST(TracerCAgentOptionsTest, NullSafety) {
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_env_prefix(nullptr, "x"));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_app_type(nullptr, 1));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(nullptr, "x", nullptr, 0, nullptr, 0));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_agent_version(nullptr, "x"));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_log_sink(nullptr, nullptr, nullptr));
 
     pt_agent_options_t opts = pt_agent_options_new();
@@ -333,6 +334,7 @@ TEST(TracerCAgentOptionsTest, NullSafety) {
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_config_yaml(opts, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_env_prefix(opts, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(opts, nullptr, nullptr, -1, nullptr, -1));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_agent_version(opts, nullptr));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_log_sink(opts, nullptr, nullptr));
     pt_agent_options_free(opts);
 }
@@ -397,6 +399,7 @@ TEST(TracerCAgentOptionsTest, DoubleFreeAndStaleHandleAreIgnored) {
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_config_file(opts, "x"));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_app_type(opts, 1));
     EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_server_metadata(opts, "x", nullptr, 0, nullptr, 0));
+    EXPECT_NO_FATAL_FAILURE(pt_agent_options_set_agent_version(opts, "x"));
 
     // Distinct handles must never reuse a token (ABA), so a stale free of the
     // first handle cannot release the second.

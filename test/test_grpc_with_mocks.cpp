@@ -44,6 +44,7 @@
 #include "../src/stat.h"
 #include "../src/url_stat.h"
 #include "../src/utility.h"
+#include "version.h"
 #include "../include/pinpoint/tracer.h"
 #include "v1/Service_mock.grpc.pb.h"
 #include "mock_agent_service.h"
@@ -1108,10 +1109,12 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesServerMetaData) {
                         SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
 
     agent.setMockAgentStub(std::move(mock_agent_stub));
-    agent.setServerMetaData("test-server", {"--port=8080", "--worker=4"}, {"libfoo.so", "libbar.so"});
+    agent.setServerMetaData("test-server", {"--port=8080", "--worker=4"}, {"libfoo.so", "libbar.so"},
+                            "custom-1.2.3");
 
     EXPECT_EQ(agent.registerAgent(), SEND_OK);
 
+    EXPECT_EQ(captured_agent_info.agentversion(), "custom-1.2.3");
     ASSERT_TRUE(captured_agent_info.has_servermetadata());
     const auto& server_metadata = captured_agent_info.servermetadata();
     EXPECT_EQ(server_metadata.serverinfo(), "test-server");
@@ -1125,6 +1128,21 @@ TEST_F(GrpcMockTest, GrpcAgentRegisterAgentUsesServerMetaData) {
     ASSERT_EQ(service_info.servicelib_size(), 2);
     EXPECT_EQ(service_info.servicelib(0), "libfoo.so");
     EXPECT_EQ(service_info.servicelib(1), "libbar.so");
+}
+
+TEST_F(GrpcMockTest, GrpcAgentRegisterAgentDefaultsAgentVersionToLibraryVersion) {
+    TestableGrpcAgent agent(mock_agent_service_.get());
+
+    v1::PAgentInfo captured;
+    auto mock_agent_stub = std::make_unique<NiceMock<v1::MockAgentStub>>();
+    EXPECT_CALL(*mock_agent_stub, RequestAgentInfo(_, _, _))
+        .WillOnce(DoAll(SaveArg<1>(&captured),
+                        SetArgPointee<2>(accepted_result()), Return(grpc::Status::OK)));
+    agent.setMockAgentStub(std::move(mock_agent_stub));
+    agent.setServerMetaData("test-server", {}, {});
+
+    EXPECT_EQ(agent.registerAgent(), SEND_OK);
+    EXPECT_EQ(captured.agentversion(), VERSION_STRING);
 }
 
 TEST_F(GrpcMockTest, GrpcAgentRegisterAgentSanitizesInvalidUtf8) {

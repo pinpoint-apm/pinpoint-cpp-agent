@@ -38,6 +38,7 @@
 #include "src/sql.h"
 #include "test/c_api_test_helpers.h"
 #include "test/it/mock_collector.h"
+#include "version.h"
 
 namespace pinpoint::test {
 namespace {
@@ -782,7 +783,7 @@ TEST_F(AgentIntegrationTest, RegistersAgentAndMaintainsPingAndCommandStreams) {
     EXPECT_EQ(info.servicetype(), kApplicationType);
     EXPECT_GT(info.pid(), 0);
     EXPECT_FALSE(info.hostname().empty());
-    EXPECT_FALSE(info.agentversion().empty());
+    EXPECT_EQ(info.agentversion(), VERSION_STRING);
     EXPECT_TRUE(info.container());
     ASSERT_TRUE(info.has_servermetadata());
     EXPECT_EQ(info.servermetadata().serverinfo(), "mock-collector integration server");
@@ -3636,6 +3637,25 @@ TEST_F(AgentIntegrationTest, ParsesApacheProxyHeaderAndRealIpFallback) {
     EXPECT_EQ(value.intvalue2(), 250);
     EXPECT_EQ(value.bytevalue1(), 7);
     EXPECT_EQ(value.bytevalue2(), 12);
+}
+
+// The C options builder's agent version reaches the registered AgentInfo.
+TEST_F(AgentIntegrationTest, ReportsAgentVersionSetThroughCApi) {
+    ASSERT_NO_FATAL_FAILURE(StartCollector());
+
+    pt_agent_options_t opts = pt_agent_options_new();
+    ASSERT_NE(opts, nullptr);
+    pt_agent_options_set_env_prefix(opts, "PINPOINT_CPP_AGENT_IT_ISOLATED");
+    pt_agent_options_set_config_yaml(opts, config().c_str());
+    pt_agent_options_set_agent_version(opts, "c-api-9.9.9");
+    ASSERT_NE(pt_start_agent(opts), 0);
+    pt_agent_options_free(opts);
+    agent_ = GlobalAgent();
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.agent_infos.empty();
+    }, kWaitTimeout));
+    EXPECT_EQ(collector_.snapshot().agent_infos.front().message.agentversion(), "c-api-9.9.9");
 }
 
 TEST_F(AgentIntegrationTest, TracesCompleteSpanThroughCApi) {

@@ -1765,7 +1765,7 @@ namespace pinpoint {
         }
         try {
             auto grpc_agent = std::make_unique<GrpcAgent>(cfg);
-            grpc_agent->setServerMetaData(options.server_info, options.args, options.libs);
+            grpc_agent->setServerMetaData(options.server_info, options.args, options.libs, options.agent_version);
             auto grpc_metadata = std::make_unique<GrpcMetadata>(cfg);
             auto grpc_span = std::make_unique<GrpcSpan>(cfg);
             auto grpc_stat = std::make_unique<GrpcStats>(cfg);

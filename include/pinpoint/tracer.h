@@ -722,6 +722,9 @@ namespace pinpoint {
         int32_t app_type = DEFAULT_APP_TYPE;
         /// Server runtime description included in AgentInfo.
         std::string server_info = std::string(DEFAULT_SERVER_INFO);
+        /// Agent version reported in AgentInfo. Empty (the default) reports
+        /// this library's own version.
+        std::string agent_version;
         /// Process command line arguments included in AgentInfo.
         std::vector<std::string> args;
         /// Loaded service libraries included in AgentInfo.

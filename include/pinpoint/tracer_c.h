@@ -461,6 +461,12 @@ void pt_agent_options_set_server_metadata(pt_agent_options_t options,
                                           const char* const* libs,
                                           int libs_count);
 
+/**
+ * @brief Overrides the agent version reported in AgentInfo. NULL or empty
+ *        reports this library's own version (the default).
+ */
+void pt_agent_options_set_agent_version(pt_agent_options_t options, const char* version);
+
 /* ========================================================================== */
 /* Agent lifecycle                                                              */
 /* ========================================================================== */

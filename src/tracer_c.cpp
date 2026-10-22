@@ -656,6 +656,14 @@ void pt_agent_options_set_server_metadata(pt_agent_options_t options,
     });
 }
 
+void pt_agent_options_set_agent_version(pt_agent_options_t options, const char* version) {
+    pt_api_call(__func__, [&] {
+        if (auto owned = find_options(options)) {
+            owned->options.agent_version = version ? version : "";
+        }
+    });
+}
+
 // ============================================================================
 // Agent lifecycle
 // ============================================================================

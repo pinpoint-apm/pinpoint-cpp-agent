@@ -851,7 +851,8 @@ namespace pinpoint {
         /// @brief Sets server metadata included in AgentInfo.
         void setServerMetaData(std::string_view server_info,
                                const std::vector<std::string>& args,
-                               const std::vector<std::string>& libs);
+                               const std::vector<std::string>& libs,
+                               std::string_view agent_version = {});
 
         //grpc::ClientBidiReactor
         void OnWriteDone(bool ok) override;
@@ -868,6 +869,7 @@ namespace pinpoint {
     private:
         struct ServerMetaData {
             std::string server_info;
+            std::string agent_version;  // empty: report VERSION_STRING
             std::vector<std::string> vm_args;
             std::vector<std::string> service_libs;
         };

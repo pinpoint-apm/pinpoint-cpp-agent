@@ -1886,8 +1886,10 @@ namespace pinpoint {
 
     void GrpcAgent::setServerMetaData(std::string_view server_info,
                                       const std::vector<std::string>& args,
-                                      const std::vector<std::string>& libs) {
+                                      const std::vector<std::string>& libs,
+                                      std::string_view agent_version) {
         server_meta_data_.server_info = std::string(server_info);
+        server_meta_data_.agent_version = std::string(agent_version);
         server_meta_data_.vm_args = args;
         server_meta_data_.service_libs = libs;
         server_meta_data_set_ = true;
@@ -1903,7 +1905,9 @@ namespace pinpoint {
         agent_info->set_ip(toValidUtf8(get_host_ip_addr()));
         agent_info->set_servicetype(agent_->getAppType());
         agent_info->set_pid(getpid());
-        agent_info->set_agentversion(VERSION_STRING);
+        agent_info->set_agentversion(server_meta_data_.agent_version.empty()
+                                         ? std::string(VERSION_STRING)
+                                         : toValidUtf8(server_meta_data_.agent_version));
         agent_info->set_container(config->is_container);
 
         const auto meta_data = google::protobuf::Arena::Create<v1::PServerMetaData>(arena);
