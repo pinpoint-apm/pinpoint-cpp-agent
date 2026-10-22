@@ -42,6 +42,8 @@ namespace pinpoint {
         constexpr size_t AGENT_ID_MAX_LEN = 24;
         constexpr size_t AGENT_NAME_MAX_LEN = 255;
         constexpr size_t SERVICE_NAME_MAX_LEN = 254;
+        // serviceName alone has a lower bound (Java IdValidatorV4.validateServiceName).
+        constexpr size_t SERVICE_NAME_MIN_LEN = 3;
         constexpr size_t APPLICATION_NAME_MAX_LEN_V1 = 24;
         constexpr size_t APPLICATION_NAME_MAX_LEN_V3 = SERVICE_NAME_MAX_LEN; // 254
         constexpr size_t AGENT_NAME_MAX_LEN_V4 = SERVICE_NAME_MAX_LEN;       // 254
@@ -118,6 +120,9 @@ namespace pinpoint {
 
     /**
      * @brief Resolve the agent identity for the given version.
+     *
+     * For v4, serviceName must also be at least object_name::SERVICE_NAME_MIN_LEN
+     * characters long.
      *
      * Returns std::nullopt when a required value is missing or invalid (the caller
      * must abort agent startup). Errors are logged. Successful resolution logs the

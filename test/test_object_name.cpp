@@ -222,6 +222,17 @@ TEST(ResolveV1V3, ApplicationNameLengthLimitDiffers) {
     EXPECT_FALSE(resolve_object_name(NameVersion::kV3, in).has_value());
 }
 
+// The v4 serviceName lower bound is v4-only: v1/v3 carry no serviceName at
+// all, so a short one must not keep them from resolving.
+TEST(ResolveV1V3, ShortServiceNameIgnored) {
+    ObjectNameInput in = baseInput();
+    in.service_name = "ab";
+
+    const auto obj = resolve_object_name(NameVersion::kV3, in);
+    ASSERT_TRUE(obj.has_value());
+    EXPECT_TRUE(obj->service_name.empty());
+}
+
 TEST(ResolveV4, HappyPath) {
     ObjectNameInput in;
     in.application_name = "test-app";
@@ -303,6 +314,23 @@ TEST(ResolveV4, InvalidServiceNameFails) {
     in.api_key = "secret-key";
     in.service_name = std::string(object_name::SERVICE_NAME_MAX_LEN + 1, 'a');
     EXPECT_FALSE(resolve_object_name(NameVersion::kV4, in).has_value());
+}
+
+// serviceName is the only id with a lower bound, as in the Java agent
+// (IdValidatorV4.validateServiceName).
+TEST(ResolveV4, ServiceNameMinLengthBoundary) {
+    ObjectNameInput in;
+    in.application_name = "test-app";
+    in.api_key = "secret-key";
+
+    in.service_name = std::string(object_name::SERVICE_NAME_MIN_LEN - 1, 'a');
+    EXPECT_FALSE(resolve_object_name(NameVersion::kV4, in).has_value())
+        << "a serviceName shorter than the minimum must abort resolution";
+
+    in.service_name = std::string(object_name::SERVICE_NAME_MIN_LEN, 'a');
+    const auto obj = resolve_object_name(NameVersion::kV4, in);
+    ASSERT_TRUE(obj.has_value());
+    EXPECT_EQ(obj->service_name, in.service_name);
 }
 
 // apiKey is optional for v4, as in the Java agent: resolution succeeds and

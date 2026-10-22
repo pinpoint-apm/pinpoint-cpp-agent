@@ -215,6 +215,15 @@ namespace pinpoint {
                           object_name::SERVICE_NAME_MAX_LEN);
                 return std::nullopt;
             }
+            // Unlike the other ids, serviceName also has a lower bound
+            // (Java IdValidatorV4.validateServiceName). Checked after
+            // validate_id() so an unset name is still reported as missing
+            // rather than as too short.
+            if (input.service_name.size() < object_name::SERVICE_NAME_MIN_LEN) {
+                LOG_ERROR("Failed to resolve ServiceName (required for uid.version=v4, min length {})",
+                          object_name::SERVICE_NAME_MIN_LEN);
+                return std::nullopt;
+            }
             obj.service_name = input.service_name;
 
             // apiKey: optional, as in the Java agent (ObjectNameResolverV4) and
