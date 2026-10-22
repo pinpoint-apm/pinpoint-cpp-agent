@@ -77,6 +77,7 @@ static std::shared_ptr<pinpoint::Config> make_test_config() {
 static constexpr const char* kStartAgentConfigYaml = R"(
 ApplicationName: c-api-test
 AgentName: c-api-agent-name
+UidVersion: v3
 Enable: true
 Collector:
   GrpcHost: 127.0.0.1
@@ -261,6 +262,7 @@ TEST_F(TracerCApiTest, StartAgentReportsSuccessWhileAgentRuns) {
 static constexpr const char* kReloadConfigYaml = R"(
 ApplicationName: c-api-renamed
 AgentName: c-api-agent-name
+UidVersion: v3
 Collector:
   GrpcHost: 127.0.0.1
 Sampling:

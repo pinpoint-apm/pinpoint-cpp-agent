@@ -21,6 +21,34 @@
 
 ### Changed
 
+- **`UidVersion` defaults to `v4`, as in the Java agent.** An unset
+  `UidVersion` used to resolve to `v3`; it now resolves to `v4`, the value the
+  Java agent's `NameVersion` falls back to and ships as its default, and an
+  unknown value (`V5`, `v2`) also falls back to `v4` instead of `v3`, still
+  with its warning. Because `v4` requires a `ServiceName`, **a deployment that
+  sets neither `UidVersion` nor `ServiceName` no longer starts**:
+  `StartAgent()` logs
+  `Failed to resolve ServiceName (required for uid.version=v4, max length 254)`
+  and installs a noop agent, exactly as a misconfigured explicit `v4` did.
+
+  **Migration.** Do one of:
+
+  - Set `ServiceName` (YAML key `ServiceName`, or `PINPOINT_CPP_SERVICE_NAME`)
+    to register under that service with the v4 identity
+    (`protocol.version=400`).
+  - Or pin the previous identity with `UidVersion: v3` (or
+    `PINPOINT_CPP_UID_VERSION=v3`); nothing else about a v3 agent changes.
+
+  The YAML handed to `ReloadAgentConfig()` is resolved as a complete
+  configuration, so it needs the same key: a reload YAML that names neither
+  `UidVersion` nor `ServiceName` is now refused like a startup configuration
+  would be. A config-file watcher reload is unaffected (an omitted key keeps
+  its running value).
+
+  The sample configurations in [Getting Started](doc/getting_started.md) and
+  the examples now set a `ServiceName`. See
+  [Identity Versions](doc/config.md#identity-versions).
+
 - **Identity values are trimmed before validation.** `ApplicationName`,
   `AgentName`, `ServiceName` and `ApiKey` lose their leading and trailing
   whitespace before the charset and length checks, as the Java agent does
@@ -30,9 +58,10 @@
   `apikey` header is omitted.
 
 - **An unknown `UidVersion` logs a warning.** The value still falls back to
-  `v3`, but a typo (`V5`, `v 4`) is now named in the log instead of silently
-  registering the agent as v3. An empty value stays the documented default and
-  does not warn. Surrounding whitespace in the value is ignored.
+  the default, `v4`, but a typo (`V5`, `v 4`) is now named in the log instead
+  of silently registering the agent under the default. An empty value stays
+  the documented default and does not warn. Surrounding whitespace in the
+  value is ignored.
 
 - **The non-reloadable-change warning names the fields.** A reload that tries
   to change a non-reloadable option now logs `non-reloadable config fields

@@ -132,6 +132,7 @@ void stop_server(int) {
 
 int main() {
     setenv("PINPOINT_CPP_APPLICATION_NAME", "cpp-db-server", 0);
+    setenv("PINPOINT_CPP_SERVICE_NAME", "cpp-example", 0);
     setenv("PINPOINT_CPP_HTTP_COLLECT_URL_STAT", "true", 0);
     // Record only the User-Agent request header on the span (see doc/config.md).
     setenv("PINPOINT_CPP_HTTP_SERVER_RECORD_REQUEST_HEADER", "User-Agent", 0);

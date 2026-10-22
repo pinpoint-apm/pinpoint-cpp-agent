@@ -140,16 +140,18 @@ TEST(NameVersionParse, KnownValuesCaseInsensitive) {
     EXPECT_EQ(parse_name_version("V4"), NameVersion::kV4);
 }
 
-TEST(NameVersionParse, UnknownAndEmptyFallBackToV3) {
-    EXPECT_EQ(parse_name_version(""), NameVersion::kV3);
-    EXPECT_EQ(parse_name_version("v2"), NameVersion::kV3);
-    EXPECT_EQ(parse_name_version("garbage"), NameVersion::kV3);
+// Empty and unknown both resolve to v4, as the Java agent's
+// NameVersion.getVersion() does (and its root config defaults to v4).
+TEST(NameVersionParse, UnknownAndEmptyFallBackToV4) {
+    EXPECT_EQ(parse_name_version(""), NameVersion::kV4);
+    EXPECT_EQ(parse_name_version("v2"), NameVersion::kV4);
+    EXPECT_EQ(parse_name_version("garbage"), NameVersion::kV4);
 }
 
 TEST(NameVersionParse, SurroundingWhitespaceIgnored) {
     EXPECT_EQ(parse_name_version(" v4 "), NameVersion::kV4);
     EXPECT_EQ(parse_name_version("\tv1\n"), NameVersion::kV1);
-    EXPECT_EQ(parse_name_version("  "), NameVersion::kV3);
+    EXPECT_EQ(parse_name_version("  "), NameVersion::kV4);
 }
 
 // Only an unknown value warns: empty is the documented default and "v3" is
@@ -173,6 +175,7 @@ TEST(NameVersionParse, UnknownValueLogsWarning) {
     std::lock_guard<std::mutex> lock(warnings_mutex);
     ASSERT_EQ(warnings.size(), 1u);
     EXPECT_NE(warnings[0].find("unknown uid version 'v5'"), std::string::npos) << warnings[0];
+    EXPECT_NE(warnings[0].find("falling back to v4"), std::string::npos) << warnings[0];
 }
 
 // ---------------------------------------------------------------------------

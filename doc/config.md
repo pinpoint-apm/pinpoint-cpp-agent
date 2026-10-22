@@ -119,7 +119,7 @@ pinpoint::StartAgent(options);
 |---|---|---|---|---|
 | `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. Max 24 chars for `UidVersion: v1`, otherwise max 254 chars. |
 | `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars). Falls back to the agent id when omitted. |
-| `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1` or `v3` (case-insensitive; empty → `v3`; an unknown value also falls back to `v3` and logs a warning). See [Identity Versions](#identity-versions). |
+| `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v4` | Agent self-identity (ObjectName) version: `v1` or `v3` (case-insensitive; empty → `v4`, as in the Java agent; an unknown value also falls back to `v4` and logs a warning). See [Identity Versions](#identity-versions). |
 | `ActiveProfile` | `PINPOINT_CPP_ACTIVE_PROFILE` | string | `""` | Name of the `Profile.<name>` subtree applied over the top-level keys. See [Profiles](#profiles). Reloadable. |
 | `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](troubleshooting.md#disabling-the-agent). Startup-only: read once when the agent is constructed, so a reload cannot start or stop tracing. |
 
@@ -131,13 +131,13 @@ pinpoint::StartAgent(options);
 
 `UidVersion` selects how the agent identifies itself to the Collector:
 
-| | v1 | v3 (default) |
+| | v1 | v3 |
 |---|---|---|
 | `ApplicationName` max length | 24 | 254 |
 | Agent id | auto Base64(UUIDv7) | same as v1 |
 | gRPC `protocol.version` header | 100 | 100 |
 
-v1 and v3 are identical on the wire (both `protocol.version=100`); they differ only in the `ApplicationName` length limit. A missing/invalid `ApplicationName` aborts agent startup (the agent degrades to a no-op).
+v1 and v3 are identical on the wire (both `protocol.version=100`); they differ only in the `ApplicationName` length limit. A missing/invalid `ApplicationName` aborts agent startup (the agent degrades to a no-op). v4 is the default, as in the Java agent, so a deployment that has no `ServiceName` must set `UidVersion: v3` (or `v1`) explicitly.
 
 Leading and trailing whitespace in `ApplicationName`, `AgentName`, `ServiceName` and `ApiKey` is trimmed before validation, as the Java agent does, so `ServiceName: "svc "` resolves to `svc`. A whitespace-only `ApiKey` counts as unset.
 
@@ -665,7 +665,7 @@ It differs from the config-file watcher in three ways:
 |---|---|---|
 | A key the new YAML omits | keeps its running value | takes its default (or environment) value, as at startup |
 | YAML that does not parse, or a value of the wrong type | logged; the reload continues with the running values | **refused**, nothing changes |
-| A config that `StartAgent()` would refuse (no `ApplicationName` or `Collector.Host`, invalid identity) | n/a (identity is retained) | **refused**, nothing changes |
+| A config that `StartAgent()` would refuse (no `ApplicationName` or `Collector.Host`; no `ServiceName` under the default `v4` identity; invalid identity) | n/a (identity is retained) | **refused**, nothing changes |
 
 Out-of-range values and unknown keys are handled as at startup — clamped or
 ignored, with a warning. The result's `status`:

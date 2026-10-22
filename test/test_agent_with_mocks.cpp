@@ -1909,6 +1909,7 @@ protected:
         config_file
             << "ApplicationName: " << application_name << "\n"
             << "AgentName: test-agent-name\n"
+            << "UidVersion: v3\n"
             << "Enable: true\n";
         if (enable_watcher) {
             config_file << "EnableConfigFileWatcher: true\n";
@@ -1940,6 +1941,7 @@ protected:
     static constexpr const char* kBaseConfigYaml = R"(
 ApplicationName: test-app
 AgentName: test-agent-name
+UidVersion: v3
 Enable: true
 Collector:
   GrpcHost: 127.0.0.1
@@ -2701,6 +2703,7 @@ TEST_F(ReloadAgentConfigTest, RetainsAndReportsNonReloadableFields) {
     const auto result = ReloadAgentConfig(R"(
 ApplicationName: renamed-app
 AgentName: test-agent-name
+UidVersion: v3
 Collector:
   GrpcHost: collector.elsewhere
   GrpcAgentPort: 9991
@@ -2732,6 +2735,7 @@ TEST_F(ReloadAgentConfigTest, EnvironmentOutranksTheReloadedYaml) {
     const auto result = ReloadAgentConfig(R"(
 ApplicationName: test-app
 AgentName: test-agent-name
+UidVersion: v3
 Collector:
   GrpcHost: 127.0.0.1
   GrpcAgentPort: 9991

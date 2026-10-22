@@ -5,6 +5,9 @@ Enable: true
 
 ApplicationName: "it-test-server"
 AgentName: "it-test-agent"
+# v4 (the default) needs a ServiceName the collector knows; the suite stays on
+# the v3 identity so it runs against any collector.
+UidVersion: v3
 
 IsContainer: true
 EnableCallstackTrace: true

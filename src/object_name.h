@@ -34,8 +34,8 @@ namespace pinpoint {
     enum class NameVersion { kV1, kV3, kV4 };
 
     /// @brief Parse the uid version string. Case-insensitive, surrounding
-    ///        whitespace ignored. Empty -> v3 (the default); an unknown value
-    ///        also falls back to v3 but logs a warning.
+    ///        whitespace ignored. Empty -> v4 (the default, as in the Java
+    ///        agent); an unknown value also falls back to v4 but logs a warning.
     NameVersion parse_name_version(std::string_view value);
 
     namespace object_name {

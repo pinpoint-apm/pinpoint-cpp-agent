@@ -1055,7 +1055,7 @@ namespace pinpoint {
                 // and StartAgent() degrades to a noop agent. Ensure agent_id is
                 // populated for diagnostic logging.
                 LOG_ERROR("failed to resolve agent identity (uid.version='{}')",
-                          config->uid_version_.empty() ? "v3" : config->uid_version_);
+                          config->uid_version_.empty() ? "v4" : config->uid_version_);
                 if (config->agent_id_.empty()) {
                     config->agent_id_ = base64_encode_uuid(generate_uuid_v7());
                 }

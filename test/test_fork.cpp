@@ -85,6 +85,7 @@ std::shared_ptr<Config> make_fork_config_from_yaml() {
     options.config_yaml = R"(
 ApplicationName: fork-app
 AgentName: fork-agent-name
+UidVersion: v3
 Enable: true
 Collector:
   GrpcHost: 127.0.0.1
@@ -458,6 +459,7 @@ AgentOptions fork_start_options() {
     options.config_yaml = R"(
 ApplicationName: fork-app
 AgentName: fork-agent-name
+UidVersion: v3
 Enable: true
 Log:
   Level: error

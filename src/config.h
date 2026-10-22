@@ -267,9 +267,9 @@ namespace pinpoint {
 
         // Agent self-identity (ObjectName) version handling. uid_version_ holds the
         // raw configured value of "pinpoint.modules.uid.version" (v1/v3/v4, empty ->
-        // v3). object_name_version_ is the resolved ObjectName version (1 for v1/v3,
-        // 4 for v4) and drives the gRPC protocol.version header. service_name_ and
-        // api_key_ are only used by v4.
+        // v4 as in the Java agent). object_name_version_ is the resolved ObjectName
+        // version (1 for v1/v3, 4 for v4) and drives the gRPC protocol.version
+        // header. service_name_ and api_key_ are only used by v4.
         std::string uid_version_;
         std::string service_name_;
         std::string api_key_;

@@ -71,6 +71,7 @@ built-in defaults.
 
 ```yaml
 ApplicationName: "MyApplication"
+ServiceName: "MyService"     # Required by default (UidVersion v4); see the Configuration Guide
 AgentName: "my-agent-name"  # Optional label; the agent id is always auto-generated
 
 Collector:
@@ -99,6 +100,7 @@ Or set `PINPOINT_CPP_CONFIG_FILE` in the environment.
 
 ```bash
 export PINPOINT_CPP_APPLICATION_NAME="MyApplication"
+export PINPOINT_CPP_SERVICE_NAME="MyService"
 export PINPOINT_CPP_AGENT_NAME="my-agent-name"
 export PINPOINT_CPP_COLLECTOR_HOST="localhost"
 ```
@@ -109,6 +111,7 @@ export PINPOINT_CPP_COLLECTOR_HOST="localhost"
 pinpoint::AgentOptions options;
 options.config_yaml = R"(
     ApplicationName: "MyApplication"
+    ServiceName: "MyService"
     Collector:
       Host: "localhost"
 )";

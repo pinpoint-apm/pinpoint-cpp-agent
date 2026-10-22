@@ -34,16 +34,20 @@ namespace pinpoint {
         if (absl::EqualsIgnoreCase(value, "v1")) {
             return NameVersion::kV1;
         }
+        if (absl::EqualsIgnoreCase(value, "v3")) {
+            return NameVersion::kV3;
+        }
         if (absl::EqualsIgnoreCase(value, "v4")) {
             return NameVersion::kV4;
         }
-        // Empty is the documented default. Anything else that is not "v3" is
-        // a typo ("V5", "v 4"), and a silent v3 would register the agent in
-        // the wrong place without a trace in the log, so name it.
-        if (!value.empty() && !absl::EqualsIgnoreCase(value, "v3")) {
-            LOG_WARN("unknown uid version '{}' (expected v1, v3 or v4), falling back to v3", value);
+        // Empty is the default: v4, as in the Java agent (NameVersion.getVersion
+        // and pinpoint-root.config). Anything else is a typo ("V5", "v 4") that
+        // also lands on v4 there, but a silent fallback would register the
+        // agent without a trace in the log, so name it.
+        if (!value.empty()) {
+            LOG_WARN("unknown uid version '{}' (expected v1, v3 or v4), falling back to v4", value);
         }
-        return NameVersion::kV3;
+        return NameVersion::kV4;
     }
 
     namespace {

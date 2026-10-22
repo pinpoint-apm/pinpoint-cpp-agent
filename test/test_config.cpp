@@ -1215,6 +1215,7 @@ TEST_F(ConfigTest, InvalidYamlEnvironmentOverrideAndValidationTest) {
     set_config_string(invalid_yaml_);
     setenv(full_env(env::APPLICATION_NAME).c_str(), "EnvRecoveredApp", 1);
     setenv(full_env(env::AGENT_NAME).c_str(), "env-agent-recovered", 1);
+    setenv(full_env(env::UID_VERSION).c_str(), "v3", 1);
     setenv(full_env(env::GRPC_HOST).c_str(), "env.collector.host", 1);
     setenv(full_env(env::GRPC_AGENT_PORT).c_str(), "70000", 1);
     setenv(full_env(env::SPAN_MAX_EVENT_DEPTH).c_str(), "1", 1);
@@ -1303,6 +1304,7 @@ TEST_F(ConfigTest, ConfigurationRoundTripTest) {
 TEST_F(ConfigTest, GeneratedIdentityDoesNotLeakIntoRoundTripConfig) {
     set_config_string(R"(
 ApplicationName: RoundTripIdentityApp
+UidVersion: v3
 Collector:
   GrpcHost: localhost
 )");
@@ -1341,11 +1343,12 @@ TEST_F(ConfigTest, EmptyConfigurationStringTest) {
 // UidVersion resolution at the config integration level: identity resolves,
 // the raw string is preserved in uid_version_ (isReloadable compares the raw
 // value, not the resolved version), and object_name_version_ follows the
-// resolved version. An unrecognized value (anything not v1/v4, e.g. v2)
-// resolves as v3 — object_name_version_ becomes VERSION_V1 (1) exactly like an
-// explicit v3 — guarding the schema-drift / parse fallback beyond the
-// parse_name_version unit test. Recognized versions additionally survive a
-// to_config_string() round-trip.
+// resolved version. An unrecognized value (anything not v1/v3/v4, e.g. v2)
+// resolves as v4, as the Java agent's NameVersion.getVersion() does —
+// object_name_version_ becomes VERSION_V4 (4) exactly like an explicit v4 —
+// guarding the schema-drift / parse fallback beyond the parse_name_version
+// unit test. Recognized versions additionally survive a to_config_string()
+// round-trip.
 TEST_F(ConfigTest, UidVersionResolutionAndRoundTripTest) {
     struct UidVersionCase {
         const char* version_str;
@@ -1355,12 +1358,15 @@ TEST_F(ConfigTest, UidVersionResolutionAndRoundTripTest) {
     const UidVersionCase cases[] = {
         {"v1", 1, true},
         {"v3", 1, true},
-        {"v2", 1, false},  // unrecognized: v3 fallback
+        {"v4", 4, true},
+        {"v2", 4, false},  // unrecognized: v4 fallback
     };
 
     for (const auto& c : cases) {
         SCOPED_TRACE(c.version_str);
+        // ServiceName is read by v4 only; v1/v3 ignore it and do not serialize it.
         set_config_string(std::string("ApplicationName: \"UidApp\"\n"
+                                      "ServiceName: uid-service\n"
                                       "UidVersion: ") + c.version_str + "\n"
                                       "Collector:\n"
                                       "  GrpcHost: localhost\n");
@@ -2250,10 +2256,11 @@ TEST_F(ConfigTest, MakeConfigV1RejectsLongApplicationNameTest) {
     EXPECT_FALSE(config->check());
 }
 
-// The v3 default allows an application name up to 254 bytes.
+// v3 allows an application name up to 254 bytes.
 TEST_F(ConfigTest, MakeConfigV3AllowsLongApplicationNameTest) {
     const std::string yaml =
         "ApplicationName: " + std::string(100, 'A') + "\n"
+        "UidVersion: v3\n"
         "Collector:\n"
         "  GrpcHost: localhost\n";
     set_config_string(yaml);
@@ -2261,9 +2268,33 @@ TEST_F(ConfigTest, MakeConfigV3AllowsLongApplicationNameTest) {
     auto config = make_config();
     ASSERT_NE(config, nullptr);
     EXPECT_TRUE(config->identity_resolved_)
-        << "v3 (default) application name <=254 chars should resolve";
+        << "v3 application name <=254 chars should resolve";
     EXPECT_EQ(config->object_name_version_, 1);
     EXPECT_TRUE(config->check());
+}
+
+// Without UidVersion the agent is v4, as the Java agent is (NameVersion
+// defaults to v4), so a ServiceName is required by default.
+TEST_F(ConfigTest, MakeConfigDefaultsToV4Test) {
+    const std::string base =
+        "ApplicationName: default-app\n"
+        "Collector:\n"
+        "  GrpcHost: localhost\n";
+
+    set_config_string(base);
+    auto missing = make_config();
+    ASSERT_NE(missing, nullptr);
+    EXPECT_EQ(missing->object_name_version_, 4);
+    EXPECT_FALSE(missing->identity_resolved_) << "the v4 default requires a ServiceName";
+    EXPECT_FALSE(missing->check());
+
+    set_config_string(base + "ServiceName: default-service\n");
+    auto resolved = make_config();
+    ASSERT_NE(resolved, nullptr);
+    EXPECT_TRUE(resolved->identity_resolved_);
+    EXPECT_TRUE(resolved->is_v4());
+    EXPECT_EQ(resolved->protocol_version(), 400);
+    EXPECT_TRUE(resolved->check());
 }
 
 // v4 resolves a full identity and rejects a missing requirement.
@@ -2729,6 +2760,7 @@ AgentId: configured-id
 TEST_F(ConfigTest, AgentNameUsedVerbatimAndDefaultsToAgentId) {
     set_config_string(R"(
 ApplicationName: IdentityApp
+UidVersion: v3
 AgentName: worker-name
 )");
     auto config = make_config();
@@ -2738,6 +2770,7 @@ AgentName: worker-name
 
     set_config_string(R"(
 ApplicationName: IdentityApp
+UidVersion: v3
 )");
     config = make_config();
 
@@ -3371,6 +3404,7 @@ class ReloadConfigTest : public ConfigTest {
 protected:
     static constexpr const char* kRunningYaml = R"(
 ApplicationName: ReloadApp
+UidVersion: v3
 Collector:
   Host: collector.running
   AgentPort: 9991
@@ -3402,6 +3436,7 @@ TEST_F(ReloadConfigTest, AppliesReloadableFieldsAndReportsFixedOnes) {
     ConfigReloadResult result;
     const auto reloaded = reload(running, R"(
 ApplicationName: OtherApp
+UidVersion: v3
 Collector:
   Host: collector.other
   AgentPort: 9991
@@ -3439,6 +3474,7 @@ TEST_F(ReloadConfigTest, OmittedKeysTakeTheirDefaults) {
     ConfigReloadResult result;
     const auto reloaded = reload(running, R"(
 ApplicationName: ReloadApp
+UidVersion: v3
 Collector:
   Host: collector.running
 )", result);
@@ -3464,6 +3500,7 @@ TEST_F(ReloadConfigTest, EnvironmentOutranksTheReloadedYaml) {
     ConfigReloadResult result;
     const auto reloaded = reload(running, R"(
 ApplicationName: ReloadApp
+UidVersion: v3
 Collector:
   Host: collector.yaml
   AgentPort: 9991
@@ -3486,6 +3523,7 @@ Sampling:
 // Enough for check(): the environment alone may supply what the YAML lacks.
 TEST_F(ReloadConfigTest, EnvironmentCanSupplyRequiredKeys) {
     setenv(full_env(env::APPLICATION_NAME).c_str(), "ReloadApp", 1);
+    setenv(full_env(env::UID_VERSION).c_str(), "v3", 1);
     setenv(full_env(env::COLLECTOR_HOST).c_str(), "collector.running", 1);
     const auto running = start("{}");
     ASSERT_NE(running, nullptr);
@@ -3523,6 +3561,7 @@ TEST_F(ReloadConfigTest, RejectsAValueOfTheWrongType) {
     ConfigReloadResult result;
     EXPECT_EQ(reload(running, R"(
 ApplicationName: ReloadApp
+UidVersion: v3
 Collector:
   Host: collector.running
 Sampling:
@@ -3562,6 +3601,7 @@ TEST_F(ReloadConfigTest, RefusalLeavesTheLoggerUntouched) {
     ConfigReloadResult result;
     EXPECT_EQ(reload(running, R"(
 ApplicationName: ReloadApp
+UidVersion: v3
 Collector:
   Host: collector.running
 Log:
@@ -3575,6 +3615,7 @@ Sampling:
     ConfigReloadResult applied;
     EXPECT_NE(reload(running, R"(
 ApplicationName: ReloadApp
+UidVersion: v3
 Collector:
   Host: collector.running
 Log:

@@ -960,6 +960,9 @@ void write_watch_config(const std::string& path, int counter_rate,
         // Not reloadable. Changing it between writes gives the reload's
         // retain step real work to do — the running value has to win.
         << "ApplicationName: " << app_name << "\n"
+        // A fresh agent reads this file: without the line it would be v4 and
+        // need a ServiceName (see pinpoint-config.yaml).
+        << "UidVersion: v3\n"
         << "Sampling:\n"
         << "  Type: COUNTER\n"
         << "  CounterRate: " << counter_rate << "\n";
