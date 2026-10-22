@@ -217,11 +217,9 @@ namespace pinpoint {
             }
             obj.service_name = input.service_name;
 
-            // apiKey: required for v4, only checked for non-emptiness.
-            if (input.api_key.empty()) {
-                LOG_ERROR("Failed to resolve ApiKey (required for uid.version=v4)");
-                return std::nullopt;
-            }
+            // apiKey: optional, as in the Java agent (ObjectNameResolverV4) and
+            // the collector, which reads the header as nullable and never
+            // validates it. An empty key is left out of the gRPC metadata.
             obj.api_key = input.api_key;
 
             // agentName: required, falls back to base64(agentId UUID).

@@ -305,11 +305,18 @@ TEST(ResolveV4, InvalidServiceNameFails) {
     EXPECT_FALSE(resolve_object_name(NameVersion::kV4, in).has_value());
 }
 
-TEST(ResolveV4, MissingApiKeyFails) {
+// apiKey is optional for v4, as in the Java agent: resolution succeeds and
+// the key stays empty so the gRPC metadata omits it.
+TEST(ResolveV4, MissingApiKeyAllowed) {
     ObjectNameInput in;
     in.application_name = "test-app";
     in.service_name = "test-service";
-    EXPECT_FALSE(resolve_object_name(NameVersion::kV4, in).has_value());
+
+    const auto obj = resolve_object_name(NameVersion::kV4, in);
+    ASSERT_TRUE(obj.has_value());
+    EXPECT_TRUE(obj->is_v4());
+    EXPECT_EQ(obj->service_name, "test-service");
+    EXPECT_TRUE(obj->api_key.empty());
 }
 
 TEST(ResolveV4, MissingApplicationNameFails) {

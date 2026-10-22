@@ -1343,7 +1343,7 @@ namespace pinpoint {
             return "application name is required";
         }
         // Identity fields (agent_id_/agent_name_/app_name_ and, for v4,
-        // service_name_/api_key_) are validated and length-checked per uid version
+        // service_name_) are validated and length-checked per uid version
         // by make_config()'s resolve_object_name() — version-aware (e.g. the v1 vs
         // v3 applicationName limit) in a way check() cannot reproduce here. A failed
         // resolution sets identity_resolved_ = false and aborts startup.

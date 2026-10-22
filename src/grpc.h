@@ -59,7 +59,8 @@ namespace pinpoint {
      * @brief Build the ordered gRPC metadata header set for a request.
      *
      * v1/v3 send protocol.version=100 (agentname only when present); v4 sends
-     * protocol.version=400 plus agentname (always), servicename and apikey.
+     * protocol.version=400 plus agentname (always), servicename, and apikey
+     * only when one is configured.
      * A pure function so the per-version header set is unit-testable.
      *
      * @p agent_id is passed separately rather than read from @p config so it

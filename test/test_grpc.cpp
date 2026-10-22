@@ -940,6 +940,21 @@ TEST(GrpcMetadataTest, V4Headers) {
     EXPECT_EQ(m.at("agentid"), "AZLxoH6LfD2fLhorPE1ebw");
 }
 
+TEST(GrpcMetadataTest, V4ApiKeyOmittedWhenEmpty) {
+    Config config;
+    config.app_name_ = "my-app";
+    config.agent_id_ = "AZLxoH6LfD2fLhorPE1ebw";
+    config.agent_name_ = "agent-name";
+    config.service_name_ = "my-service";
+    config.object_name_version_ = 4;
+    // api_key_ left empty: optional for v4, so the header is not sent at all.
+
+    const auto m = metadata_map(config, 999);
+    EXPECT_EQ(m.at("protocol.version"), "400");
+    EXPECT_EQ(m.at("servicename"), "my-service");
+    EXPECT_EQ(m.count("apikey"), 0u);
+}
+
 TEST(GrpcAgentStatBuilderTest, UncollectedJvmFieldsTravelAsMinusOne) {
     AgentStatsSnapshot stat;
     stat.sample_time_ = 1700000000000;

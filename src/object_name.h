@@ -101,7 +101,8 @@ namespace pinpoint {
      * @brief Resolved agent self-identity.
      *
      * version is 1 for v1/v3 and 4 for v4. service_name / api_key are only
-     * populated for v4. api_key is never exposed by to_string().
+     * populated for v4; api_key is optional there and may stay empty. api_key
+     * is never exposed by to_string().
      */
     struct ObjectName {
         int version = object_name::VERSION_V1;

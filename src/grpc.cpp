@@ -311,10 +311,13 @@ namespace pinpoint {
         headers.emplace_back(METADATA_PROTOCOL_VERSION, std::to_string(config.protocol_version()));
 
         if (config.is_v4()) {
-            // v4 (ClientHeaderFactoryV4): agentname always sent, plus servicename + apikey.
+            // v4 (ClientHeaderFactoryV4): agentname always sent, plus servicename;
+            // apikey only when configured, as the Java factory omits a null key.
             headers.emplace_back(METADATA_AGENT_NAME, config.agent_name_);
             headers.emplace_back(METADATA_SERVICE_NAME, config.service_name_);
-            headers.emplace_back(METADATA_API_KEY, config.api_key_);
+            if (!config.api_key_.empty()) {
+                headers.emplace_back(METADATA_API_KEY, config.api_key_);
+            }
         } else if (!config.agent_name_.empty()) {
             // v1/v3 (ClientHeaderFactoryV1): agentname only when present.
             headers.emplace_back(METADATA_AGENT_NAME, config.agent_name_);
