@@ -1,25 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 (2026-10-23)
 
-### Added
-
-- **`ReloadAgentConfig()`: apply a new YAML configuration to the running
-  agent.** `StartAgent()` stays one-shot — a repeated call still never reloads
-  — so a host that owns the configuration (a control plane, Envoy over xDS)
-  had no way to change it without the config-file watcher. The YAML is
-  resolved as `StartAgent()` would resolve it from the running agent's own
-  `AgentOptions` (environment variables still outrank it; a key it omits takes
-  its default), the reloadable options are applied, and the non-reloadable
-  ones are kept and returned in `ConfigReloadResult::restart_required` by YAML
-  path (`"ApplicationName"`, `"Collector.Host"`). YAML that does not parse, a
-  value of the wrong type, or a config `StartAgent()` would refuse is refused
-  with nothing changed, as is a call with no running agent or while a config
-  file is the source. Thread-safe, and serialized with the config-file
-  watcher. C counterpart: `pt_reload_agent_config()`. Documented in
-  [Configuration Guide § Reloading from YAML](doc/config.md#reloading-from-yaml-reloadagentconfig).
-
-### Changed
+### Breaking
 
 - **`UidVersion` defaults to `v4`, as in the Java agent.** An unset
   `UidVersion` used to resolve to `v3`; it now resolves to `v4`, the value the
@@ -48,6 +31,35 @@
   The sample configurations in [Getting Started](doc/getting_started.md) and
   the examples now set a `ServiceName`. See
   [Identity Versions](doc/config.md#identity-versions).
+
+### Added
+
+- **`ReloadAgentConfig()`: apply a new YAML configuration to the running
+  agent.** `StartAgent()` stays one-shot — a repeated call still never reloads
+  — so a host that owns the configuration (a control plane, Envoy over xDS)
+  had no way to change it without the config-file watcher. The YAML is
+  resolved as `StartAgent()` would resolve it from the running agent's own
+  `AgentOptions` (environment variables still outrank it; a key it omits takes
+  its default), the reloadable options are applied, and the non-reloadable
+  ones are kept and returned in `ConfigReloadResult::restart_required` by YAML
+  path (`"ApplicationName"`, `"Collector.Host"`). YAML that does not parse, a
+  value of the wrong type, or a config `StartAgent()` would refuse is refused
+  with nothing changed, as is a call with no running agent or while a config
+  file is the source. Thread-safe, and serialized with the config-file
+  watcher. C counterpart: `pt_reload_agent_config()`. Documented in
+  [Configuration Guide § Reloading from YAML](doc/config.md#reloading-from-yaml-reloadagentconfig).
+
+- **`AgentOptions::agent_version`: override the agent version reported in
+  AgentInfo.** Empty (the default) reports this library's own version. C
+  counterpart: `pt_agent_options_set_agent_version()`.
+
+### Changed
+
+- **`ApiKey` is optional for `UidVersion: v4`.** A v4 agent without an
+  `ApiKey` previously refused to start. It now resolves its identity with an
+  empty key and omits the gRPC `apikey` header, as the Java agent does; the
+  header is sent only when a key is configured. `ServiceName` is still
+  required. See [Identity Versions](doc/config.md#identity-versions).
 
 - **Identity values are trimmed before validation.** `ApplicationName`,
   `AgentName`, `ServiceName` and `ApiKey` lose their leading and trailing
@@ -85,6 +97,13 @@
 
 ### Fixed
 
+- **A v4 `ServiceName` shorter than 3 characters is rejected at startup.**
+  Only the shared `[a-zA-Z0-9._-]` id validation applied, so a two-character
+  name resolved and the agent registered under a service the Collector would
+  refuse to create. The lower bound the Collector enforces is now checked in
+  `resolve_object_name()`, and the startup failure logs
+  `Failed to resolve ServiceName (required for uid.version=v4, min length 3)`.
+  v1/v3 carry no `ServiceName` and are unaffected.
 - **An async span of an unsampled span now propagates the unsampled
   decision.** `NewAsyncSpan()` on an unsampled span returned the no-op span,
   from both overloads and from `pt_span_new_async_span()`. The no-op span's
@@ -317,6 +336,32 @@
   asked for.
 
   See [Sampling Configuration](doc/config.md#sampling-configuration).
+
+- **`ServiceName` is now required for `UidVersion: v4`.**
+
+  Up to and including v2.0.0, a v4 agent started with no `ServiceName`
+  silently registered under the fallback service name `DEFAULT`. That
+  fallback is gone: a missing or invalid `ServiceName` aborts agent startup
+  (`resolve_object_name()` in [src/object_name.cpp](src/object_name.cpp)).
+
+  **Symptom if you do not migrate:** the process does **not** start — this is a
+  startup failure, not a silent degradation to reduced tracing. The log shows:
+
+  ```
+  Failed to resolve ServiceName (required for uid.version=v4, max length 254)
+  ```
+
+  **Migration.** Any deployment running `UidVersion: v4` without a
+  `ServiceName` must do one of:
+
+  - Set the service name explicitly — YAML key `ServiceName`, or environment
+    variable `PINPOINT_CPP_SERVICE_NAME` (max 254 bytes, `[a-zA-Z0-9._-]`). Use
+    `DEFAULT` to keep registering under exactly the service the v2.0.0 fallback
+    produced.
+  - Or stay on the v1/v3 identity, which does not use `ServiceName` at all —
+    YAML key `UidVersion: v3`, or `PINPOINT_CPP_UID_VERSION=v3`.
+
+  See [Identity Versions](doc/config.md#identity-versions).
 
 - **`Http.UrlStatEnableTrimPath` now defaults to `false`.**
 

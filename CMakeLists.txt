@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(pinpoint-cpp VERSION 2.1.0)
+project(pinpoint-cpp VERSION 2.2.0)
 
 option(BUILD_TESTING      "Build tests"                ON)
 option(BUILD_EXAMPLES     "Build examples"             ON)

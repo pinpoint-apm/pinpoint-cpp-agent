@@ -1,6 +1,6 @@
 {
   "name": "pinpoint-cpp",
-  "version-string": "2.1.0",
+  "version-string": "2.2.0",
   "builtin-baseline": "3a7f104b742b48a79c6a92cdbc0b6ef23987cc60",
   "dependencies": [
     "grpc",

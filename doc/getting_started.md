@@ -37,13 +37,13 @@ target_link_libraries(your_target PRIVATE pinpoint_cpp)
 Add to your `MODULE.bazel` file:
 
 ```python
-bazel_dep(name = "pinpoint-cpp", version = "2.1.0")
+bazel_dep(name = "pinpoint-cpp", version = "2.2.0")
 
-# Not published to the Bazel Central Registry yet — point at the repository.
+# Not published to the Bazel Central Registry yet — point at the release tag.
 git_override(
     module_name = "pinpoint-cpp",
     remote = "https://github.com/pinpoint-apm/pinpoint-cpp-agent.git",
-    branch = "main",
+    tag = "v2.2.0",
 )
 ```
 

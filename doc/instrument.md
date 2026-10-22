@@ -514,7 +514,7 @@ has a cluster namespace configured. Currently omitted:
 
 | Header | Written when |
 |---|---|
-| `Pinpoint-pServiceName` | **never** — it needs the `v4` identity, which the Collector does not support yet |
+| `Pinpoint-pServiceName` | the agent has a service name (`uid.version=v4`; v1/v3 omit it) |
 | `Pinpoint-Host` | the span event has a destination (`SetDestination()`) |
 | `Pinpoint-pAppNamespace` | **never** — this agent does not support a cluster namespace |
 
