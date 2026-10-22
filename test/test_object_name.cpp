@@ -15,12 +15,16 @@
  */
 
 #include "../src/object_name.h"
+#include "../src/logging.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace pinpoint {
 
@@ -142,6 +146,35 @@ TEST(NameVersionParse, UnknownAndEmptyFallBackToV3) {
     EXPECT_EQ(parse_name_version("garbage"), NameVersion::kV3);
 }
 
+TEST(NameVersionParse, SurroundingWhitespaceIgnored) {
+    EXPECT_EQ(parse_name_version(" v4 "), NameVersion::kV4);
+    EXPECT_EQ(parse_name_version("\tv1\n"), NameVersion::kV1);
+    EXPECT_EQ(parse_name_version("  "), NameVersion::kV3);
+}
+
+// Only an unknown value warns: empty is the documented default and "v3" is
+// an explicit choice, so neither may fill the log on every (re)load.
+TEST(NameVersionParse, UnknownValueLogsWarning) {
+    std::vector<std::string> warnings;
+    std::mutex warnings_mutex;
+    Logger::getInstance().setSink([&](const char* level, const char* message) {
+        std::lock_guard<std::mutex> lock(warnings_mutex);
+        if (std::string_view(level) == "warning") {
+            warnings.emplace_back(message);
+        }
+    });
+
+    parse_name_version("");
+    parse_name_version("v3");
+    parse_name_version(" V4 ");
+    parse_name_version("v5");
+    Logger::getInstance().setSink({});
+
+    std::lock_guard<std::mutex> lock(warnings_mutex);
+    ASSERT_EQ(warnings.size(), 1u);
+    EXPECT_NE(warnings[0].find("unknown uid version 'v5'"), std::string::npos) << warnings[0];
+}
+
 // ---------------------------------------------------------------------------
 // ID validation
 // ---------------------------------------------------------------------------
@@ -231,6 +264,54 @@ TEST(ResolveV1V3, ShortServiceNameIgnored) {
     const auto obj = resolve_object_name(NameVersion::kV3, in);
     ASSERT_TRUE(obj.has_value());
     EXPECT_TRUE(obj->service_name.empty());
+}
+
+// Surrounding whitespace is trimmed before validation, as the Java agent's
+// AgentProperties.getProperty does: `ServiceName: "svc "` must resolve to
+// "svc", not fail the charset check and abort startup.
+TEST(ResolveV1V3, SurroundingWhitespaceTrimmedBeforeValidation) {
+    ObjectNameInput in;
+    in.application_name = "  my-app\t";
+    in.agent_name = " my-agent ";
+
+    const auto obj = resolve_object_name(NameVersion::kV3, in);
+    ASSERT_TRUE(obj.has_value());
+    EXPECT_EQ(obj->application_name, "my-app");
+    EXPECT_EQ(obj->agent_name, "my-agent");
+}
+
+TEST(ResolveV1V3, WhitespaceOnlyApplicationNameFails) {
+    ObjectNameInput in;
+    in.application_name = "   ";
+    EXPECT_FALSE(resolve_object_name(NameVersion::kV3, in).has_value());
+}
+
+TEST(ResolveV4, SurroundingWhitespaceTrimmedBeforeValidation) {
+    ObjectNameInput in;
+    in.application_name = " test-app ";
+    in.service_name = "\ttest-service\n";
+    in.api_key = "  secret-key  ";
+    in.agent_name = " my-agent ";
+
+    const auto obj = resolve_object_name(NameVersion::kV4, in);
+    ASSERT_TRUE(obj.has_value());
+    EXPECT_EQ(obj->application_name, "test-app");
+    EXPECT_EQ(obj->service_name, "test-service");
+    EXPECT_EQ(obj->api_key, "secret-key");
+    EXPECT_EQ(obj->agent_name, "my-agent");
+}
+
+// A whitespace-only api key is "no key" (Java: validateApiKey rejects the
+// trimmed empty value), so it resolves empty and the apikey header is omitted.
+TEST(ResolveV4, WhitespaceOnlyApiKeyResolvesEmpty) {
+    ObjectNameInput in;
+    in.application_name = "test-app";
+    in.service_name = "test-service";
+    in.api_key = "   ";
+
+    const auto obj = resolve_object_name(NameVersion::kV4, in);
+    ASSERT_TRUE(obj.has_value());
+    EXPECT_TRUE(obj->api_key.empty());
 }
 
 TEST(ResolveV4, HappyPath) {

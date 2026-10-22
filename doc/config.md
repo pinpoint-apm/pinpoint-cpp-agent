@@ -119,7 +119,7 @@ pinpoint::StartAgent(options);
 |---|---|---|---|---|
 | `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. Max 24 chars for `UidVersion: v1`, otherwise max 254 chars. |
 | `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars). Falls back to the agent id when omitted. |
-| `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1` or `v3` (case-insensitive; unknown/empty → `v3`). See [Identity Versions](#identity-versions). |
+| `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v3` | Agent self-identity (ObjectName) version: `v1` or `v3` (case-insensitive; empty → `v3`; an unknown value also falls back to `v3` and logs a warning). See [Identity Versions](#identity-versions). |
 | `ActiveProfile` | `PINPOINT_CPP_ACTIVE_PROFILE` | string | `""` | Name of the `Profile.<name>` subtree applied over the top-level keys. See [Profiles](#profiles). Reloadable. |
 | `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](troubleshooting.md#disabling-the-agent). Startup-only: read once when the agent is constructed, so a reload cannot start or stop tracing. |
 
@@ -138,6 +138,8 @@ pinpoint::StartAgent(options);
 | gRPC `protocol.version` header | 100 | 100 |
 
 v1 and v3 are identical on the wire (both `protocol.version=100`); they differ only in the `ApplicationName` length limit. A missing/invalid `ApplicationName` aborts agent startup (the agent degrades to a no-op).
+
+Leading and trailing whitespace in `ApplicationName`, `AgentName`, `ServiceName` and `ApiKey` is trimmed before validation, as the Java agent does, so `ServiceName: "svc "` resolves to `svc`. A whitespace-only `ApiKey` counts as unset.
 
 > **`v4` is not supported.** The Collector has not released the v4 identity
 > protocol, so the value is not usable and is not documented here. Use `v1` or

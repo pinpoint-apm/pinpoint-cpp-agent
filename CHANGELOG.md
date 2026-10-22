@@ -21,6 +21,19 @@
 
 ### Changed
 
+- **Identity values are trimmed before validation.** `ApplicationName`,
+  `AgentName`, `ServiceName` and `ApiKey` lose their leading and trailing
+  whitespace before the charset and length checks, as the Java agent does
+  (`AgentProperties.getProperty`). A value such as `ServiceName: "svc "`,
+  which used to fail the `[a-zA-Z0-9._-]` check and abort a v4 startup, now
+  resolves to `svc`; a whitespace-only `ApiKey` counts as unset and the
+  `apikey` header is omitted.
+
+- **An unknown `UidVersion` logs a warning.** The value still falls back to
+  `v3`, but a typo (`V5`, `v 4`) is now named in the log instead of silently
+  registering the agent as v3. An empty value stays the documented default and
+  does not warn. Surrounding whitespace in the value is ignored.
+
 - **The non-reloadable-change warning names the fields.** A reload that tries
   to change a non-reloadable option now logs `non-reloadable config fields
   changed at runtime: ApplicationName, Collector.Host; ...` instead of a fixed

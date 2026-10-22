@@ -33,7 +33,9 @@ namespace pinpoint {
      */
     enum class NameVersion { kV1, kV3, kV4 };
 
-    /// @brief Parse the uid version string. Case-insensitive. Unknown/empty -> v3.
+    /// @brief Parse the uid version string. Case-insensitive, surrounding
+    ///        whitespace ignored. Empty -> v3 (the default); an unknown value
+    ///        also falls back to v3 but logs a warning.
     NameVersion parse_name_version(std::string_view value);
 
     namespace object_name {
@@ -121,8 +123,10 @@ namespace pinpoint {
     /**
      * @brief Resolve the agent identity for the given version.
      *
-     * For v4, serviceName must also be at least object_name::SERVICE_NAME_MIN_LEN
-     * characters long.
+     * agent_name, application_name, service_name and api_key are trimmed of
+     * surrounding whitespace before validation (as the Java agent does), so
+     * the resolved values never carry it. For v4, serviceName must also be at
+     * least object_name::SERVICE_NAME_MIN_LEN characters long.
      *
      * Returns std::nullopt when a required value is missing or invalid (the caller
      * must abort agent startup). Errors are logged. Successful resolution logs the

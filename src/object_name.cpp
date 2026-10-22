@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include "absl/random/random.h"
+#include "absl/strings/ascii.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/match.h"
 
@@ -29,13 +30,19 @@
 namespace pinpoint {
 
     NameVersion parse_name_version(std::string_view value) {
+        value = absl::StripAsciiWhitespace(value);
         if (absl::EqualsIgnoreCase(value, "v1")) {
             return NameVersion::kV1;
         }
         if (absl::EqualsIgnoreCase(value, "v4")) {
             return NameVersion::kV4;
         }
-        // "v3", unknown, or empty all fall back to v3.
+        // Empty is the documented default. Anything else that is not "v3" is
+        // a typo ("V5", "v 4"), and a silent v3 would register the agent in
+        // the wrong place without a trace in the log, so name it.
+        if (!value.empty() && !absl::EqualsIgnoreCase(value, "v3")) {
+            LOG_WARN("unknown uid version '{}' (expected v1, v3 or v4), falling back to v3", value);
+        }
         return NameVersion::kV3;
     }
 
@@ -243,7 +250,18 @@ namespace pinpoint {
 
     } // namespace
 
-    std::optional<ObjectName> resolve_object_name(NameVersion version, const ObjectNameInput& input) {
+    std::optional<ObjectName> resolve_object_name(NameVersion version, const ObjectNameInput& raw) {
+        // Surrounding whitespace is a config-file/env artefact, not part of the
+        // id: trim it before validation as the Java agent does
+        // (AgentProperties.getProperty), so `ServiceName: "svc "` resolves to
+        // "svc" instead of failing the charset check. agent_id is the agent's
+        // own generated value and needs no trimming.
+        ObjectNameInput input = raw;
+        for (std::string* field : {&input.agent_name, &input.application_name,
+                                   &input.service_name, &input.api_key}) {
+            *field = std::string(absl::StripAsciiWhitespace(*field));
+        }
+
         std::optional<ObjectName> result;
         switch (version) {
             case NameVersion::kV1:
