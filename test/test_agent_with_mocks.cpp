@@ -2816,6 +2816,26 @@ TEST_F(ReloadAgentConfigTest, RefusesAnAgentWhoseInitializationFailed) {
     EXPECT_EQ(dead_agent->getConfig().get(), dead_config.get());
 }
 
+// Shutdown() unpublishes the agent under the global lock but marks it as
+// shutting down only after releasing it; a reload that takes the lock in that
+// instant must still be refused, or it would reconfigure the process-wide
+// logger for an agent that is already gone. Reproduced deterministically by
+// unpublishing without Shutdown().
+TEST_F(ReloadAgentConfigTest, RefusesAnAgentThatIsNoLongerPublished) {
+    auto agent = start_reloadable_agent();
+    ASSERT_TRUE(agent->Enable());
+    const auto before = agent->getConfig();
+
+    reset_global_agent();
+    const auto result = agent->reloadConfigFromYaml(base_yaml_with("Span:\n  MaxEventSequence: 64\n"));
+    EXPECT_EQ(result.status, ConfigReloadResult::Status::kNoAgent);
+    EXPECT_FALSE(result.message.empty());
+    EXPECT_EQ(agent->getConfig().get(), before.get());
+
+    // Unpublished, so TearDown() cannot reach it.
+    agent->Shutdown();
+}
+
 // StartAgent()'s precedence: a config file replaces the YAML wholesale, so a
 // YAML reload would silently read the file instead. Refused up front.
 TEST_F(ReloadAgentConfigTest, RefusesWhileAConfigFileIsTheSource) {

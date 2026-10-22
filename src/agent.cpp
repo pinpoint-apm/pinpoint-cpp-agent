@@ -583,6 +583,15 @@ namespace pinpoint {
         std::lock_guard<std::mutex> reload_lock(reload_mutex_);
         std::lock_guard<std::recursive_mutex> global_lock(global_agent_mutex);
         ConfigReloadScope reload_scope;
+        // Shutdown() unpublishes under the global lock but sets shutting_down_
+        // only after releasing it, so for an instant an agent can be
+        // unpublished while isExiting() still reads false. Only the published
+        // agent is reloaded, so that instant never reconfigures the logger
+        // for an agent that is already gone.
+        if (global_agent().load().get() != this) {
+            result.message = "the agent is no longer the running agent (shut down or replaced)";
+            return result;
+        }
         // Both states are terminal: such an agent never comes back online.
         if (isExiting()) {
             result.message = "the agent is shut down";
