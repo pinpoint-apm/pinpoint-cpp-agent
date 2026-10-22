@@ -197,7 +197,7 @@ TEST(AgentLifetimeTest, UnsampledSpanAsyncChildPropagatesS0AndOutlivesParentAndA
     auto child = span->NewAsyncSpan("async-child");
     ASSERT_NE(child, nullptr);
     EXPECT_NE(child, noopSpan());
-    EXPECT_EQ(child->GetSpanId(), span->GetSpanId());
+    EXPECT_EQ(child, unsampledAsyncSpan());
 
     span->EndSpan();
     span.reset();

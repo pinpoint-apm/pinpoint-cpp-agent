@@ -38,8 +38,9 @@
   async child whose events write `Pinpoint-Sampled: s0`, as do the events of
   its own async children. The child is not a transaction: it registers no
   active request, records no URL stat or response time, and an error on it
-  does not fail the parent's URL stat. It holds nothing of the parent, so it
-  may outlive the parent and end on another thread. `RecordSpanEvent()` on an
+  does not fail the parent's URL stat. Like the no-op span it is one shared,
+  stateless instance reporting span id 0, so creating it allocates nothing and
+  it may outlive the parent and end on another thread. `RecordSpanEvent()` on an
   unsampled span likewise returns an event that writes `s0`. Sampled spans and
   no-op spans (agent disabled, URL excluded) are unchanged; a no-op span's
   async child still writes nothing. Documented in

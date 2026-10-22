@@ -37,50 +37,48 @@ namespace pinpoint {
         return event;
     }
 
-    static SpanPtr& noopSpanHolder() {
-        static auto* span = new SpanPtr(std::make_shared<NoopSpan>());
+    template <typename SpanType>
+    static SpanPtr& immortalSpanHolder() {
+        static auto* span = new SpanPtr(std::make_shared<SpanType>());
         return *span;
     }
 
-    SpanPtr noopSpan() {
-        // Per-thread localized owner of the one noop span: this is returned on
-        // every filtered / disabled-agent / failed-admission request, and one
-        // process-wide shared_ptr would put per-request refcount traffic on a
-        // single control block. localize_shared() keeps the pointee identical
-        // (so `.get()` and `==` against the singleton still hold) while giving
-        // each thread its own control block. thread_local_lazy keeps this
-        // callable during the thread's own TLS teardown; a re-entry there leaks
-        // one aliased owner of an immortal object.
+    // Per-thread localized owner of one immortal span: the noop span is
+    // returned on every filtered / disabled-agent / failed-admission request
+    // and the unsampled async span on every async child of an unsampled one,
+    // so one process-wide shared_ptr would put per-request refcount traffic on
+    // a single control block. localize_shared() keeps the pointee identical
+    // (so `.get()` and `==` against the singleton still hold) while giving
+    // each thread its own control block. thread_local_lazy keeps this
+    // callable during the thread's own TLS teardown; a re-entry there leaks
+    // one aliased owner of an immortal object.
+    template <typename SpanType>
+    static SpanPtr localizedSpan() {
         try {
             return thread_local_lazy<SpanPtr>(
-                [] { return new SpanPtr(localize_shared(noopSpanHolder())); });
+                [] { return new SpanPtr(localize_shared(immortalSpanHolder<SpanType>())); });
         } catch (...) {
             // Localizing is a pure optimization, so a failure to set it up
             // (realistically only bad_alloc) must not change what the caller
             // gets: fall back to a copy of the shared holder — contended, but
             // correct. The holder's own first-call allocation is the one
             // remaining path that can throw from here.
-            return noopSpanHolder();
+            return immortalSpanHolder<SpanType>();
         }
     }
+
+    SpanPtr noopSpan() { return localizedSpan<NoopSpan>(); }
+
+    SpanPtr unsampledAsyncSpan() { return localizedSpan<UnsampledAsyncSpan>(); }
 
     AgentPtr noopAgent() {
         static auto* agent = new AgentPtr(std::make_shared<NoopAgent>());
         return *agent;
     }
 
-    SpanPtr UnsampledSpanBase::NewAsyncSpan(std::string_view async_operation) try {
-        return std::make_shared<UnsampledAsyncSpan>(span_id_);
-    } CATCH_AND_LOG_RETURN("new async span", noopSpan())
-
-    SpanPtr UnsampledSpanBase::NewAsyncSpan(std::string_view async_operation,
-                                            int32_t async_id, int32_t async_sequence) try {
-        return std::make_shared<UnsampledAsyncSpan>(span_id_);
-    } CATCH_AND_LOG_RETURN("new async span", noopSpan())
-
     UnsampledSpan::UnsampledSpan(AgentService *agent,
                                  std::shared_ptr<const AgentRuntime> runtime) :
-        UnsampledSpanBase(generate_span_id()),
+        span_id_(generate_span_id()),
         start_time_(to_milli_seconds(std::chrono::system_clock::now())),
         runtime_(std::move(runtime)),
         // With a runtime snapshot carrying the stats sinks (every

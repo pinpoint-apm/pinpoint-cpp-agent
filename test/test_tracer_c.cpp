@@ -1077,7 +1077,8 @@ TEST_F(TracerCApiTest, NewAsyncSpan) {
 // The async child of an unsampled span (inbound `Pinpoint-Sampled: s0`) still
 // propagates the unsampled decision, and so does its own async child: their
 // events inject exactly `Pinpoint-Sampled: s0`. They are owned handles of
-// their own, so they outlive the parent and end on another thread.
+// their own (over the one shared unsampled async span), so they outlive the
+// parent and end on another thread.
 TEST_F(TracerCApiTest, NewAsyncSpanOfUnsampledSpanPropagatesS0) {
     HeaderMap inbound{{PT_HEADER_SAMPLED, "s0"}};
     pt_context_reader_t reader{&inbound, hmap_get};
@@ -1093,8 +1094,8 @@ TEST_F(TracerCApiTest, NewAsyncSpanOfUnsampledSpanPropagatesS0) {
     EXPECT_NE(async_span, nested);
     for (pt_span_t span : {async_span, nested}) {
         EXPECT_EQ(pt_span_is_sampled(span), 0);
-        // The noop sentinel reports span id 0; this child carries the parent's.
-        EXPECT_EQ(pt_span_get_span_id(span), pt_span_get_span_id(parent));
+        // Shared and stateless like the noop span: span id 0.
+        EXPECT_EQ(pt_span_get_span_id(span), 0);
     }
 
     pt_span_end(parent);

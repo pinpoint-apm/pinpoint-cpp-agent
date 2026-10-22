@@ -44,6 +44,14 @@ namespace pinpoint {
      * first-call allocation as the only throwing path.
      */
     SpanPtr noopSpan();
+    /**
+     * @brief Returns the shared unsampled async span: the async child of every
+     *        unsampled span (UnsampledSpanBase::NewAsyncSpan).
+     *
+     * One `UnsampledAsyncSpan` object process-wide, handed out like noopSpan()
+     * through a per-thread control block, with the same throwing contract.
+     */
+    SpanPtr unsampledAsyncSpan();
     /// @brief Returns a shared noop agent instance.
     AgentPtr noopAgent();
 
@@ -169,19 +177,11 @@ namespace pinpoint {
                                      int64_t start_time_ms, int64_t end_time_ms,
                                      int32_t async_id) override { return &event_; }
 
-        // Both overloads return an UnsampledAsyncSpan carrying this span's
-        // id, as a sampled async child carries its parent's. The unsampled
-        // decision does not expire, so a finished span still hands one out.
-        SpanPtr NewAsyncSpan(std::string_view async_operation) override;
+        // Both overloads return the shared UnsampledAsyncSpan. The unsampled
+        // decision does not expire, so a finished span still hands it out.
+        SpanPtr NewAsyncSpan(std::string_view async_operation) override { return unsampledAsyncSpan(); }
         SpanPtr NewAsyncSpan(std::string_view async_operation,
-                             int32_t async_id, int32_t async_sequence) override;
-
-        int64_t GetSpanId() override { return span_id_; }
-
-    protected:
-        explicit UnsampledSpanBase(int64_t span_id) noexcept : span_id_(span_id) {}
-
-        const int64_t span_id_;
+                             int32_t async_id, int32_t async_sequence) override { return unsampledAsyncSpan(); }
 
     private:
         // Handed out by the event getters above; by value, so an unsampled
@@ -212,6 +212,8 @@ namespace pinpoint {
         void SetUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
         void ForceUrlStat(std::string_view url_pattern, std::string_view method, int status_code) override;
 
+        int64_t GetSpanId() override { return span_id_; }
+
     private:
         // Single point that flips err_, so the Span.IgnoreErrors filter is
         // applied in exactly one place, as SpanImpl::markSpanError does.
@@ -223,6 +225,7 @@ namespace pinpoint {
         // else the agent's own (tests), else null (no agent at all).
         AgentStats* statsSink() const;
 
+        const int64_t span_id_;
         int64_t start_time_;
         std::atomic<bool> finished_{false};
         // The whole of this span's error state: no span is ever sent, so the
@@ -262,14 +265,13 @@ namespace pinpoint {
      * its own EndSpan by then. EndSpan is therefore the inherited no-op, cheap
      * and idempotent.
      *
-     * Self-contained: it holds a copy of the parent's span id and nothing else
-     * of the parent, so it may outlive the parent and be used and ended on
-     * another thread, which is what an async span is for.
+     * Stateless, so one shared instance serves every unsampled span (see
+     * unsampledAsyncSpan()), like NoopSpan: no allocation per child, and it
+     * trivially outlives the parent and may be used and ended on another
+     * thread, which is what an async span is for. Like the noop span it
+     * reports span id 0; nothing records or injects an unsampled child's id.
      */
-    class UnsampledAsyncSpan final : public UnsampledSpanBase {
-    public:
-        explicit UnsampledAsyncSpan(int64_t span_id) noexcept : UnsampledSpanBase(span_id) {}
-    };
+    class UnsampledAsyncSpan final : public UnsampledSpanBase {};
 
     /// @brief Agent implementation that always returns noop spans.
     class NoopAgent final : public Agent {

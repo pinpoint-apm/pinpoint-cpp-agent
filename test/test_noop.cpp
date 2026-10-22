@@ -971,11 +971,11 @@ TEST_F(NoopTest, UnsampledSpanAsyncChildPropagatesS0Test) {
         EXPECT_NE(child, noopSpan()) << "the noop span's events inject nothing";
         EXPECT_FALSE(child->IsSampled());
         EXPECT_TRUE(child->GetTraceId().empty());
-        EXPECT_EQ(child->GetSpanId(), parent.GetSpanId())
-            << "carries the parent's span id, as a sampled async child does";
+        EXPECT_EQ(child->GetSpanId(), 0) << "like the noop span: nothing records an unsampled child's id";
         expectEventsInjectOnlyS0(*child);
     }
-    EXPECT_NE(children[0], children[1]) << "each call hands out a child of its own";
+    EXPECT_EQ(children[0], children[1]) << "one shared instance, like the noop span";
+    EXPECT_EQ(children[0], unsampledAsyncSpan());
     EXPECT_NE(children[0]->GetSpanEvent(), parent.GetSpanEvent())
         << "the child's event lives in the child, not in the parent";
 }
@@ -989,7 +989,7 @@ TEST_F(NoopTest, UnsampledAsyncSpanNestedAsyncChildPropagatesS0Test) {
         ASSERT_NE(nested, nullptr);
         EXPECT_NE(nested, noopSpan());
         EXPECT_FALSE(nested->IsSampled());
-        EXPECT_EQ(nested->GetSpanId(), parent.GetSpanId());
+        EXPECT_EQ(nested, unsampledAsyncSpan());
         expectEventsInjectOnlyS0(*nested);
     }
 
@@ -1064,7 +1064,6 @@ TEST_F(NoopTest, UnsampledAsyncSpanHasNoTransactionSideEffectsTest) {
 // use-after-free probe.
 TEST_F(NoopTest, UnsampledAsyncSpanOutlivesParentOnAnotherThreadTest) {
     auto parent = std::make_shared<UnsampledSpan>(mock_agent_service_.get(), makeRuntime(true));
-    const auto parent_span_id = parent->GetSpanId();
 
     constexpr int kWorkers = 4;
     std::atomic<bool> go{false};
@@ -1072,7 +1071,7 @@ TEST_F(NoopTest, UnsampledAsyncSpanOutlivesParentOnAnotherThreadTest) {
     std::atomic<int> passed{0};
     std::vector<std::thread> workers;
     for (int i = 0; i < kWorkers; ++i) {
-        workers.emplace_back([child = parent->NewAsyncSpan("async"), parent_span_id,
+        workers.emplace_back([child = parent->NewAsyncSpan("async"),
                               &go, &parent_gone, &passed]() mutable {
             while (!go.load()) {
                 std::this_thread::yield();
@@ -1083,7 +1082,7 @@ TEST_F(NoopTest, UnsampledAsyncSpanOutlivesParentOnAnotherThreadTest) {
             }
             auto nested = child->NewAsyncSpan("nested");
             ok = ok && injectsOnlyS0(*child) && injectsOnlyS0(*nested) &&
-                 child->GetSpanId() == parent_span_id && !child->IsSampled();
+                 child->GetSpanId() == 0 && !child->IsSampled();
             nested->EndSpan();
             child->EndSpan();
             child->EndSpan();
