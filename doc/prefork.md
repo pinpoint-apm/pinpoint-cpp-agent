@@ -56,7 +56,8 @@ Each worker appears as one agent instance in the Pinpoint UI. Identity is
 resolved inside the worker, when `StartAgent()` runs: the agent id is always
 auto-generated (a fresh UUIDv7 per worker process), so sibling workers can never
 collide — but the id changes on worker restart. `AgentName` is the human-readable
-display label and need not be unique; all workers can share one.
+display label and need not be unique; all workers can share one. Left unset, it
+defaults to `<hostname>-<pid>`, so each worker is labelled by its own pid.
 
 ## Logging
 

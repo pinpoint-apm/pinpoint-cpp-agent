@@ -935,8 +935,7 @@ namespace pinpoint {
         config->revision = old ? old->revision + 1 : 1;
         if (replace) {
             // Not a configuration input: resolving against the running id keeps
-            // a defaulted AgentName equal to it, where a freshly minted id would
-            // read as an attempted AgentName change.
+            // it, where a freshly minted id would read as an identity change.
             config->agent_id_ = old->agent_id_;
         }
         bool is_container_set = false;
@@ -1311,12 +1310,12 @@ namespace pinpoint {
             }
 
             YAML::Node value;
-            if (f.path == "AgentName" && config.agent_name_ == config.agent_id_) {
+            if (f.path == "AgentName" && config.agent_name_ == default_agent_name()) {
                 // AgentId is runtime-generated state, not a configuration
                 // input, and is never serialized. A defaulted AgentName
-                // (= AgentId) serializes as empty so loading this YAML in a
-                // new process falls back to that process's new id instead of
-                // pinning the previous process's id as a display name.
+                // (<hostname>-<pid>) serializes as empty so loading this YAML
+                // in a new process falls back to that process's own name
+                // instead of pinning the previous process's pid as a label.
                 value = std::string();
             } else if (f.path == "ApiKey") {
                 // ApiKey is intentionally masked and never serialized in plaintext.

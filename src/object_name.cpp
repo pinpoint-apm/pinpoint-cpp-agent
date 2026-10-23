@@ -16,6 +16,7 @@
 
 #include "object_name.h"
 
+#include <algorithm>
 #include <chrono>
 #include <unistd.h>
 
@@ -120,20 +121,36 @@ namespace pinpoint {
         return uuid;
     }
 
+    static bool is_id_char(char c) {
+        return (c >= 'a' && c <= 'z') ||
+               (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') ||
+               c == '.' || c == '-' || c == '_';
+    }
+
     bool validate_id(std::string_view value, size_t max_len) {
         if (value.empty() || value.size() > max_len) {
             return false;
         }
         for (const char c : value) {
-            const bool ok = (c >= 'a' && c <= 'z') ||
-                            (c >= 'A' && c <= 'Z') ||
-                            (c >= '0' && c <= '9') ||
-                            c == '.' || c == '-' || c == '_';
-            if (!ok) {
+            if (!is_id_char(c)) {
                 return false;
             }
         }
         return true;
+    }
+
+    std::string default_agent_name() {
+        const std::string pid = std::to_string(static_cast<long>(getpid()));
+        std::string host = get_host_name();
+        // Cut to the shorter (v4) limit so one name fits every uid version.
+        host.resize(std::min(host.size(), object_name::AGENT_NAME_MAX_LEN_V4 - pid.size() - 1));
+        for (char& c : host) {
+            if (!is_id_char(c)) {
+                c = '_';
+            }
+        }
+        return host + '-' + pid;
     }
 
     std::string ObjectName::to_string() const {
@@ -182,11 +199,12 @@ namespace pinpoint {
             }
             obj.application_name = input.application_name;
 
-            // agentName: optional, falls back to agentId.
+            // agentName: optional, falls back to "<hostname>-<pid>".
             if (validate_id(input.agent_name, object_name::AGENT_NAME_MAX_LEN)) {
                 obj.agent_name = input.agent_name;
             } else {
-                obj.agent_name = obj.agent_id;
+                obj.agent_name = default_agent_name();
+                LOG_INFO("auto generated AgentName='{}'", obj.agent_name);
             }
 
             return obj;
@@ -242,11 +260,12 @@ namespace pinpoint {
             // validates it. An empty key is left out of the gRPC metadata.
             obj.api_key = input.api_key;
 
-            // agentName: required, falls back to base64(agentId UUID).
+            // agentName: required, falls back to "<hostname>-<pid>".
             if (validate_id(input.agent_name, object_name::AGENT_NAME_MAX_LEN_V4)) {
                 obj.agent_name = input.agent_name;
             } else {
-                obj.agent_name = obj.agent_id; // base64 of the same UUID
+                obj.agent_name = default_agent_name();
+                LOG_INFO("v4 auto generated AgentName='{}'", obj.agent_name);
             }
 
             return obj;

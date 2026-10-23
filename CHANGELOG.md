@@ -4,6 +4,13 @@
 
 ### Added
 
+- **An unset `AgentName` is auto-generated as `<hostname>-<pid>`.** It used to
+  fall back to the agent id, a random Base64 UUID that told an operator
+  nothing; now the Pinpoint UI shows which host and process each agent is.
+  Hostname characters outside `[a-zA-Z0-9._-]` become `_`, and the hostname is
+  cut to fit the 254-character limit. An explicit `AgentName` is unchanged.
+  Documented in [Configuration Guide § Agent Configuration](doc/config.md#agent-configuration).
+
 - **`ClusterNamespace`: keep traces apart from another Pinpoint cluster, as
   the Java agent's `profiler.cluster.namespace` does.** When set (env
   `PINPOINT_CPP_CLUSTER_NAMESPACE`), outbound calls send it as

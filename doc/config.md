@@ -118,7 +118,7 @@ pinpoint::StartAgent(options);
 | YAML Key | Environment Variable | Type | Default | Notes |
 |---|---|---|---|---|
 | `ApplicationName` | `PINPOINT_CPP_APPLICATION_NAME` | string | `""` | **Required.** Name of the monitored application. Max 24 chars for `UidVersion: v1`, otherwise max 254 chars. |
-| `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars; 254 for v4). Falls back to the agent id when omitted. |
+| `AgentName` | `PINPOINT_CPP_AGENT_NAME` | string | `""` | Optional human-readable label (max 255 chars; 254 for v4). Auto-generated as `<hostname>-<pid>` when omitted. |
 | `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v4` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; empty → `v4`, as in the Java agent; an unknown value also falls back to `v4` and logs a warning). See [Identity Versions](#identity-versions). |
 | `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4` (the default)** (3–254 chars, `[a-zA-Z0-9._-]`); a missing or invalid value aborts agent startup. Unused for v1/v3. |
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | Optional for `UidVersion: v4`; sent as the gRPC `apikey` header only when set. Unused for v1/v3. Never logged in plaintext. |

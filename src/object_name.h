@@ -87,6 +87,14 @@ namespace pinpoint {
     bool validate_id(std::string_view value, size_t max_len);
 
     /**
+     * @brief The AgentName used when none is configured: "<hostname>-<pid>".
+     *        Hostname bytes outside the id charset become '_', and the hostname
+     *        is cut so the name fits AGENT_NAME_MAX_LEN_V4 (valid for every
+     *        uid version).
+     */
+    std::string default_agent_name();
+
+    /**
      * @brief Raw identity inputs collected from config (env over yaml already merged).
      *
      * agent_id is not a configuration input: it is empty on the first load

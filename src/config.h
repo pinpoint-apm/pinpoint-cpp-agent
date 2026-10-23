@@ -649,8 +649,8 @@ namespace pinpoint {
      * @brief Serializes a `Config` back into its YAML representation.
      *
      * Runtime-generated AgentId state is omitted, and an AgentName that
-     * defaulted to AgentId is emitted as empty so a fresh load preserves the
-     * fallback semantics.
+     * defaulted to "<hostname>-<pid>" is emitted as empty so a fresh load
+     * preserves the fallback semantics.
      */
     std::string to_config_string(const Config& config);
 }  // namespace pinpoint
