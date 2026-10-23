@@ -142,6 +142,8 @@
       virtual const std::string& getAgentId() const = 0;
       /// @brief Only populated for uid version v4; empty for v1/v3.
       virtual const std::string& getServiceName() const = 0;
+      /// @brief `ClusterNamespace`; empty when unset.
+      virtual const std::string& getClusterNamespace() const = 0;
       virtual std::shared_ptr<const Config> getConfig() const = 0;
       /// @brief Agent start timestamp (epoch milliseconds).
       virtual int64_t getStartTime() const = 0;

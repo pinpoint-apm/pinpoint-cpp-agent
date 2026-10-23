@@ -100,6 +100,7 @@ namespace pinpoint {
         constexpr const char* UID_VERSION = "UID_VERSION";
         constexpr const char* SERVICE_NAME = "SERVICE_NAME";
         constexpr const char* API_KEY = "API_KEY";
+        constexpr const char* CLUSTER_NAMESPACE = "CLUSTER_NAMESPACE";
         constexpr const char* LOG_LEVEL = "LOG_LEVEL";
         constexpr const char* LOG_FILE_PATH = "LOG_FILE_PATH";
         constexpr const char* LOG_MAX_FILE_SIZE = "LOG_MAX_FILE_SIZE";
@@ -281,6 +282,10 @@ namespace pinpoint {
         // by check() so startup degrades to a noop agent.
         // Defaults to true so directly-constructed Config values stay valid.
         bool identity_resolved_ = true;
+        // The Java agent's profiler.cluster.namespace: sent as
+        // Pinpoint-pAppNamespace and compared against the inbound one, whose
+        // mismatch starts a new trace. Empty = unset (no header, no check).
+        std::string cluster_namespace_;
 
         // gRPC protocol.version header wire value (V1=100, V4=400).
         int protocol_version() const { return object_name_version_ == 4 ? 400 : 100; }

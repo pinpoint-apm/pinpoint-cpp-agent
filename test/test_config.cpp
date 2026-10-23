@@ -2342,6 +2342,32 @@ TEST_F(ConfigTest, MakeConfigV4IdentityTest) {
     EXPECT_TRUE(full->check());
 }
 
+// ClusterNamespace (the Java agent's profiler.cluster.namespace): unset by
+// default, read from the file, and outranked by the environment.
+TEST_F(ConfigTest, ClusterNamespaceTest) {
+    const std::string base =
+        "ApplicationName: ns-app\n"
+        "UidVersion: v3\n"
+        "Collector:\n"
+        "  GrpcHost: localhost\n";
+
+    set_config_string(base);
+    auto unset = make_config();
+    ASSERT_NE(unset, nullptr);
+    EXPECT_TRUE(unset->cluster_namespace_.empty());
+
+    set_config_string(base + "ClusterNamespace: com.pinpoint\n");
+    auto from_file = make_config();
+    ASSERT_NE(from_file, nullptr);
+    EXPECT_EQ(from_file->cluster_namespace_, "com.pinpoint");
+    EXPECT_NE(to_config_string(*from_file).find("ClusterNamespace: com.pinpoint"), std::string::npos);
+
+    setenv(full_env(env::CLUSTER_NAMESPACE).c_str(), "env.ns", 1);
+    auto from_env = make_config();
+    ASSERT_NE(from_env, nullptr);
+    EXPECT_EQ(from_env->cluster_namespace_, "env.ns");
+}
+
 TEST_F(ConfigTest, MakeConfigV4ReloadKeepsAgentIdWithoutWarning) {
     set_config_string(
         "ApplicationName: v4-reload-app\n"
@@ -2551,6 +2577,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
     old_config->uid_version_ = "v1";
     old_config->service_name_ = "old-service";
     old_config->api_key_ = "old-key";
+    old_config->cluster_namespace_ = "old-ns";
     old_config->object_name_version_ = 1;
     old_config->identity_resolved_ = true;
     old_config->collector.host = "old.host";
@@ -2567,6 +2594,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
     new_config.uid_version_ = "v4";
     new_config.service_name_ = "new-service";
     new_config.api_key_ = "new-key";
+    new_config.cluster_namespace_ = "new-ns";
     new_config.object_name_version_ = 4;
     new_config.identity_resolved_ = false;
     new_config.collector.host = "new.host";
@@ -2582,6 +2610,7 @@ TEST_F(ConfigTest, RetainNonReloadableFromCopiesNonReloadableFieldsTest) {
     EXPECT_EQ(new_config.uid_version_, "v1");
     EXPECT_EQ(new_config.service_name_, "old-service");
     EXPECT_EQ(new_config.api_key_, "old-key");
+    EXPECT_EQ(new_config.cluster_namespace_, "old-ns");
     EXPECT_EQ(new_config.object_name_version_, 1);
     EXPECT_TRUE(new_config.identity_resolved_);
     EXPECT_EQ(new_config.collector.host, "old.host");

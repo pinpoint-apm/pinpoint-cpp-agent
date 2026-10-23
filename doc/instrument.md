@@ -510,20 +510,16 @@ pinpoint::HEADER_HOST              // "Pinpoint-Host"
 `InjectContext()` omits a header whose value is unset rather than writing an empty
 string. A receiver that gets
 `Pinpoint-pAppNamespace: ""` instead of no header at all breaks the trace when it
-has a cluster namespace configured. Currently omitted:
+has a cluster namespace configured. Omitted when unset:
 
 | Header | Written when |
 |---|---|
 | `Pinpoint-pServiceName` | the agent has a service name (`uid.version=v4`; v1/v3 omit it) |
 | `Pinpoint-Host` | the span event has a destination (`SetDestination()`) |
-| `Pinpoint-pAppNamespace` | **never** — this agent does not support a cluster namespace |
+| `Pinpoint-pAppNamespace` | `ClusterNamespace` is set ([Configuration](config.md#agent-configuration)) |
 
 An unsampled or dead-span event writes only `Pinpoint-Sampled: s0`. A
 `TraceContextWriter` implementation must therefore tolerate any subset of these keys.
-
-> **Limitation**: cluster namespaces are not
-> supported in either direction — no config key sets one, and `Pinpoint-pAppNamespace`
-> is neither written nor read on inbound requests.
 
 ### Server Side: Extracting Context
 

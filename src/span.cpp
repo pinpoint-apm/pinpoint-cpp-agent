@@ -591,15 +591,17 @@ namespace pinpoint {
         if (const auto& service_name = agent_->getServiceName(); !service_name.empty()) {
             writer.Set(HEADER_PARENT_SERVICE_NAME, service_name);
         }
-        // No header is written for the cluster namespace: this agent has no
-        // namespace setting, and an empty one is not the same as an absent one
-        // downstream: it can break continuation at this hop.
+        // Omitted when unset, never sent empty: a receiver with a cluster
+        // namespace reads an empty one as a mismatch and restarts the trace.
+        if (const auto& cluster_namespace = agent_->getClusterNamespace(); !cluster_namespace.empty()) {
+            writer.Set(HEADER_PARENT_APP_NAMESPACE, cluster_namespace);
+        }
         if (!host.empty()) {
             writer.Set(HEADER_HOST, host);
         }
     }
 
-    InboundTrace readInboundTrace(const TraceContextReader& reader) {
+    InboundTrace readInboundTrace(const TraceContextReader& reader, std::string_view cluster_namespace) {
         const auto txid = reader.Get(HEADER_TRACE_ID);
         if (!txid.has_value() || txid->empty()) {
             // No trace id, or a present-but-blank one: nothing upstream to
@@ -641,6 +643,16 @@ namespace pinpoint {
         if (!inbound.parent_span_id) {
             LOG_WARN_THROTTLED("unparseable {} header = '{}', parent span id left unset",
                                HEADER_PARENT_SPAN_ID, parent_span_id.value());
+        }
+        // The Java agent's DefaultNameSpaceChecker: a differing inbound
+        // namespace, an empty one included, is another cluster's trace. An
+        // absent one continues, for peers that send none.
+        if (!cluster_namespace.empty()) {
+            if (const auto ns = reader.Get(HEADER_PARENT_APP_NAMESPACE); ns.has_value() && *ns != cluster_namespace) {
+                LOG_DEBUG("{} = '{}' differs from ClusterNamespace '{}', starting a new trace",
+                          HEADER_PARENT_APP_NAMESPACE, *ns, cluster_namespace);
+                return {};
+            }
         }
         return inbound;
     }

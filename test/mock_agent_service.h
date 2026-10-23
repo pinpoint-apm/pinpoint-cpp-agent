@@ -50,6 +50,7 @@ public:
     int32_t getAppType() const override { return app_type_; }
     const std::string& getAgentId() const override { return agent_id_; }
     const std::string& getServiceName() const override { return service_name_; }
+    const std::string& getClusterNamespace() const override { return cluster_namespace_; }
     // Locked so a publishConfig() swap cannot race a worker thread's read of
     // the handle. Reading the pointed-to Config needs no lock: published
     // snapshots are never mutated (see publishConfig / mutableConfig).
@@ -341,6 +342,7 @@ private:
     int32_t app_type_ = 1300;
     std::string agent_id_ = "test-agent-001";
     std::string service_name_ = "";
+    std::string cluster_namespace_;
     mutable std::mutex config_mutex_;
     std::shared_ptr<Config> config_ = std::make_shared<Config>();
     mutable std::unique_ptr<AgentStats> agent_stats_;

@@ -70,7 +70,7 @@ protected:
 // mark the trace as new so no upstream header is adopted. Copying the condition
 // here instead would let this suite pass on a decision production never makes.
 static void extract_context(SpanImpl& span, AgentService& agent, TraceContextReader& reader) {
-    auto inbound = readInboundTrace(reader);
+    auto inbound = readInboundTrace(reader, agent.getClusterNamespace());
     if (!inbound.continued) {
         inbound.trace_id = agent.generateTraceId();
     }

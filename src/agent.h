@@ -161,6 +161,7 @@ namespace pinpoint {
         int32_t getAppType() const override;
         const std::string& getAgentId() const override;
         const std::string& getServiceName() const override;
+        const std::string& getClusterNamespace() const override;
 
         std::shared_ptr<const Config> getConfig() const override;
         int64_t getStartTime() const override { return start_time_; }
@@ -232,6 +233,7 @@ namespace pinpoint {
         std::shared_ptr<const std::string> agent_id_;
         std::string agent_name_;
         std::string service_name_;
+        std::string cluster_namespace_;
 
         std::unique_ptr<ApiIdCache> api_cache_{};
         // Distinguishes this agent's front-cache entries from a previous

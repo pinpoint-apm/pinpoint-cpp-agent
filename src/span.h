@@ -78,10 +78,14 @@ namespace pinpoint {
      * non-root span whose parent is in no trace. A new trace starts as soon as
      * one of the three fails.
      *
+     * With a non-empty @p cluster_namespace, a `Pinpoint-pAppNamespace` that is
+     * present and differs (empty included) also starts a new trace; an absent
+     * one does not, as in the Java agent.
+     *
      * `Pinpoint-Sampled: s0` is handled by NewSpan before this is reached, and
      * `Pinpoint-Flags` takes part in no decision (absent means 0).
      */
-    InboundTrace readInboundTrace(const TraceContextReader& reader);
+    InboundTrace readInboundTrace(const TraceContextReader& reader, std::string_view cluster_namespace);
 
     /**
      * @brief Holds mutable span state until it is converted into the

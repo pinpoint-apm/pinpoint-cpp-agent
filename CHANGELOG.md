@@ -4,6 +4,15 @@
 
 ### Added
 
+- **`ClusterNamespace`: keep traces apart from another Pinpoint cluster, as
+  the Java agent's `profiler.cluster.namespace` does.** When set (env
+  `PINPOINT_CPP_CLUSTER_NAMESPACE`), outbound calls send it as
+  `Pinpoint-pAppNamespace`, and an inbound request carrying a different one
+  (an empty one included) starts a new trace instead of continuing the
+  caller's; a request without the header still continues. Unset, nothing
+  changes: no header is sent and none is checked. Not reloadable. Documented
+  in [Configuration Guide § Agent Configuration](doc/config.md#agent-configuration).
+
 - **`Collector.Grpc.Compression`: gzip span batches and the stats stream, on
   by default.** Each `SendSpanBatch` request and each `SendAgentStat` stream is
   gzip-compressed, as the Java agent does

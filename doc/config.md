@@ -122,6 +122,7 @@ pinpoint::StartAgent(options);
 | `UidVersion` | `PINPOINT_CPP_UID_VERSION` | string | `v4` | Agent self-identity (ObjectName) version: `v1`, `v3`, or `v4` (case-insensitive; empty → `v4`, as in the Java agent; an unknown value also falls back to `v4` and logs a warning). See [Identity Versions](#identity-versions). |
 | `ServiceName` | `PINPOINT_CPP_SERVICE_NAME` | string | `""` | **Required for `UidVersion: v4` (the default)** (3–254 chars, `[a-zA-Z0-9._-]`); a missing or invalid value aborts agent startup. Unused for v1/v3. |
 | `ApiKey` | `PINPOINT_CPP_API_KEY` | string | `""` | Optional for `UidVersion: v4`; sent as the gRPC `apikey` header only when set. Unused for v1/v3. Never logged in plaintext. |
+| `ClusterNamespace` | `PINPOINT_CPP_CLUSTER_NAMESPACE` | string | `""` | Keeps this agent's traces apart from another Pinpoint cluster's, as the Java agent's `profiler.cluster.namespace` does. When set, outbound calls send it as `Pinpoint-pAppNamespace`, and an inbound request whose `Pinpoint-pAppNamespace` is a different value (an empty one included) starts a new trace instead of continuing the caller's. An inbound request without the header still continues. Empty: no header is sent and none is checked. Compared exactly, not trimmed. |
 | `ActiveProfile` | `PINPOINT_CPP_ACTIVE_PROFILE` | string | `""` | Name of the `Profile.<name>` subtree applied over the top-level keys. See [Profiles](#profiles). Reloadable. |
 | `Enable` | `PINPOINT_CPP_ENABLE` | bool | `true` | Set `false` to disable tracing without code changes. **`StartAgent()` then returns `false`** and installs no agent — that is the success path for a deliberate disable, not a failure. See [Disabling the Agent](troubleshooting.md#disabling-the-agent). Startup-only: read once when the agent is constructed, so a reload cannot start or stop tracing. |
 
@@ -565,7 +566,7 @@ are **non-reloadable** — changing them requires an application restart.
 | Category | Options | Reloadable? |
 |---|---|---|
 | Agent toggle | `Enable` | No — it is read once, when the agent is constructed, so a reload could neither start nor stop tracing. The running value is retained and the attempt is warned about, like any other non-reloadable field. |
-| Agent identity | `ApplicationName`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey` | No |
+| Agent identity | `ApplicationName`, `AgentName`, `UidVersion`, `ServiceName`, `ApiKey`, `ClusterNamespace` | No |
 | Collector / gRPC transport | `Collector.Host`, `Collector.AgentPort`, `Collector.SpanPort`, `Collector.StatPort`, `Collector.Grpc.*`, `Collector.AgentInfo.*`, `Collector.SpanBatch.*` | No |
 | Stat pipeline | `Stat.Enable`, `Stat.BatchCount`, `Stat.BatchInterval` | No |
 | URL statistics | `Http.CollectUrlStat`, `Http.UrlStat*` | No |

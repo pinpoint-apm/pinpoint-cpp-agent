@@ -544,6 +544,7 @@ namespace pinpoint {
         {"UidVersion", REF(uid_version_), FIXED, env::UID_VERSION},
         {"ServiceName", REF(service_name_), FIXED, env::SERVICE_NAME},
         {"ApiKey", REF(api_key_), FIXED, env::API_KEY},
+        {"ClusterNamespace", REF(cluster_namespace_), FIXED, env::CLUSTER_NAMESPACE},
         // FIXED, not RELOAD: make_agent() is the only consumer and it reads
         // this once, when the agent is constructed, so a reload can never start
         // or stop tracing. Tagged FIXED the running value is retained and the

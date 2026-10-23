@@ -562,6 +562,33 @@ protected:
         AgentStatsSnapshot snapshot;
         agent_->getAgentStats().collectAgentStat(snapshot);
     }
+
+    // One request with a complete trace header set plus @p inbound_namespace
+    // (nullopt = header absent): which sampler ran and what was adopted.
+    void expectNamespaceDecision(std::string_view name,
+                                 std::optional<std::string_view> inbound_namespace, bool continued) {
+        SCOPED_TRACE(std::string(name));
+        drainStats();
+
+        MockTraceContextReader reader;
+        reader.SetContext(HEADER_TRACE_ID, kInboundTxid);
+        reader.SetContext(HEADER_SPAN_ID, "555");
+        reader.SetContext(HEADER_PARENT_SPAN_ID, "111");
+        reader.SetContext(HEADER_PARENT_APP_NAME, "upstream-app");
+        if (inbound_namespace) reader.SetContext(HEADER_PARENT_APP_NAMESPACE, *inbound_namespace);
+
+        auto span = agent_->NewSpan("test-op", "/test/rpc", reader);
+        ASSERT_TRUE(span->IsSampled());
+        auto* impl = dynamic_cast<SpanImpl*>(span.get());
+        ASSERT_NE(impl, nullptr);
+
+        EXPECT_EQ(sampledAsContinue(), continued);
+        EXPECT_EQ(span->GetTraceId() == kInboundTxid, continued);
+        EXPECT_EQ(impl->getSpanData()->getParentSpanId(), continued ? 111 : -1);
+        EXPECT_EQ(impl->getSpanData()->getParentAppName(), continued ? "upstream-app" : "")
+            << "a restarted trace is a root and records no caller";
+        span->EndSpan();
+    }
 };
 
 TEST_F(TraceHeaderCombinationTest, ContinueRequiresAllThreeTraceHeaders) {
@@ -677,6 +704,43 @@ TEST_F(TraceHeaderCombinationTest, InjectedContextRoundTripsAsContinued) {
     ASSERT_NE(impl, nullptr);
     EXPECT_EQ(impl->getSpanData()->getParentSpanId(), caller_span_id);
     callee->EndSpan();
+}
+
+// ========== Cluster namespace (Java's DefaultNameSpaceChecker) ==========
+
+class ClusterNamespaceTest : public TraceHeaderCombinationTest {
+protected:
+    void SetUp() override {
+        cfg_ = make_test_config();
+        cfg_->stat.enable = false;
+        cfg_->cluster_namespace_ = "ns-a";
+        agent_ = make_test_agent(cfg_);
+        wait_until_enabled();
+        ASSERT_TRUE(agent_->Enable());
+    }
+};
+
+TEST_F(ClusterNamespaceTest, InboundNamespaceMismatchStartsNewTrace) {
+    expectNamespaceDecision("header absent (older peer)", std::nullopt, true);
+    expectNamespaceDecision("same namespace", "ns-a", true);
+    expectNamespaceDecision("other namespace", "ns-b", false);
+    expectNamespaceDecision("empty namespace", std::string_view{""}, false);
+}
+
+TEST_F(ClusterNamespaceTest, InjectContextWritesConfiguredNamespace) {
+    MockTraceContextWriter writer;
+    auto span = agent_->NewSpan("caller-op", "/caller");
+    auto event = span->NewSpanEvent("outbound-call");
+    event->InjectContext(writer);
+    span->EndSpan();
+    ASSERT_TRUE(writer.Get(HEADER_PARENT_APP_NAMESPACE).has_value());
+    EXPECT_EQ(writer.Get(HEADER_PARENT_APP_NAMESPACE).value(), "ns-a");
+}
+
+// No ClusterNamespace configured: the inbound one is not checked, as Java's
+// BypassNameSpaceChecker does.
+TEST_F(TraceHeaderCombinationTest, InboundNamespaceIgnoredWithoutClusterNamespace) {
+    expectNamespaceDecision("other namespace", "ns-b", true);
 }
 
 TEST_F(AgentImplTest, RecordSpanDoesNotCrash) {

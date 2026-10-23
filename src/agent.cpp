@@ -188,6 +188,7 @@ namespace pinpoint {
         agent_id_ = std::make_shared<const std::string>(cfg->agent_id_);
         agent_name_ = cfg->agent_name_;
         service_name_ = cfg->service_name_;
+        cluster_namespace_ = cfg->cluster_namespace_;
 
         // Shared (see the member declarations): build_runtime() below hangs
         // both sinks off every runtime generation so spans reach them without
@@ -432,6 +433,10 @@ namespace pinpoint {
 
     const std::string& AgentImpl::getServiceName() const {
         return service_name_;
+    }
+
+    const std::string& AgentImpl::getClusterNamespace() const {
+        return cluster_namespace_;
     }
 
     void AgentImpl::build_header_recorders(AgentRuntime& rt, const Config& cfg) {
@@ -1223,7 +1228,7 @@ namespace pinpoint {
         // the upstream headers all come off this single result. Re-deriving
         // "is this continued?" at any of those three points is how the sampler
         // and the extract drift apart.
-        auto inbound = readInboundTrace(reader);
+        auto inbound = readInboundTrace(reader, cluster_namespace_);
         const bool my_sampling = inbound.continued ? sampler->isContinueSampled()
                                                    : sampler->isNewSampled();
 
