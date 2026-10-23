@@ -62,6 +62,7 @@ namespace pinpoint {
         // connection and its keepalive instead of dropping to IDLE (see
         // make_channel_arguments in grpc.cpp).
         constexpr int GRPC_IDLE_TIMEOUT_MS = 0;
+        constexpr const char* GRPC_COMPRESSION = "gzip";
         constexpr int HTTP_URL_STAT_LIMIT = 1000;
         constexpr int HTTP_URL_STAT_QUEUE_SIZE = 1024;
         constexpr int SQL_MAX_BIND_ARGS_SIZE = 1024;
@@ -148,6 +149,7 @@ namespace pinpoint {
         constexpr const char* GRPC_CHANNEL_MAX_AGE_MS = "GRPC_CHANNEL_MAX_AGE_MS";
         constexpr const char* GRPC_STREAM_MAX_AGE_MS = "GRPC_STREAM_MAX_AGE_MS";
         constexpr const char* GRPC_IDLE_TIMEOUT_MS = "GRPC_IDLE_TIMEOUT_MS";
+        constexpr const char* GRPC_COMPRESSION = "GRPC_COMPRESSION";
         constexpr const char* IS_CONTAINER = "IS_CONTAINER";
         constexpr const char* HTTP_COLLECT_URL_STAT = "HTTP_COLLECT_URL_STAT";
         constexpr const char* HTTP_URL_STAT_LIMIT = "HTTP_URL_STAT_LIMIT";
@@ -347,6 +349,10 @@ namespace pinpoint {
             struct {
                 GrpcSslOptions ssl;
                 GrpcChannelOptions channel;
+                // "gzip" or "none", canonicalised to lower case by
+                // make_config(). Applies to the span batches and the stats
+                // stream only; see GrpcSpan and GrpcStats for the fallback.
+                std::string compression = defaults::GRPC_COMPRESSION;
             } grpc;
 
             struct {

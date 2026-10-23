@@ -943,6 +943,10 @@ namespace pinpoint {
      *   a full shard head-drops its oldest chunk, keeping the newest telemetry
      *   without a process-wide lock. FIFO per shard; cross-shard order is
      *   unspecified. Cumulative drops are logged at most once per minute.
+     * - **Compression.** @c Config::collector.grpc.compression "gzip" (the
+     *   default) compresses each batch. The first gzip batch answered UNIMPLEMENTED switches every
+     *   later batch to uncompressed for this client's lifetime; batches
+     *   already sent compressed are lost, as in the Java agent.
      * - **partial_success.** Rejected spans are logged, never retried.
      * - **Shutdown.** Drains remaining chunks (if the channel is connected)
      *   within @c span_shutdown_flush_budget — chunks it cannot launch inside
@@ -1041,6 +1045,12 @@ namespace pinpoint {
     };
 
     /// @brief gRPC client that streams agent and URL statistics to the collector.
+    ///
+    /// With @c Config::collector.grpc.compression "gzip" (the default) each
+    /// stream is opened gzip-compressed; gRPC sends a message uncompressed when
+    /// gzip does not shrink it. The first gzip stream the collector fails with
+    /// UNIMPLEMENTED switches every later stream to uncompressed, as in the Java
+    /// agent's StatGrpcDataSender; the message written on it is lost.
     class GrpcStats : public GrpcClient, public grpc::ClientWriteReactor<v1::PStatMessage> {
     public:
         explicit GrpcStats(std::shared_ptr<const Config> config,
@@ -1135,6 +1145,12 @@ namespace pinpoint {
         // which of the write-failure / write-timeout / finish paths fires
         // first (mirrors GrpcAgent::ping_stream_closing_).
         std::atomic<bool> stats_stream_closing_{false};
+        // Raised by the first gzip stream the collector fails with
+        // UNIMPLEMENTED. Worker thread only, like every stream start.
+        bool stats_compression_fallback_{false};
+        bool stats_gzip() const {
+            return config_->collector.grpc.compression == "gzip" && !stats_compression_fallback_;
+        }
 
         /// @brief True when both stat and URL-stat reporting are disabled
         /// (boot-time, non-reloadable flags).

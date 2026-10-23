@@ -756,6 +756,13 @@ protected:
     }
 };
 
+// A collector that cannot decompress gzip, like a grpc-java server with an
+// empty DecompressorRegistry.
+class GzipRejectingCollectorIntegrationTest : public AgentIntegrationTest {
+protected:
+    void SetUp() override { collector_.DisableGzip(); }
+};
+
 // Models an application that starts while the collector is unhealthy: the
 // ports accept connections but every RPC keeps failing until EndOutage().
 // Unlike CollectorUnavailableAtStartupIntegrationTest, the rejected
@@ -2227,6 +2234,35 @@ TEST_F(AgentIntegrationTest, ContinuesSendingAfterSpanRequestError) {
                           grpc::StatusCode::OK, true);
     }, kWaitTimeout));
     EXPECT_TRUE(agent_->Enable());
+}
+
+TEST_F(GzipRejectingCollectorIntegrationTest, FallsBackToUncompressedSpanBatches) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    auto rejected = agent_->NewSpan("gzip.span", "/gzip-rejected");
+    ASSERT_TRUE(rejected->IsSampled());
+    rejected->EndSpan();
+
+    // The collector refuses a gzip call before its handler runs, so the
+    // rejection itself is not recorded. Keep sending until spans get through.
+    ASSERT_TRUE(wait_until([this] {
+        agent_->NewSpan("plain.span", "/after-fallback")->EndSpan();
+        return collector_.WaitFor([](const auto& snapshot) {
+            return find_span_by_rpc(snapshot, "/after-fallback").has_value();
+        }, 200ms);
+    }));
+    // Only a compressed batch can have been refused.
+    EXPECT_FALSE(find_span_by_rpc(collector_.snapshot(), "/gzip-rejected").has_value());
+}
+
+TEST_F(GzipRejectingCollectorIntegrationTest, FallsBackToUncompressedStatsStream) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    // The first gzip stream is refused before its handler runs; only a
+    // fallback stream can carry a stat message to the collector.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.stats.empty();
+    }, kWaitTimeout));
 }
 
 TEST_F(AgentIntegrationTest, ReconnectsAfterEndpointAndCommandStreamFailures) {

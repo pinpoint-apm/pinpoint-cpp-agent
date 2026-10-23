@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`Collector.Grpc.Compression`: gzip span batches and the stats stream, on
+  by default.** Each `SendSpanBatch` request and each `SendAgentStat` stream is
+  gzip-compressed, as the Java agent does
+  (`profiler.transport.grpc.span.batch-sender.compression`,
+  `profiler.transport.grpc.stat.sender.compression`); gRPC sends a message
+  uncompressed when gzip does not shrink it. `none` turns it off (env
+  `PINPOINT_CPP_GRPC_COMPRESSION`). A collector that cannot decompress gzip
+  answers `UNIMPLEMENTED`; the agent then warns once and sends that data
+  uncompressed for the rest of its life, losing only what was already sent
+  compressed. Documented in
+  [Configuration Guide § gRPC Transport](doc/config.md#grpc-transport-configuration).
+
 ## 2.2.0 (2026-10-23)
 
 ### Breaking

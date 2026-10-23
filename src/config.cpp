@@ -573,6 +573,7 @@ namespace pinpoint {
         {"Collector.Grpc.ChannelMaxAgeMs", REF(collector.grpc.channel.channel_max_age_ms), FIXED, env::GRPC_CHANNEL_MAX_AGE_MS},
         {"Collector.Grpc.StreamMaxAgeMs", REF(collector.grpc.channel.stream_max_age_ms), FIXED, env::GRPC_STREAM_MAX_AGE_MS},
         {"Collector.Grpc.IdleTimeoutMs", REF(collector.grpc.channel.idle_timeout_ms), FIXED, env::GRPC_IDLE_TIMEOUT_MS},
+        {"Collector.Grpc.Compression", REF(collector.grpc.compression), FIXED, env::GRPC_COMPRESSION},
         {"Collector.AgentInfo.RefreshIntervalMs", REF(collector.agent_info.refresh_interval_ms), FIXED, env::AGENT_INFO_REFRESH_INTERVAL_MS},
         {"Collector.AgentInfo.SendRetryIntervalMs", REF(collector.agent_info.send_retry_interval_ms), FIXED, env::AGENT_INFO_SEND_RETRY_INTERVAL_MS},
         {"Collector.AgentInfo.MaxTryPerAttempt", REF(collector.agent_info.max_try_per_attempt), FIXED, env::AGENT_INFO_MAX_TRY_PER_ATTEMPT},
@@ -1209,6 +1210,16 @@ namespace pinpoint {
         at_least(channel.idle_timeout_ms, 0, defaults::GRPC_IDLE_TIMEOUT_MS, "grpc idle timeout");
         if (channel.idle_timeout_ms > 0) {
             clamp_min(channel.idle_timeout_ms, MIN_GRPC_IDLE_TIMEOUT_MS, "grpc idle timeout");
+        }
+        // "gzip" or "none", as the Java agent's *.sender.compression keys. An
+        // unknown value falls back to the default: compression is an
+        // optimization, not a reason to refuse to start.
+        auto& compression = config->collector.grpc.compression;
+        absl::AsciiStrToLower(&compression);
+        if (compression != "gzip" && compression != "none") {
+            LOG_WARN("grpc compression '{}' is unknown, using default: {}",
+                     compression, defaults::GRPC_COMPRESSION);
+            compression = defaults::GRPC_COMPRESSION;
         }
 
         // Auto-detect only when the config was not seeded. On a watcher reload

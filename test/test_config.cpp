@@ -3314,6 +3314,19 @@ TEST_F(ConfigTest, AgentInfoScheduleDefaultsTest) {
         << "registration gates tracing, so it retries often - see doc/development.md";
 }
 
+TEST_F(ConfigTest, GrpcCompressionTest) {
+    EXPECT_EQ(make_config()->collector.grpc.compression, "gzip") << "gzip by default, as the Java agent";
+
+    set_config_string("Collector:\n  Grpc:\n    Compression: NONE\n");
+    EXPECT_EQ(make_config()->collector.grpc.compression, "none") << "case-insensitive, canonicalised";
+
+    set_config_string("Collector:\n  Grpc:\n    Compression: zstd\n");
+    EXPECT_EQ(make_config()->collector.grpc.compression, "gzip") << "unknown value falls back to the default";
+
+    setenv(full_env(env::GRPC_COMPRESSION).c_str(), "none", 1);
+    EXPECT_EQ(make_config()->collector.grpc.compression, "none") << "environment overrides YAML";
+}
+
 TEST_F(ConfigTest, SpanBatchDefaultsTest) {
     EXPECT_EQ(defaults::SPAN_BATCH_SIZE, 20);
     EXPECT_EQ(defaults::SPAN_BATCH_FLUSH_INTERVAL_MS, 1000);

@@ -142,6 +142,13 @@ public:
     bool Start();
     void Shutdown();
 
+    /**
+     * Makes every endpoint started from now on refuse gzip-compressed calls,
+     * like a grpc-java collector without a gzip decompressor. Call it before
+     * Start().
+     */
+    void DisableGzip();
+
     /** Abruptly stops or restarts one real listening endpoint on the same port. */
     bool StopEndpoint(CollectorEndpoint endpoint);
     bool StartEndpoint(CollectorEndpoint endpoint);

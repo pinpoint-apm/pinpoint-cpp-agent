@@ -2459,6 +2459,10 @@ namespace pinpoint {
         std::unordered_set<std::shared_ptr<PendingSpanBatch>> pending;
         // Includes losses after dequeue as well as queue overwrites.
         std::atomic<uint64_t> dropped_spans{0};
+        // Raised by the first gzip batch the collector answers UNIMPLEMENTED
+        // (grpc-java: "Can't find decompressor for gzip"); every later batch
+        // goes out uncompressed, as in the Java agent's SpanBatchGrpcDataSender.
+        std::atomic<bool> compression_fallback{false};
         void recordDrop(size_t spans) noexcept {
             dropped_spans.fetch_add(spans, std::memory_order_relaxed);
         }
@@ -2741,6 +2745,11 @@ namespace pinpoint {
 
             build_grpc_context(&pending->ctx, 0);
             set_request_deadline(pending->ctx);
+            const bool compressed = config_->collector.grpc.compression == "gzip" &&
+                    !inflight_->compression_fallback.load(std::memory_order_relaxed);
+            if (compressed) {
+                pending->ctx.set_compression_algorithm(GRPC_COMPRESS_GZIP);
+            }
 
             {
                 std::lock_guard<std::mutex> lock(inflight_->mutex);
@@ -2757,10 +2766,17 @@ namespace pinpoint {
             // may fire after this GrpcSpan (or the whole agent) is destroyed.
             auto state = inflight_;
             transport->stub->async()->SendSpanBatch(ctx_ptr, request_ptr, reply_ptr,
-                [state, pending, batch_count](const grpc::Status& status) {
+                [state, pending, batch_count, compressed](const grpc::Status& status) {
                     state->completeCall(pending);
                     if (!status.ok()) {
                         state->recordDrop(batch_count);
+                        if (compressed && status.error_code() == grpc::StatusCode::UNIMPLEMENTED &&
+                                !state->compression_fallback.exchange(true)) {
+                            LOG_WARN("SendSpanBatch with gzip failed: UNIMPLEMENTED, {}; "
+                                     "sending span batches uncompressed from now on",
+                                     status.error_message());
+                            return;
+                        }
                         LOG_WARN_THROTTLED("SendSpanBatch failed: {}, {}",
                                            static_cast<int>(status.error_code()), status.error_message());
                         return;
@@ -2991,6 +3007,9 @@ namespace pinpoint {
         // actual call — drain_stats_stream_on_error() relies on that invariant.
         auto context = std::make_unique<grpc::ClientContext>();
         build_grpc_context(context.get(), 0);
+        if (stats_gzip()) {
+            context->set_compression_algorithm(GRPC_COMPRESS_GZIP);
+        }
 
         {
             // Publish the new context under stream_mutex_ so stopStatsWorker()
@@ -3077,7 +3096,12 @@ namespace pinpoint {
             release_written_message_locked();
 
             if (grpc_status_ == STREAM_DONE) {
-                if (!stream_status_.ok()) {
+                if (stats_gzip() && stream_status_.error_code() == grpc::StatusCode::UNIMPLEMENTED) {
+                    stats_compression_fallback_ = true;
+                    LOG_WARN("stats stream with gzip failed: UNIMPLEMENTED, {}; "
+                             "opening stats streams uncompressed from now on",
+                             stream_status_.error_message());
+                } else if (!stream_status_.ok()) {
                     LOG_ERROR("failed to send stats: {}, {}",
                               static_cast<int>(stream_status_.error_code()),
                               stream_status_.error_message());

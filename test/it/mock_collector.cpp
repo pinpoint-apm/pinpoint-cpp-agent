@@ -623,6 +623,7 @@ struct MockCollector::Impl {
         const auto address = host_name + ":" +
             (requested_port == 0 ? std::string("0") : std::to_string(requested_port));
         int selected_port = 0;
+        builder.SetCompressionAlgorithmSupportStatus(GRPC_COMPRESS_GZIP, gzip_enabled);
         builder.AddListeningPort(address, grpc::InsecureServerCredentials(),
                                  &selected_port);
         *server = builder.BuildAndStart();
@@ -749,6 +750,7 @@ struct MockCollector::Impl {
     std::optional<FaultAction> outage;
     std::vector<grpc::ServerContext*> live_calls;
     bool stopping{false};
+    bool gzip_enabled{true};
 
     // Requested ports: 0 asks the OS for an ephemeral one. The live *_port
     // fields carry the selected port while an endpoint is up and are restored
@@ -789,6 +791,11 @@ void MockCollector::Shutdown() {
     if (impl_) {
         impl_->shutdown();
     }
+}
+
+void MockCollector::DisableGzip() {
+    std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mutex);
+    impl_->gzip_enabled = false;
 }
 
 bool MockCollector::StopEndpoint(CollectorEndpoint endpoint) {
