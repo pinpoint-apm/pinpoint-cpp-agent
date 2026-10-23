@@ -120,6 +120,14 @@
   no-op spans (agent disabled, URL excluded) are unchanged; a no-op span's
   async child still writes nothing. Documented in
   [API Contracts §11](doc/api_contracts.md#11-noop-and-unsampled-spans-are-deliberately-silent).
+- **s0-only unsampled propagation no longer logs "Pinpoint headers present
+  but unrecognized".** The header-map `NewSpan()` overload warned whenever the
+  map carried no `Pinpoint-TraceID`, but an unsampled upstream legitimately
+  sends only `Pinpoint-Sampled: s0`, so at 1% sampling 99% of inbound requests
+  hit the throttled warning (556 occurrences in a 60-second e2e run). The
+  warning now requires that neither `Pinpoint-TraceID` nor `Pinpoint-Sampled`
+  is present under any case; the span is handed out as unsampled exactly as
+  before.
 
 ## 2.1.0 (2026-09-17)
 

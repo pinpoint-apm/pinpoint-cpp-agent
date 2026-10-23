@@ -1170,11 +1170,14 @@ namespace pinpoint {
                                std::string_view method,
                                const std::map<std::string, std::string>& pinpoint_headers) {
         MapTraceContextReader reader(pinpoint_headers);
-        // A non-empty map without a trace id under any spelling means the
-        // caller handed over headers the agent cannot recognize (a bug in the
-        // binding layer, or non-Pinpoint headers dumped wholesale). The span
-        // below silently starts a fresh transaction, so leave a trail here.
-        if (!pinpoint_headers.empty() && !reader.Get(HEADER_TRACE_ID)) {
+        // A non-empty map with neither a trace id nor a sampling flag under
+        // any spelling means the caller handed over headers the agent cannot
+        // recognize (a bug in the binding layer, or non-Pinpoint headers
+        // dumped wholesale). The span below silently starts a fresh
+        // transaction, so leave a trail here. An unsampled upstream legitimately
+        // sends only Pinpoint-Sampled: s0 (no trace id), so that case is not a
+        // misconfiguration and must stay quiet.
+        if (!pinpoint_headers.empty() && !reader.Get(HEADER_TRACE_ID) && !reader.Get(HEADER_SAMPLED)) {
             LOG_WARN_THROTTLED("Pinpoint headers present but unrecognized: {} header(s) given, no {} under any case",
                                pinpoint_headers.size(), HEADER_TRACE_ID);
         }

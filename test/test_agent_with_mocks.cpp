@@ -430,6 +430,36 @@ TEST_F(AgentImplTest, NewSpanWithUnrecognizedHeaderMapKeysStartsFreshTraceAndWar
     EXPECT_TRUE(warned) << "expected a throttled warning about unrecognized Pinpoint headers";
 }
 
+// An unsampled upstream sends only Pinpoint-Sampled: s0 and no trace id.
+// That is the protocol's normal path (99% of requests at 1% sampling), so it
+// must yield an unsampled span without the "unrecognized headers" warning.
+TEST_F(AgentImplTest, NewSpanWithSampledS0OnlyHeaderMapIsUnsampledAndQuiet) {
+    struct LoggerGuard {
+        ~LoggerGuard() { Logger::getInstance().setSink({}); }
+    } logger_guard;
+    std::vector<std::string> captured;
+    std::mutex captured_mutex;
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setSink([&](const char* level, const char* message) {
+        std::lock_guard<std::mutex> lock(captured_mutex);
+        if (std::string_view(level) == "warning") {
+            captured.emplace_back(message);
+        }
+    });
+
+    std::map<std::string, std::string> headers{{"Pinpoint-Sampled", "s0"}};
+    auto span = agent_->NewSpan("test-op", "/test/rpc", "", headers);
+    ASSERT_NE(span, nullptr);
+    EXPECT_FALSE(span->IsSampled()) << "s0-only propagation must continue as unsampled";
+
+    Logger::getInstance().setSink({});
+    std::lock_guard<std::mutex> lock(captured_mutex);
+    const auto warned = std::any_of(captured.begin(), captured.end(), [](const std::string& line) {
+        return line.find("Pinpoint headers present but unrecognized") != std::string::npos;
+    });
+    EXPECT_FALSE(warned) << "s0-only propagation is a normal path and must not warn";
+}
+
 TEST_F(AgentImplTest, NewSpanWithMalformedTraceIdInHeaderMapStartsFreshTrace) {
     std::map<std::string, std::string> headers{
         {std::string(HEADER_TRACE_ID), "this-is-not-a-valid-trace-id"},
