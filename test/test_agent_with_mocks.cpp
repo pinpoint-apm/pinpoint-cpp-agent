@@ -737,6 +737,19 @@ TEST_F(ClusterNamespaceTest, InjectContextWritesConfiguredNamespace) {
     EXPECT_EQ(writer.Get(HEADER_PARENT_APP_NAMESPACE).value(), "ns-a");
 }
 
+// Binding layers that build outbound headers themselves read the namespace
+// from the snapshot, so it must match what InjectContext() writes.
+TEST_F(ClusterNamespaceTest, ConfigSnapshotCarriesClusterNamespace) {
+    EXPECT_EQ(agent_->GetConfigSnapshot().cluster_namespace, "ns-a");
+    auto span = agent_->NewSpan("caller-op", "/caller");
+    EXPECT_EQ(span->GetConfigSnapshot().cluster_namespace, "ns-a");
+    span->EndSpan();
+}
+
+TEST_F(AgentImplTest, ConfigSnapshotClusterNamespaceEmptyWhenUnset) {
+    EXPECT_TRUE(agent_->GetConfigSnapshot().cluster_namespace.empty());
+}
+
 // No ClusterNamespace configured: the inbound one is not checked, as Java's
 // BypassNameSpaceChecker does.
 TEST_F(TraceHeaderCombinationTest, InboundNamespaceIgnoredWithoutClusterNamespace) {

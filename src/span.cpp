@@ -336,6 +336,7 @@ namespace pinpoint {
         snapshot.http_server_record_request_param = config.http.server.record_request_param;
         snapshot.http_server_real_ip_header = config.http.server.real_ip_header;
         snapshot.http_server_real_ip_empty_value = config.http.server.real_ip_empty_value;
+        snapshot.cluster_namespace = agent.getClusterNamespace();
         return snapshot;
     }
 

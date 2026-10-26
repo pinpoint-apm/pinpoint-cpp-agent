@@ -283,11 +283,12 @@ overload writes no keys — an unsampled transaction has no log view to link to.
 `Agent::GetConfigSnapshot()` returns a `SpanConfigSnapshot`: the configuration
 values the agent actually resolved (application name and type, the resolved
 `Span.MaxEventDepth` / `MaxEventSequence`, the recorded-header lists,
-`Sql.TraceBindValue`, `EnableCallstackTrace`, the HTTP query/real-IP settings),
-plus a `revision` counter.
+`Sql.TraceBindValue`, `EnableCallstackTrace`, the HTTP query/real-IP settings,
+`ClusterNamespace`), plus a `revision` counter.
 
 This is for **binding layers** that reimplement part of the recording path —
-computing event positions, formatting bind values, capturing stack frames — and
+computing event positions, formatting bind values, capturing stack frames,
+building outbound headers — and
 must gate that work on the same settings the agent uses. Application
 instrumentation does not need it: the agent applies every one of these itself.
 

@@ -19,6 +19,8 @@
   caller's; a request without the header still continues. Unset, nothing
   changes: no header is sent and none is checked. Not reloadable. Documented
   in [Configuration Guide § Agent Configuration](doc/config.md#agent-configuration).
+  Appended to `SpanConfigSnapshot` as `cluster_namespace`, for binding layers
+  that build outbound headers themselves.
 
 - **`Collector.Grpc.Compression`: gzip span batches and the stats stream, on
   by default.** Each `SendSpanBatch` request and each `SendAgentStat` stream is

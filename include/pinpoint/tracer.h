@@ -355,6 +355,11 @@ namespace pinpoint {
         /// Resolved Http.Server.RealIpEmptyValue: a header value equal to this
         /// (case-insensitive) is skipped.
         std::string http_server_real_ip_empty_value;
+        /// Resolved ClusterNamespace; empty when unset. A binding layer that
+        /// builds outbound headers itself sends it as Pinpoint-pAppNamespace
+        /// only when non-empty, as InjectContext() does: a receiver with a
+        /// namespace reads an empty one as a mismatch and restarts the trace.
+        std::string cluster_namespace;
     };
 
     /**
