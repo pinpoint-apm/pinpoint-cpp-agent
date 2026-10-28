@@ -20,7 +20,7 @@ guard before creating a span, never as a startup success check.
 **Nothing is recorded until that registration succeeds.** `NewSpan()` returns
 noop spans and no agent, URL or system statistics are collected for the whole
 wait; none of it is buffered and replayed afterwards, so those transactions are
-simply lost. Registration is retried indefinitely, and the agent logs an INFO
+simply lost. Registration is retried indefinitely, and the agent logs a WARN
 line every 30 seconds while it waits (`still waiting for agent registration
 after ...`). A collector whose **agent port (9991) alone** is unreachable
 therefore produces zero spans even with 9992/9993 open — check that port first
@@ -38,7 +38,7 @@ cause is recorded.
 | `AgentInfo sent` | The agent registered with the collector. Startup succeeded. |
 | `agent start failed: ...` | Configuration or setup error; the line names the cause. |
 | `failed to init grpc workers: ...` | gRPC bring-up error. |
-| `failed to send AgentInfo` | The collector is not reachable yet. Retried indefinitely. |
+| `failed to register the agent: ...` | The collector is not reachable yet, or it rejected the registration (`collector rejected it`, an `error` line). Retried indefinitely; repeats are folded into one line per minute. |
 | `still waiting for agent registration after ...` | Registration has not succeeded yet; tracing stays off (noop spans, no stats) until it does. Logged every 30s. |
 | `config: ...` dump, then nothing | A deliberate `Enable: false`: the resolved-config dump (which itself shows `Enable: false`) is written, then the agent goes quiet — no `AgentInfo sent`, no error line. See [Disabling the Agent](#disabling-the-agent). |
 

@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -32,6 +33,7 @@
 
 #ifdef __APPLE__
 #include <mach/mach.h>
+#include <mach/mach_error.h>
 #include <mach/mach_host.h>
 #include <mach/mach_init.h>
 #include <mach/task.h>
@@ -73,6 +75,8 @@ namespace pinpoint {
     static CpuTimeSample get_cpu_time() {
         CpuTimeSample sample;
 
+        // The OS failure warnings here and in getProcessStatus() are
+        // throttled: they recur every collection interval while the cause lasts.
 #ifdef __APPLE__
         // System-wide CPU ticks via Mach. Ticks are reported in CLK_TCK units
         // (matches sysconf(_SC_CLK_TCK)) and aggregated across all CPUs, so the
@@ -84,18 +88,20 @@ namespace pinpoint {
         // The host port is process-global and stable, so acquire it once
         // and reuse it instead of leaking a port reference on every call.
         static const host_t host_port = mach_host_self();
-        if (host_statistics(host_port, HOST_CPU_LOAD_INFO,
-                            reinterpret_cast<host_info_t>(&cpu_info),
-                            &info_count) == KERN_SUCCESS) {
+        if (const kern_return_t kr = host_statistics(host_port, HOST_CPU_LOAD_INFO,
+                                                     reinterpret_cast<host_info_t>(&cpu_info),
+                                                     &info_count); kr == KERN_SUCCESS) {
             sample.sys_time = static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_USER]) +
                               static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_SYSTEM]) +
                               static_cast<clock_t>(cpu_info.cpu_ticks[CPU_STATE_NICE]);
         } else {
-            LOG_WARN("host_statistics(HOST_CPU_LOAD_INFO) failed");
+            LOG_WARN_THROTTLED("host_statistics(HOST_CPU_LOAD_INFO) failed: {}", mach_error_string(kr));
         }
 #else
         FILE *fd = fopen("/proc/stat", "r");
-        if (fd != nullptr) {
+        if (fd == nullptr) {
+            LOG_WARN_THROTTLED("cannot open /proc/stat: {}", std::strerror(errno));
+        } else {
             const FileCloser closer(fd, fclose);
 
             char buf[kProcStatBufferSize] = {};
@@ -106,7 +112,7 @@ namespace pinpoint {
                 sscanf(buf, "%*s %lu %lu %lu", &user, &nice, &system) == 3) {
                 sample.sys_time = static_cast<clock_t>(user + nice + system);
             } else {
-                LOG_WARN("Failed to parse /proc/stat format");
+                LOG_WARN_THROTTLED("unexpected /proc/stat format: {:?}", log_excerpt(buf));
             }
         }
 #endif
@@ -257,19 +263,21 @@ namespace pinpoint {
         // Resident set size (current and peak) via Mach task_info.
         mach_task_basic_info_data_t info{};
         mach_msg_type_number_t info_count = MACH_TASK_BASIC_INFO_COUNT;
-        if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
-                      reinterpret_cast<task_info_t>(&info), &info_count) == KERN_SUCCESS) {
+        if (const kern_return_t kr = task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                                               reinterpret_cast<task_info_t>(&info), &info_count);
+            kr == KERN_SUCCESS) {
             status.heap_alloc = static_cast<int64_t>(info.resident_size);
             status.heap_max   = static_cast<int64_t>(info.resident_size_max);
         } else {
-            LOG_WARN("task_info(MACH_TASK_BASIC_INFO) failed");
+            LOG_WARN_THROTTLED("task_info(MACH_TASK_BASIC_INFO) failed: {}", mach_error_string(kr));
         }
 
         // Thread count via task_threads. The kernel allocates the array, so we must
         // release the per-thread send rights and the array itself.
         thread_array_t threads = nullptr;
         mach_msg_type_number_t thread_count = 0;
-        if (task_threads(mach_task_self(), &threads, &thread_count) == KERN_SUCCESS) {
+        if (const kern_return_t kr = task_threads(mach_task_self(), &threads, &thread_count);
+            kr == KERN_SUCCESS) {
             status.num_threads = static_cast<int64_t>(thread_count);
             for (mach_msg_type_number_t i = 0; i < thread_count; ++i) {
                 mach_port_deallocate(mach_task_self(), threads[i]);
@@ -278,7 +286,7 @@ namespace pinpoint {
                           reinterpret_cast<vm_address_t>(threads),
                           thread_count * sizeof(thread_t));
         } else {
-            LOG_WARN("task_threads() failed");
+            LOG_WARN_THROTTLED("task_threads() failed: {}", mach_error_string(kr));
         }
 #else
         FILE* fd = fopen("/proc/self/status", "r");

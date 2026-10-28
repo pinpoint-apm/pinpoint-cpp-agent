@@ -461,9 +461,9 @@ namespace pinpoint {
         // keeps the id/UID, the count above and the bind args.
         std::shared_ptr<const std::string> parameters;
         if (prepared->sql->parameters.size() > kMaxSqlParamLength) {
-            LOG_DEBUG("dropping {} bytes of sql parameters: over the {} byte cap, "
-                      "statement recorded without them",
-                      prepared->sql->parameters.size(), kMaxSqlParamLength);
+            LOG_WARN_THROTTLED("dropping {} bytes of sql parameters: over the {} byte cap, "
+                               "statement recorded without them",
+                               prepared->sql->parameters.size(), kMaxSqlParamLength);
         } else {
             parameters = std::shared_ptr<const std::string>(
                 prepared->sql, &prepared->sql->parameters);

@@ -1340,7 +1340,7 @@ namespace pinpoint {
     bool Config::check() const {
         const auto error = validationError();
         if (!error.empty()) {
-            LOG_ERROR("{}", error);
+            LOG_ERROR("agent not started: {}", error);
             return false;
         }
         return true;
@@ -1348,10 +1348,10 @@ namespace pinpoint {
 
     std::string Config::validationError() const {
         if (collector.host.empty()) {
-            return "address of collector is required";
+            return "Collector.Host is required";
         }
         if (app_name_.empty()) {
-            return "application name is required";
+            return "ApplicationName is required";
         }
         // Identity fields (agent_id_/agent_name_/app_name_ and, for v4,
         // service_name_) are validated and length-checked per uid version
@@ -1359,7 +1359,7 @@ namespace pinpoint {
         // v3 applicationName limit) in a way check() cannot reproduce here. A failed
         // resolution sets identity_resolved_ = false and aborts startup.
         if (!identity_resolved_) {
-            return "agent identity resolution failed";
+            return "agent identity resolution failed (invalid ApplicationName or ServiceName)";
         }
         return {};
     }

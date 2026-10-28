@@ -859,7 +859,7 @@ namespace pinpoint {
             // which is safe for the same reason the body itself is: every
             // worker is joined (or kept alive by the teardown reaper) before
             // the agent is destroyed.
-            return std::thread{[this, bit, body = std::move(body)] {
+            return std::thread{[this, bit, name = worker_specs()[worker].name, body = std::move(body)] {
                 // Last line of defense: the bodies are supervised, but the
                 // code before/after their supervisor (getConfig() snapshots,
                 // shutdown drains) can still throw on allocation failure, and
@@ -867,9 +867,9 @@ namespace pinpoint {
                 try {
                     body();
                 } catch (const std::exception& e) {
-                    try { LOG_ERROR("worker exited by exception: {}", e.what()); } catch (...) {}
+                    try { LOG_ERROR("{} worker exited by exception: {}", name, e.what()); } catch (...) {}
                 } catch (...) {
-                    try { LOG_ERROR("worker exited by unknown exception"); } catch (...) {}
+                    try { LOG_ERROR("{} worker exited by unknown exception", name); } catch (...) {}
                 }
                 running_workers_.fetch_and(~bit, std::memory_order_relaxed);
             }};
@@ -1399,11 +1399,11 @@ namespace pinpoint {
         // AgentId (first field before '^')
         const auto pos1 = sv.find('^');
         if (pos1 == std::string_view::npos) {
-            LOG_WARN_THROTTLED("parsing Txid: invalid txid format = {}", sv);
+            LOG_WARN_THROTTLED("parsing Txid: invalid txid format = {:?}", log_excerpt(sv));
             return {};
         }
         if (pos1 == 0) {
-            LOG_WARN_THROTTLED("parsing Txid: empty AgentId = {}", sv);
+            LOG_WARN_THROTTLED("parsing Txid: empty AgentId = {:?}", log_excerpt(sv));
             return {};
         }
         if (!isIdChars(sv.substr(0, pos1))) {
@@ -1413,7 +1413,7 @@ namespace pinpoint {
         // StartTime (second field)
         const auto pos2 = sv.find('^', pos1 + 1);
         if (pos2 == std::string_view::npos) {
-            LOG_WARN_THROTTLED("parsing Txid: invalid txid format = {}", sv);
+            LOG_WARN_THROTTLED("parsing Txid: invalid txid format = {:?}", log_excerpt(sv));
             return {};
         }
         const auto start_time_len = pos2 - pos1 - 1;
@@ -1436,7 +1436,7 @@ namespace pinpoint {
         const auto start_time = parseLongStrict(sv.substr(pos1 + 1, start_time_len));
         const auto sequence = parseLongStrict(sequence_str);
         if (!start_time || !sequence) {
-            LOG_WARN_THROTTLED("parsing Txid: invalid txid format = {}", sv);
+            LOG_WARN_THROTTLED("parsing Txid: invalid txid format = {:?}", log_excerpt(sv));
             return {};
         }
 
@@ -1872,7 +1872,8 @@ namespace pinpoint {
         if (init_failed_agent) {
             LOG_WARN("global agent failed to initialize; replacing it with a new agent");
         } else if (replaced_agent) {
-            LOG_WARN("global agent is shut down; replacing it with a new agent");
+            // The documented way to restart after Shutdown(), not a fault.
+            LOG_INFO("global agent is shut down; replacing it with a new agent");
         }
 
         auto cfg = make_config(options);

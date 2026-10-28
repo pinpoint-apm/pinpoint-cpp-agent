@@ -708,6 +708,22 @@ namespace pinpoint {
             return code == grpc::StatusCode::UNAVAILABLE ||
                    code == grpc::StatusCode::DEADLINE_EXCEEDED;
         }
+
+        // The metadata's kind as its log lines name it (a static literal).
+        std::string_view meta_kind(const MetaData& meta) {
+            return std::visit([](const auto& value) -> std::string_view {
+                using T = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<T, ApiMeta>) {
+                    return "api";
+                } else if constexpr (std::is_same_v<T, StringMeta>) {
+                    return value.type_ == STRING_META_ERROR ? "error" : "sql";
+                } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
+                    return "sql uid";
+                } else {
+                    return "exception";
+                }
+            }, meta);
+        }
     }
 
     // Heap-resident state for a single async metadata RPC. Lives as long as
@@ -853,11 +869,11 @@ namespace pinpoint {
                 throw std::runtime_error("metadata channel is closed");
             }
             call->transport = transport;
+            call->operation_name = meta_kind(*call->meta);
             auto* async_stub = transport->stub->async();
             std::visit([&](auto&& value) {
                 using T = std::decay_t<decltype(value)>;
                 if constexpr (std::is_same_v<T, ApiMeta>) {
-                    call->operation_name = "api";
                     auto* request = google::protobuf::Arena::Create<v1::PApiMetaData>(&call->arena);
                     request->set_apiid(value.id_);
                     request->set_apiinfo(toValidUtf8(value.api_str_));
@@ -865,13 +881,11 @@ namespace pinpoint {
                     async_stub->RequestApiMetaData(&call->ctx, request, &call->reply, on_done);
                 } else if constexpr (std::is_same_v<T, StringMeta>) {
                     if (value.type_ == STRING_META_ERROR) {
-                        call->operation_name = "error";
                         auto* request = google::protobuf::Arena::Create<v1::PStringMetaData>(&call->arena);
                         request->set_stringid(value.id_);
                         request->set_stringvalue(toValidUtf8(value.str_val_));
                         async_stub->RequestStringMetaData(&call->ctx, request, &call->reply, on_done);
                     } else {
-                        call->operation_name = "sql";
                         auto* request = google::protobuf::Arena::Create<v1::PSqlMetaData>(&call->arena);
                         request->set_sqlid(value.id_);
                         // StringMeta abbreviated str_val_ on construction
@@ -885,7 +899,6 @@ namespace pinpoint {
                         async_stub->RequestSqlMetaData(&call->ctx, request, &call->reply, on_done);
                     }
                 } else if constexpr (std::is_same_v<T, SqlUidMeta>) {
-                    call->operation_name = "sql uid";
                     auto* request = google::protobuf::Arena::Create<v1::PSqlUidMetaData>(&call->arena);
                     request->set_sqluid(std::string(value.uid_.begin(), value.uid_.end()));
                     // SqlUidMeta abbreviated sql_ on construction (the uid
@@ -896,7 +909,6 @@ namespace pinpoint {
                     request->set_sql(toValidUtf8(value.sql_));
                     async_stub->RequestSqlUidMetaData(&call->ctx, request, &call->reply, on_done);
                 } else if constexpr (std::is_same_v<T, ExceptionMeta>) {
-                    call->operation_name = "exception";
                     auto* request = build_exception_metadata(value.txid_, value.span_id_,
                                                              value.url_template_, value.exceptions_,
                                                              &call->arena);
@@ -1058,7 +1070,8 @@ namespace pinpoint {
             return;
         }
         if (retry_count > tuning_.meta_retry_max_attempts) {
-            LOG_WARN_THROTTLED("drop metadata after retry exhaustion: retryCount={}", retry_count);
+            LOG_WARN_THROTTLED("drop {} metadata after retry exhaustion: retryCount={}",
+                               meta_kind(*meta), retry_count);
             // Outside the pipeline mutex: removeCache* takes the agent
             // caches' internal locks, and nesting those under the pipeline
             // mutex extends enqueueMeta contention on application threads
@@ -1146,7 +1159,7 @@ namespace pinpoint {
         // mutex and its per-line flush. The first rejection always reports.
         for (auto& call : done) try {
             if (call->status.ok() && call->reply.success()) {
-                LOG_DEBUG("success to send {} metadata", call->operation_name);
+                LOG_DEBUG("sent {} metadata", call->operation_name);
                 continue;
             }
 
@@ -1965,13 +1978,19 @@ namespace pinpoint {
 
         if (status.ok() && reply.success()) {
             last_register_rejected_ = false;
-            LOG_INFO("success to register the agent");
             return SEND_OK;
         }
 
+        // Both failures repeat every retry interval for as long as they last,
+        // so they share one per-instance throttle; the periodic wait line in
+        // registerAgentWithRetry() carries the consequence.
+        const auto failures = register_failure_reporter_.acquire();
         if (!status.ok()) {
             last_register_rejected_ = false;
-            LOG_ERROR("failed to register the agent: {}, {}", static_cast<int>(status.error_code()), status.error_message());
+            if (failures > 0) {
+                LOG_WARN("failed to register the agent: {}, {} ({} failed attempt(s) since the last report)",
+                         static_cast<int>(status.error_code()), status.error_message(), failures);
+            }
             return SEND_FAIL;
         }
 
@@ -1983,8 +2002,10 @@ namespace pinpoint {
         // permanent one (wrong appName, unsupported agent id) then retries
         // forever, which is what the periodic wait line below is for.
         last_register_rejected_ = true;
-        LOG_WARN("failed to register the agent: collector rejected it (PResult.success=false), {}",
-                 reply.message());
+        if (failures > 0) {
+            LOG_ERROR("failed to register the agent: collector rejected it (PResult.success=false), {} "
+                      "({} failed attempt(s) since the last report)", reply.message(), failures);
+        }
         return SEND_FAIL;
     }
 
@@ -2020,7 +2041,7 @@ namespace pinpoint {
             }
             const auto now = std::chrono::steady_clock::now();
             if (now >= next_log) {
-                LOG_INFO("still waiting for agent registration after {}ms ({}): tracing stays disabled "
+                LOG_WARN("still waiting for agent registration after {}ms ({}): tracing stays disabled "
                          "(NewSpan is a noop and no stats are collected) until the collector accepts AgentInfo",
                          std::chrono::duration_cast<std::chrono::milliseconds>(now - started).count(),
                          last_register_rejected_ ? "collector rejected the registration, likely permanent"
@@ -2100,12 +2121,11 @@ namespace pinpoint {
         if (agent_->isExiting()) {
             return false;
         }
-        const auto status = registerAgent();
-        if (status == SEND_OK) {
+        // registerAgent() reports the failures; this is the one success line.
+        if (registerAgent() == SEND_OK) {
             LOG_INFO("AgentInfo sent");
             return true;
         }
-        LOG_WARN("failed to send AgentInfo");
         return false;
     }
 
@@ -2164,7 +2184,6 @@ namespace pinpoint {
     // Ping Stream
 
     bool GrpcAgent::start_ping_stream() {
-        LOG_DEBUG("start_ping_stream");
         if (!readyChannel()) {
             return false;
         }
@@ -2237,8 +2256,6 @@ namespace pinpoint {
     }
 
     void GrpcAgent::finish_ping_stream() {
-        LOG_DEBUG("finish_ping_stream");
-
         std::unique_lock<std::mutex> lock(stream_mutex_);
         close_ping_stream_locked();
         if (!stream_cv_.wait_for(lock, tuning_.stream_finish_timeout,
@@ -2271,7 +2288,6 @@ namespace pinpoint {
     }
 
     GrpcStreamStatus GrpcAgent::write_and_await_ping_stream() {
-        LOG_DEBUG("write_and_await_ping_stream");
         std::unique_lock<std::mutex> lock(stream_mutex_);
 
         if (ping_stream_closing_) {
@@ -2284,8 +2300,10 @@ namespace pinpoint {
 
         grpc_status_ = STREAM_WRITE;
         StartWrite(&ping_);
+        bool recycled = false;
         if (!stream_cv_.wait_for(lock, tuning_.stream_write_timeout,
                                  [this] { return grpc_status_ != STREAM_WRITE; })) {
+            recycled = true;
             // The transport can stay "healthy" (an intermediary satisfies
             // HTTP/2 keepalive) while the collector backend never answers the
             // ping. An untimed wait would park this worker for the process
@@ -2303,8 +2321,11 @@ namespace pinpoint {
             record_stream_write_ok();  // pong received: the backend is reading
         }
 
-        if (grpc_status_ == STREAM_DONE && !stream_status_.ok()) {
-            LOG_ERROR("failed to send ping: {}, {}",
+        // A recycled stream ends CANCELLED by our own TryCancel, already
+        // reported above. WARN, not ERROR: the stream is reopened at once, and
+        // a collector restart is routine.
+        if (grpc_status_ == STREAM_DONE && !stream_status_.ok() && !recycled) {
+            LOG_WARN("failed to send ping: {}, {}",
                      static_cast<int>(stream_status_.error_code()), stream_status_.error_message());
         }
 
@@ -2758,8 +2779,8 @@ namespace pinpoint {
         // soon as it is serialized, so the size is taken up front.
         const auto batch_count = batch.size();
         if (!try_acquire_permit(permit_timeout)) {
-            LOG_INFO("SendSpanBatch skipped: no available permits within {}ms",
-                     permit_timeout.count());
+            LOG_WARN_THROTTLED("SendSpanBatch dropped {} span(s): no available permit within {}ms",
+                               batch_count, permit_timeout.count());
             inflight_->recordDrop(batch_count);
             batch.clear();
             return;
@@ -2854,20 +2875,22 @@ namespace pinpoint {
                             return;
                         }
                         const auto& ps = call->reply.partial_success();
+                        // Throttled: a collector that keeps rejecting does
+                        // so for every batch.
                         if (ps.rejected_spans() > 0) {
                             state->recordDrop(static_cast<size_t>(std::max<int64_t>(0, ps.rejected_spans())));
-                            LOG_WARN("SendSpanBatch partial success: rejectedSpans={}, errorId={}, errorMessage={}",
-                                     ps.rejected_spans(), ps.errorid(), ps.error_message());
+                            LOG_WARN_THROTTLED("SendSpanBatch partial success: rejectedSpans={}, errorId={}, errorMessage={}",
+                                               ps.rejected_spans(), ps.errorid(), ps.error_message());
                         } else if (!ps.error_message().empty()) {
-                            LOG_INFO("SendSpanBatch warning: errorId={}, {}",
-                                     ps.errorid(), ps.error_message());
+                            LOG_WARN_THROTTLED("SendSpanBatch warning: errorId={}, {}",
+                                               ps.errorid(), ps.error_message());
                         }
                     });
                 return;
             } catch (const std::exception& e) {
-                LOG_INFO("SendSpanBatch failed synchronously: exception = {}", e.what());
+                LOG_ERROR("SendSpanBatch launch failed, {} span(s) dropped: exception = {}", count, e.what());
             } catch (...) {
-                LOG_INFO("SendSpanBatch failed synchronously: unknown exception");
+                LOG_ERROR("SendSpanBatch launch failed, {} span(s) dropped: unknown exception", count);
             }
             inflight_->recordDrop(count);
             return_permit(call, registered);
@@ -2920,11 +2943,13 @@ namespace pinpoint {
             compressed = config_->collector.grpc.compression == "gzip" &&
                     !inflight_->compression_fallback.load(std::memory_order_relaxed);
         } catch (const std::exception& e) {
-            LOG_INFO("SendSpanBatch failed synchronously: exception = {}", e.what());
+            LOG_ERROR("failed to build span batch, {} span(s) dropped: exception = {}",
+                      batch_count - split_dropped, e.what());
             release_unlaunched();
             return;
         } catch (...) {
-            LOG_INFO("SendSpanBatch failed synchronously: unknown exception");
+            LOG_ERROR("failed to build span batch, {} span(s) dropped: unknown exception",
+                      batch_count - split_dropped);
             release_unlaunched();
             return;
         }
@@ -2938,8 +2963,8 @@ namespace pinpoint {
         launch(pending, compressed);
         for (const auto& part : rest) {
             if (!try_acquire_permit(permit_timeout)) {
-                LOG_INFO("SendSpanBatch skipped: no available permits within {}ms for a request of a split batch",
-                         permit_timeout.count());
+                LOG_WARN_THROTTLED("SendSpanBatch dropped {} span(s) of a split batch: no available permit within {}ms",
+                                   part->request->span_size(), permit_timeout.count());
                 inflight_->recordDrop(static_cast<size_t>(part->request->span_size()));
                 continue;
             }
@@ -3041,7 +3066,7 @@ namespace pinpoint {
                 }
             } else {
                 inflight_->recordDrop(remaining.size());
-                LOG_INFO("drop {} remaining spans on shutdown: channel not ready", remaining.size());
+                LOG_WARN("drop {} remaining spans on shutdown: channel not ready", remaining.size());
             }
             remaining.clear();
         }
@@ -3132,7 +3157,6 @@ namespace pinpoint {
     }
 
     bool GrpcStats::start_stats_stream() {
-        LOG_DEBUG("start_stats_stream");
         if (!readyChannel()) {
             return false;
         }
@@ -3190,8 +3214,6 @@ namespace pinpoint {
     }
 
     GrpcStreamStatus GrpcStats::write_and_await_stats_stream() {
-        LOG_DEBUG("write_and_await_stats_stream");
-
         std::unique_lock<std::mutex> lock(stream_mutex_);
         // Drain the queue from this worker thread: each iteration builds one
         // message (next_write), writes it and waits for the completion. The
@@ -3205,8 +3227,10 @@ namespace pinpoint {
             }
             StartWrite(msg_);
 
+            bool recycled = false;
             if (!stream_cv_.wait_for(lock, tuning_.stream_write_timeout,
                                      [this] { return grpc_status_ != STREAM_WRITE; })) {
+                recycled = true;
                 // The transport can stay "healthy" (an intermediary satisfies
                 // HTTP/2 keepalive) while the collector backend stops reading,
                 // leaving the write blocked on flow control. An untimed wait
@@ -3244,8 +3268,9 @@ namespace pinpoint {
                     LOG_WARN("stats stream with gzip failed: UNIMPLEMENTED, {}; "
                              "opening stats streams uncompressed from now on",
                              stream_status_.error_message());
-                } else if (!stream_status_.ok()) {
-                    LOG_ERROR("failed to send stats: {}, {}",
+                } else if (!stream_status_.ok() && !recycled) {
+                    // Same as the ping stream: a recycle's CANCELLED is ours.
+                    LOG_WARN("failed to send stats: {}, {}",
                               static_cast<int>(stream_status_.error_code()),
                               stream_status_.error_message());
                 }
@@ -3267,8 +3292,6 @@ namespace pinpoint {
     }
 
     void GrpcStats::finish_stats_stream() {
-        LOG_DEBUG("finish_stats_stream");
-
         std::unique_lock<std::mutex> lock(stream_mutex_);
         close_stats_stream_locked();
         if (!stream_cv_.wait_for(lock, tuning_.stream_finish_timeout,
@@ -3352,7 +3375,6 @@ namespace pinpoint {
     }
 
     GrpcStreamStatus GrpcStats::next_write() try {
-        LOG_DEBUG("stats - next_write");
         // Caller must hold stream_mutex_.
         release_written_message_locked();
 
@@ -3360,7 +3382,6 @@ namespace pinpoint {
         {
             std::unique_lock<std::mutex> lock(stats_queue_mutex_);
             if (stopping() || stats_queue_.empty()) {
-                LOG_DEBUG("stats - queue empty");
                 return STREAM_CONTINUE;
             }
 
@@ -3408,7 +3429,7 @@ namespace pinpoint {
 
         return STREAM_WRITE;
     } catch (const std::exception &e) {
-        LOG_ERROR("failed to send stats: exception = {}", e.what());
+        LOG_ERROR("failed to build stats message: exception = {}", e.what());
         // No StartWrite was issued for this msg_. Release it here so a failed
         // build does not hold its partial allocations until the next build
         // (compounding memory pressure in exactly the OOM scenario that
@@ -3429,7 +3450,6 @@ namespace pinpoint {
     }
 
     GrpcStreamStatus GrpcStats::build_shutdown_url_stat_write() try {
-        LOG_DEBUG("stats - build_shutdown_url_stat_write");
         // Caller must hold stream_mutex_.
 
         // Shutdown also sends the partial tick because no later record can complete it.
@@ -3446,7 +3466,7 @@ namespace pinpoint {
             // snapshot is already drained, so the count is the only record
             // these entries leave.
             shutdown_dropped_url_stats_.fetch_add(entries, std::memory_order_relaxed);
-            LOG_INFO("drop {} url stat entries on shutdown: channel not ready", entries);
+            LOG_WARN("drop {} url stat entries on shutdown: channel not ready", entries);
             return STREAM_CONTINUE;
         }
 
@@ -3485,7 +3505,7 @@ namespace pinpoint {
                 !snapshot->empty()) {
                 const auto entries = snapshot->getEachStats().size();
                 shutdown_dropped_url_stats_.fetch_add(entries, std::memory_order_relaxed);
-                LOG_INFO("drop {} url stat entries on shutdown: no live stats stream", entries);
+                LOG_WARN("drop {} url stat entries on shutdown: no live stats stream", entries);
             }
             return;
         }

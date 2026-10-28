@@ -262,12 +262,12 @@ for _ in $(seq 1 60); do
 done
 [[ "$ready" == *'"agent_enabled":true'* ]] || { echo "agent never became ready" >&2; exit 1; }
 
-# "success to register the agent" is info-level, so this works at the soak's log
+# "AgentInfo sent" is info-level, so this works at the soak's log
 # level; "SendSpanBatch success" is debug-only and deliberately not asserted --
 # span flow is watched instead through agent_enabled in the series below.
 sleep 3
 for l in it_test_server http_downstream_server grpc_server; do
-    grep -q 'success to register the agent' "$SLOG/$l.log" \
+    grep -q 'AgentInfo sent' "$SLOG/$l.log" \
         || { echo "$l did not register with the collector" >&2; exit 1; }
 done
 echo "    all three agents registered; upstream pid $UPSTREAM_PID"

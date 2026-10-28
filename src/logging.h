@@ -139,6 +139,13 @@ namespace pinpoint {
             log(LogLevel::kWarn, occurrences, file, line, format, std::forward<Args>(args)...);
         }
 
+        /// @brief logWarnThrottled at error level, behind LOG_ERROR_THROTTLED.
+        template <typename... Args>
+        void logErrorThrottled(uint64_t occurrences, std::string_view file, int line,
+                               fmt::string_view format, Args&&... args) {
+            log(LogLevel::kError, occurrences, file, line, format, std::forward<Args>(args)...);
+        }
+
         /// @brief Level predicates used by the LOG_* macros to skip argument
         /// evaluation entirely when the level is disabled.
         bool debugEnabled() const { return shouldLog(LogLevel::kDebug); }
@@ -288,17 +295,28 @@ namespace pinpoint {
     // touched again, depth/sequence overflow) and malformed peer input
     // (unparseable trace headers) — where an unthrottled line per request would
     // serialize the host's request threads on the logger mutex.
-    #define LOG_WARN_THROTTLED(...) \
+    // LOG_ERROR_THROTTLED is the same at error level, for contract violations
+    // that are just as repeatable (a span used from a second thread).
+    #define PP_LOG_THROTTLED(predicate, method, ...) \
         do { \
             ::pinpoint::Logger& _pp_logger = ::pinpoint::Logger::getInstance(); \
-            if (_pp_logger.warnEnabled()) { \
+            if (_pp_logger.predicate()) { \
                 static ::pinpoint::QueueDropReporter _pp_throttle; \
                 const auto _pp_occurrences = _pp_throttle.acquire(); \
                 if (_pp_occurrences > 0) { \
-                    _pp_logger.logWarnThrottled(_pp_occurrences, ::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
+                    _pp_logger.method(_pp_occurrences, ::pinpoint::kFileName(__FILE__), __LINE__, __VA_ARGS__); \
                 } \
             } \
         } while (0)
+    #define LOG_WARN_THROTTLED(...) PP_LOG_THROTTLED(warnEnabled, logWarnThrottled, __VA_ARGS__)
+    #define LOG_ERROR_THROTTLED(...) PP_LOG_THROTTLED(errorEnabled, logErrorThrottled, __VA_ARGS__)
+
+    /// @brief Peer-controlled text (inbound header values) cut to a bounded
+    /// prefix for a log line. Log it with `{:?}`, which quotes it and escapes
+    /// control characters, so the value can neither run long nor forge lines.
+    constexpr std::string_view log_excerpt(std::string_view text) noexcept {
+        return text.substr(0, 64);
+    }
 
     // Exception boundary for host-facing entry points (the Span/SpanEvent
     // recording surface): expands to the catch clauses of a function-try-block

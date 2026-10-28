@@ -3622,18 +3622,18 @@ TEST_F(ReloadConfigTest, RejectsWhatStartAgentWouldRefuse) {
     ConfigReloadResult no_name;
     EXPECT_EQ(reload(running, "Collector:\n  Host: collector.running\n", no_name), nullptr);
     EXPECT_EQ(no_name.status, ConfigReloadResult::Status::kInvalidConfig);
-    EXPECT_EQ(no_name.message, "application name is required");
+    EXPECT_EQ(no_name.message, "ApplicationName is required");
 
     ConfigReloadResult no_collector;
     EXPECT_EQ(reload(running, "ApplicationName: ReloadApp\n", no_collector), nullptr);
     EXPECT_EQ(no_collector.status, ConfigReloadResult::Status::kInvalidConfig);
-    EXPECT_EQ(no_collector.message, "address of collector is required");
+    EXPECT_EQ(no_collector.message, "Collector.Host is required");
 
     ConfigReloadResult bad_identity;
     EXPECT_EQ(reload(running, "ApplicationName: \"has space\"\nCollector:\n  Host: c\n",
                      bad_identity), nullptr);
     EXPECT_EQ(bad_identity.status, ConfigReloadResult::Status::kInvalidConfig);
-    EXPECT_EQ(bad_identity.message, "agent identity resolution failed");
+    EXPECT_EQ(bad_identity.message, "agent identity resolution failed (invalid ApplicationName or ServiceName)");
 }
 
 TEST_F(ReloadConfigTest, RefusalLeavesTheLoggerUntouched) {

@@ -682,7 +682,9 @@ namespace pinpoint {
             // there and asserts in debug. Atomic so the detection path — which
             // by definition runs under concurrent use — is not itself a race.
             std::atomic<std::thread::id> owner_thread_id_{};
-            void checkOwnerThread();
+            /// Binds the span to the calling thread on first use; false when
+            /// another thread owns it (CHECK_OWNER_THREAD reports that).
+            bool checkOwnerThread();
 
             /// @brief Emits a span chunk via the agent service.
             void record_chunk(bool final) const;

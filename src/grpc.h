@@ -822,7 +822,7 @@ namespace pinpoint {
         /// @brief Boot-phase registration: sends AgentInfo repeatedly until the
         /// collector accepts it. Blocks the caller (the agent's init thread);
         /// stopAgentInfo() or agent exit interrupts the retry wait.
-        /// Reports the wait with an INFO line every
+        /// Reports the wait with a WARN line every
         /// tuning_.registration_wait_log_interval, since NewSpan() is a noop
         /// and no stats are collected until this returns true.
         /// @return true once registration succeeded, false when stopped first.
@@ -893,6 +893,8 @@ namespace pinpoint {
         // atomic because the scheduler thread also calls registerAgent() once
         // boot is over.
         std::atomic<bool> last_register_rejected_{false};
+        // Rate-limits registerAgent()'s failure lines (acquire() mode).
+        QueueDropReporter register_failure_reporter_;
         bool agent_info_running_{false};
         bool agent_info_stop_requested_{false};
         // Set before the scheduler thread is created, cleared as its body

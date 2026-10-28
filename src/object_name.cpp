@@ -173,6 +173,17 @@ namespace pinpoint {
             return base64_encode_uuid(uuid);
         }
 
+        // Why validate_id() refused `value`, for the error line naming it.
+        std::string id_error(std::string_view value, size_t max_len) {
+            if (value.empty()) {
+                return "missing (required)";
+            }
+            if (value.size() > max_len) {
+                return std::to_string(value.size()) + " characters, max " + std::to_string(max_len);
+            }
+            return "contains characters outside [a-zA-Z0-9._-]";
+        }
+
         // v1/v3 resolution -> ObjectNameV1 (version 1). The only difference between
         // v1 and v3 is the applicationName length limit.
         std::optional<ObjectName> resolve_v1_v3(const ObjectNameInput& input,
@@ -193,8 +204,8 @@ namespace pinpoint {
 
             // applicationName: required.
             if (!validate_id(input.application_name, application_name_max_len)) {
-                LOG_ERROR("Failed to resolve ApplicationName (required, max length {})",
-                          application_name_max_len);
+                LOG_ERROR("invalid ApplicationName {:?}: {}", log_excerpt(input.application_name),
+                          id_error(input.application_name, application_name_max_len));
                 return std::nullopt;
             }
             obj.application_name = input.application_name;
@@ -230,8 +241,8 @@ namespace pinpoint {
 
             // applicationName: required.
             if (!validate_id(input.application_name, object_name::AGENT_NAME_MAX_LEN_V4)) {
-                LOG_ERROR("Failed to resolve ApplicationName (required, max length {})",
-                          object_name::AGENT_NAME_MAX_LEN_V4);
+                LOG_ERROR("invalid ApplicationName {:?}: {}", log_excerpt(input.application_name),
+                          id_error(input.application_name, object_name::AGENT_NAME_MAX_LEN_V4));
                 return std::nullopt;
             }
             obj.application_name = input.application_name;
@@ -240,8 +251,9 @@ namespace pinpoint {
             // mistyped name must fail startup, not register the agent under
             // the wrong service.
             if (!validate_id(input.service_name, object_name::SERVICE_NAME_MAX_LEN)) {
-                LOG_ERROR("Failed to resolve ServiceName (required for uid.version=v4, max length {})",
-                          object_name::SERVICE_NAME_MAX_LEN);
+                LOG_ERROR("invalid ServiceName {:?} (required for uid.version=v4): {}",
+                          log_excerpt(input.service_name),
+                          id_error(input.service_name, object_name::SERVICE_NAME_MAX_LEN));
                 return std::nullopt;
             }
             // Unlike the other ids, serviceName also has a lower bound
@@ -249,7 +261,8 @@ namespace pinpoint {
             // validate_id() so an unset name is still reported as missing
             // rather than as too short.
             if (input.service_name.size() < object_name::SERVICE_NAME_MIN_LEN) {
-                LOG_ERROR("Failed to resolve ServiceName (required for uid.version=v4, min length {})",
+                LOG_ERROR("invalid ServiceName {:?} (required for uid.version=v4): {} characters, min {}",
+                          log_excerpt(input.service_name), input.service_name.size(),
                           object_name::SERVICE_NAME_MIN_LEN);
                 return std::nullopt;
             }

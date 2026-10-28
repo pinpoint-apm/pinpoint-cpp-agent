@@ -302,7 +302,7 @@ template <typename Handle>
 static void destroy_handle(Handle handle) {
     if (handle == nullptr || is_sentinel(handle)) return;
     if (!handle_registry_for(handle).erase(handle)) {
-        LOG_WARN("destroying an unknown or already-destroyed handle: ignored");
+        LOG_WARN_THROTTLED("destroying an unknown or already-destroyed handle: ignored");
     }
 }
 

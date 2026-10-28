@@ -787,7 +787,7 @@ namespace pinpoint {
                 // before it could be seen here; take it back out.
                 cache_.remove(key, result.value);
                 if (!wrapped_.exchange(true, std::memory_order_relaxed)) {
-                    LOG_WARN("metadata id sequence overflowed int32; no further metadata of this kind is recorded");
+                    LOG_ERROR("metadata id sequence overflowed int32; no further metadata of this kind is recorded");
                 }
                 return CacheResult{0, true};
             }

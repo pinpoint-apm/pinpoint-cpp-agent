@@ -319,7 +319,7 @@ for _ in $(seq 1 90); do
 done
 [[ "$ready" == *'"agent_enabled":true'* ]] || { echo "agent never became ready" >&2; exit 1; }
 for l in it_test_server http_downstream_server grpc_server; do
-    grep -q 'success to register the agent' "$SLOG/$l.log" \
+    grep -q 'AgentInfo sent' "$SLOG/$l.log" \
         || { echo "$l did not register with the mock collector" >&2; exit 1; }
 done
 echo "    three agents registered against the mock collector; upstream pid $UPSTREAM_PID"
@@ -498,7 +498,7 @@ summarise() {
     # The agent registers once per process; reconnects re-open the streams
     # rather than re-registering, so this is a startup check, not a per-cycle one.
     local reg
-    reg=$(grep -c 'success to register the agent' "$SLOG/it_test_server.log" 2>/dev/null || echo 0)
+    reg=$(grep -c 'AgentInfo sent' "$SLOG/it_test_server.log" 2>/dev/null || echo 0)
     echo ""
     echo "Upstream AgentInfo registrations in the log: $reg"
     local reopened

@@ -306,7 +306,7 @@ sleep 3
 echo ""
 echo "Collector transport evidence"
 for log in it_test_server.log http_downstream_server.log grpc_server.log; do
-    if grep -q 'success to register the agent' "$LOG_DIR/$log"; then
+    if grep -q 'AgentInfo sent' "$LOG_DIR/$log"; then
         echo "  PASS  $log registered with collector"
     else
         echo "  FAIL  $log has no successful agent registration" >&2

@@ -2098,7 +2098,7 @@ TEST_F(SpanTest, SpanImplExtractContextWarnsOnUnparsableParentSpanIdTest) {
     std::cout.flush();
     const auto out = testing::internal::GetCapturedStdout();
 
-    EXPECT_NE(out.find("unparseable Pinpoint-pSpanID header = 'not-a-number'"), std::string::npos) << out;
+    EXPECT_NE(out.find("unparseable Pinpoint-pSpanID header = \"not-a-number\""), std::string::npos) << out;
     EXPECT_EQ(span.getSpanData()->getSpanId(), 555);
 }
 

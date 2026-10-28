@@ -258,6 +258,18 @@ namespace pinpoint {
 
     #define CHECK_FINISHED() CHECK_FINISHED_WITH_RETURN()
 
+    // Throttled per expansion like CHECK_FINISHED: in a release build (no
+    // assert) a misusing host repeats the violation on every call from the
+    // wrong thread, and each accessor keeps its own window.
+    #define CHECK_OWNER_THREAD() \
+        do { \
+            if (!checkOwnerThread()) { \
+                LOG_ERROR_THROTTLED("span accessed from another thread: a span must be used by a " \
+                                    "single thread; use NewAsyncSpan() to continue on another thread"); \
+                assert(false && "SpanImpl accessed from a thread other than its owner"); \
+            } \
+        } while(0)
+
     #define CHECK_OVERFLOW_WITH_RETURN(retval) \
         do { \
             if (data_->isEventOverflowed()) { return (retval); } \
@@ -349,27 +361,21 @@ namespace pinpoint {
         return {};
     }
 
-    void SpanImpl::checkOwnerThread() {
+    bool SpanImpl::checkOwnerThread() {
         const auto current = std::this_thread::get_id();
         // Fast path: an already-bound span does a plain relaxed load. Even a
         // failed compare_exchange is an RMW that takes the cache line
         // exclusive, so the CAS is reserved for the one-time binding below.
         auto owner = owner_thread_id_.load(std::memory_order_relaxed);
         if (owner == current) {
-            return;
+            return true;
         }
         // Bind to the first thread that records a span event. The CAS resolves
         // the (already contract-violating) race of two threads both observing
-        // an unbound span: exactly one binds, the loser falls through with
-        // `owner` holding the winner and reports the violation below.
-        if (owner == std::thread::id{} &&
-            owner_thread_id_.compare_exchange_strong(owner, current, std::memory_order_relaxed)) {
-            return;
-        }
-        LOG_ERROR("span accessed from another thread (owner hash={}, current hash={}): a span "
-                  "must be used by a single thread; use NewAsyncSpan() to continue on another thread",
-                  std::hash<std::thread::id>{}(owner), std::hash<std::thread::id>{}(current));
-        assert(false && "SpanImpl accessed from a thread other than its owner");
+        // an unbound span: exactly one binds, the loser gets false and
+        // CHECK_OWNER_THREAD reports it.
+        return owner == std::thread::id{} &&
+               owner_thread_id_.compare_exchange_strong(owner, current, std::memory_order_relaxed);
     }
 
     /**
@@ -398,7 +404,7 @@ namespace pinpoint {
 
     SpanEventPtr SpanImpl::NewSpanEvent(std::string_view operation, int32_t service_type) try {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
-        checkOwnerThread();
+        CHECK_OWNER_THREAD();
 
         const auto& cfg = config_;
         const auto depth = data_->getEventDepth();
@@ -425,7 +431,7 @@ namespace pinpoint {
         CHECK_FINISHED_WITH_RETURN(noopSpanEvent());
         // Reads the event stack and the overflow counter, so it is as
         // thread-bound as NewSpanEvent and warns on the same violation.
-        checkOwnerThread();
+        CHECK_OWNER_THREAD();
         // While overflowed, the top of the stack is a discarded event: hand
         // out the disabled event so InjectContext keeps working (see
         // NewSpanEvent).
@@ -633,8 +639,8 @@ namespace pinpoint {
         InboundTrace inbound{std::move(trace_id), true};
         inbound.span_id = stoll_(span_id.value());
         if (!inbound.span_id) {
-            LOG_WARN_THROTTLED("unparseable {} header = '{}', generating a new span id",
-                               HEADER_SPAN_ID, span_id.value());
+            LOG_WARN_THROTTLED("unparseable {} header = {:?}, generating a new span id",
+                               HEADER_SPAN_ID, log_excerpt(span_id.value()));
         }
         const auto parent_span_id = reader.Get(HEADER_PARENT_SPAN_ID);
         if (!parent_span_id.has_value()) {
@@ -642,16 +648,16 @@ namespace pinpoint {
         }
         inbound.parent_span_id = stoll_(parent_span_id.value());
         if (!inbound.parent_span_id) {
-            LOG_WARN_THROTTLED("unparseable {} header = '{}', parent span id left unset",
-                               HEADER_PARENT_SPAN_ID, parent_span_id.value());
+            LOG_WARN_THROTTLED("unparseable {} header = {:?}, parent span id left unset",
+                               HEADER_PARENT_SPAN_ID, log_excerpt(parent_span_id.value()));
         }
         // The Java agent's DefaultNameSpaceChecker: a differing inbound
         // namespace, an empty one included, is another cluster's trace. An
         // absent one continues, for peers that send none.
         if (!cluster_namespace.empty()) {
             if (const auto ns = reader.Get(HEADER_PARENT_APP_NAMESPACE); ns.has_value() && *ns != cluster_namespace) {
-                LOG_DEBUG("{} = '{}' differs from ClusterNamespace '{}', starting a new trace",
-                          HEADER_PARENT_APP_NAMESPACE, *ns, cluster_namespace);
+                LOG_DEBUG("{} = {:?} differs from ClusterNamespace '{}', starting a new trace",
+                          HEADER_PARENT_APP_NAMESPACE, log_excerpt(*ns), cluster_namespace);
                 return {};
             }
         }
@@ -723,7 +729,7 @@ namespace pinpoint {
         CHECK_FINISHED_WITH_RETURN(noopSpan());
         // Mutates the top event's async id, so it is as thread-bound as
         // NewSpanEvent (see doc/api_contracts.md section 1).
-        checkOwnerThread();
+        CHECK_OWNER_THREAD();
         CHECK_OVERFLOW_WITH_RETURN(noopSpan());
 
         auto se = data_->topSpanEvent();
@@ -976,7 +982,7 @@ namespace pinpoint {
         // InjectContext(). Enforce the single-thread contract here like every
         // other accessor, so the violation is reported instead of corrupting
         // the heap silently.
-        checkOwnerThread();
+        CHECK_OWNER_THREAD();
         return data_->getTraceIdWire();
     } CATCH_AND_LOG_RETURN("get trace id", std::string{})
 
