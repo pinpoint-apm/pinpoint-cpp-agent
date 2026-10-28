@@ -975,6 +975,42 @@ TEST_F(SpanEventTest, OversizeSqlIsDroppedWithoutAnnotationOrCount) {
     EXPECT_FALSE(kept.getAnnotations()->getAnnotations().empty());
 }
 
+// A parameter list over kMaxSqlParamLength is dropped whole, never cut: the
+// web splits it on ',' to fill the placeholders by index, so a cut list would
+// misplace every value after the cut, while an empty one shows the statement
+// with its placeholders unfilled. The statement keeps its id, its SQL count
+// and its bind args.
+TEST_F(SpanEventTest, OversizeSqlParametersAreDroppedWholeAndStillCounted) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->sql.error_count = 1;
+    config->sql.trace_bind_value = true;
+    applyConfigToFreshSpan(config);
+
+    // One string literal: its content is the whole parameter string.
+    const std::string over_cap(kMaxSqlParamLength + 1, 'x');
+    auto event = make_test_span_event(*test_span_, "query");
+    event.SetSqlQuery("SELECT '" + over_cap + "'", {"1234"});
+
+    const auto& annotations = event.getAnnotations()->getAnnotations();
+    ASSERT_EQ(annotations.size(), 1U) << "the statement is still recorded";
+    EXPECT_EQ(annotations.front().first, ANNOTATION_SQL_ID);
+    const auto& sql = std::get<IntStringStringValue>(annotations.front().second.data);
+    EXPECT_NE(sql.intValue, 0) << "the statement keeps its id";
+    EXPECT_TRUE(sql.stringValue1View().empty()) << "the parameters are dropped whole";
+    EXPECT_EQ(sql.stringValue2, "1234") << "the bind args are kept";
+    EXPECT_EQ(test_span_data_->getErr(), 8)
+        << "the execution still counts toward Sql.ErrorCount";
+
+    // Exactly at the cap they are kept.
+    const std::string at_cap(kMaxSqlParamLength, 'y');
+    auto kept = make_test_span_event(*test_span_, "query");
+    kept.SetSqlQuery("SELECT '" + at_cap + "'", {});
+    const auto& kept_annotations = kept.getAnnotations()->getAnnotations();
+    ASSERT_EQ(kept_annotations.size(), 1U);
+    EXPECT_EQ(std::get<IntStringStringValue>(kept_annotations.front().second.data).stringValue1View(),
+              at_cap);
+}
+
 TEST_F(SpanEventTest, SqlCountBelowLimitLeavesSpanClean) {
     auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
     config->sql.error_count = 3;

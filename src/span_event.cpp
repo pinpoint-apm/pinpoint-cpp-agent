@@ -455,9 +455,19 @@ namespace pinpoint {
 
         // Aliasing shares PreparedSql's existing control block; no allocation
         // or parameter-string copy occurs on a raw-cache hit. It also protects
-        // the bytes until asynchronous span serialization completes.
-        auto parameters = std::shared_ptr<const std::string>(
-            prepared->sql, &prepared->sql->parameters);
+        // the bytes until asynchronous span serialization completes. Past
+        // kMaxSqlParamLength the parameters are dropped whole, never cut (see
+        // sql.h): the annotation goes out with an empty parameter string and
+        // keeps the id/UID, the count above and the bind args.
+        std::shared_ptr<const std::string> parameters;
+        if (prepared->sql->parameters.size() > kMaxSqlParamLength) {
+            LOG_DEBUG("dropping {} bytes of sql parameters: over the {} byte cap, "
+                      "statement recorded without them",
+                      prepared->sql->parameters.size(), kMaxSqlParamLength);
+        } else {
+            parameters = std::shared_ptr<const std::string>(
+                prepared->sql, &prepared->sql->parameters);
+        }
 
         if (mode == SqlMetaMode::Uid) {
             if (const auto* uid = std::get_if<SqlUid>(&prepared->identity)) {

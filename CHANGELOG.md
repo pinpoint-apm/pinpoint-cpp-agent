@@ -34,6 +34,23 @@
   compressed. Documented in
   [Configuration Guide § gRPC Transport](doc/config.md#grpc-transport-configuration).
 
+### Fixed
+
+- **A span batch over `Collector.Grpc.MaxSendMessageSize` is sent in several
+  requests, not lost.** gRPC refuses a request over the limit with
+  `RESOURCE_EXHAUSTED` before sending it, and the collector refuses one over
+  its own inbound limit, so an oversize batch lost every span in it, up to
+  `Collector.SpanBatch.Size` of them, with only a throttled
+  `SendSpanBatch failed` warning. The sender now measures each batch and
+  sends one over the limit in as many requests as it takes; only a span chunk
+  too large for any request is dropped, counted, and named in a warning. The
+  SQL parameters a span event carries, the one span field with no bound of its
+  own, are dropped whole past 64 KiB (the statement keeps its id, its count
+  and its bind values and is shown with its placeholders unfilled), so a chunk
+  of bulk-insert events stays sendable. Documented in
+  [Configuration Guide § gRPC Transport](doc/config.md#grpc-transport-configuration)
+  and [§ SQL Configuration](doc/config.md#sql-configuration).
+
 ## 2.2.0 (2026-10-23)
 
 ### Breaking

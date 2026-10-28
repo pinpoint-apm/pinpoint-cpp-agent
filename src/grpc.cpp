@@ -30,7 +30,9 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_set>
+#include <vector>
 #include <unistd.h>
+#include <google/protobuf/wire_format_lite.h>
 #include <grpcpp/client_context.h>
 
 #include "absl/strings/str_cat.h"
@@ -2436,6 +2438,13 @@ namespace pinpoint {
             options.start_block_size = 64 * 1024;
             return options;
         }
+        // For a further request of a batch split over
+        // Collector.Grpc.MaxSendMessageSize (split_oversize_batch): the batch
+        // whose arena holds this request and its messages, pinned until this
+        // call's callback has run so no message outlives its arena. Declared
+        // first so it is destroyed last. `arena` below then stays untouched;
+        // an arena allocates nothing until its first use.
+        std::shared_ptr<PendingSpanBatch> arena_owner;
         grpc::ClientContext ctx;
         google::protobuf::Arena arena{arena_options()};
         v1::PSpanMessageBatch* request{nullptr};
@@ -2483,6 +2492,74 @@ namespace pinpoint {
             cv.notify_one();
         }
     };
+
+    namespace {
+        // The size of one PSpanMessage as a PSpanMessageBatch frames it: the
+        // `span` field's tag, the length prefix and the message. Summed over
+        // the messages it is exactly the batch's ByteSizeLong().
+        size_t framed_span_message_size(const v1::PSpanMessage& msg) {
+            using google::protobuf::internal::WireFormatLite;
+            return WireFormatLite::TagSize(v1::PSpanMessageBatch::kSpanFieldNumber,
+                                           WireFormatLite::TYPE_MESSAGE) +
+                   WireFormatLite::LengthDelimitedSize(msg.ByteSizeLong());
+        }
+
+        // Names the span a message carries for a log line, by transaction id
+        // and span id, whichever of the two shapes it has.
+        std::string describe_span_message(const v1::PSpanMessage& msg) {
+            const auto& tx = msg.has_spanchunk() ? msg.spanchunk().transactionid()
+                                                 : msg.span().transactionid();
+            const auto span_id = msg.has_spanchunk() ? msg.spanchunk().spanid() : msg.span().spanid();
+            return absl::StrCat(tx.agentid(), "^", tx.agentstarttime(), "^", tx.sequence(),
+                                " span ", span_id);
+        }
+    }
+
+    // Regroups the messages of first->request, a batch already measured past
+    // max_size, into requests that each stay within it, in order: the first
+    // group stays in first->request, every further group becomes a request
+    // of its own on the same arena, returned in order and pinning `first` as
+    // its arena_owner. A message is placed by its framed size, so a group's
+    // sum is exactly what its request serializes to. A message over the
+    // limit on its own is dropped and counted, as no request could carry it;
+    // the messages around it are kept. Called on the oversize path only, so
+    // the per-message size pass and the vectors are paid there alone.
+    static std::vector<std::shared_ptr<PendingSpanBatch>> split_oversize_batch(
+            const std::shared_ptr<PendingSpanBatch>& first, const size_t max_size,
+            SpanBatchInflight& inflight, size_t& dropped) {
+        auto* spans = first->request->mutable_span();
+        std::vector<v1::PSpanMessage*> messages(static_cast<size_t>(spans->size()));
+        // Pointers only: every message stays on first->arena, which outlives
+        // each request built here (arena_owner).
+        spans->UnsafeArenaExtractSubrange(0, spans->size(), messages.data());
+
+        std::vector<std::shared_ptr<PendingSpanBatch>> rest;
+        auto* current = first->request;
+        size_t size = 0;
+        for (auto* msg : messages) {
+            const auto framed = framed_span_message_size(*msg);
+            if (framed > max_size) {
+                ++dropped;
+                inflight.recordDrop(1);
+                LOG_WARN_THROTTLED("span dropped: {} bytes serialized exceeds Collector.Grpc.MaxSendMessageSize {}, "
+                                   "which no request can carry: {}",
+                                   framed, max_size, describe_span_message(*msg));
+                continue;  // left on the arena, freed with it
+            }
+            if (size + framed > max_size) {
+                auto part = std::make_shared<PendingSpanBatch>();
+                part->arena_owner = first;
+                part->transport = first->transport;
+                part->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&first->arena);
+                current = part->request;
+                rest.push_back(std::move(part));
+                size = 0;
+            }
+            current->mutable_span()->UnsafeArenaAddAllocated(msg);
+            size += framed;
+        }
+        return rest;
+    }
 
     GrpcSpan::GrpcSpan(std::shared_ptr<const Config> config, const GrpcClientTuning& tuning)
         : GrpcClient(SPAN, config, tuning), span_queue_(config->span.queue_size),
@@ -2690,29 +2767,113 @@ namespace pinpoint {
 
         // The permit is now held. Every path from here until the async call is
         // launched must release it; once launched, the completion callback owns
-        // the release. The catch below must be catch-all: a non-std exception
+        // the release. The catches below must be catch-all: a non-std exception
         // escaping this window would leak the permit permanently, shrinking
         // the in-flight pipeline for the rest of the process lifetime.
         std::shared_ptr<PendingSpanBatch> pending;
-        bool registered = false;
-        const auto release_unlaunched = [this, &batch, &pending, &registered, batch_count]() {
-            batch.clear();
-            inflight_->recordDrop(batch_count);
-            // The call was never launched: hand the permit back, but exactly
-            // once. Release only if this batch still owns the permit — either it
-            // was never registered (so no completion callback exists for it), or
-            // it is still in the registry (the callback has not completed it). If
-            // it was registered and is already gone, completeCall() released the
-            // permit, and a second ++permits here would permanently inflate the
-            // concurrency cap.
+        // The further requests of a batch split over
+        // Collector.Grpc.MaxSendMessageSize, and the chunks the split already
+        // dropped and counted. Empty, and unallocated, for a batch that fits.
+        std::vector<std::shared_ptr<PendingSpanBatch>> rest;
+        size_t split_dropped = 0;
+        // Hands a call's permit back, but exactly once. Release only if the
+        // call still owns the permit — either it was never registered (so no
+        // completion callback exists for it), or it is still in the registry
+        // (the callback has not completed it). If it was registered and is
+        // already gone, completeCall() released the permit, and a second
+        // ++permits here would permanently inflate the concurrency cap.
+        const auto return_permit = [this](const std::shared_ptr<PendingSpanBatch>& call,
+                                          const bool registered) {
             {
                 std::lock_guard<std::mutex> lock(inflight_->mutex);
-                if (!registered || inflight_->pending.erase(pending) == 1) {
+                if (!registered || inflight_->pending.erase(call) == 1) {
                     ++inflight_->permits;
                 }
             }
             inflight_->cv.notify_one();
         };
+        // A failure before any call is launched: the whole batch is lost but
+        // for the chunks the split counted already, and so are the further
+        // requests of a split, which die with the first one.
+        const auto release_unlaunched = [&]() {
+            batch.clear();
+            rest.clear();
+            inflight_->recordDrop(batch_count - split_dropped);
+            return_permit(pending, false);
+        };
+        // Registers `call` and launches it on the permit its caller holds;
+        // from then on the completion callback owns the release. On a
+        // synchronous failure the permit goes back (once) and the call's
+        // chunks are charged. One permit per launched call, so each further
+        // request of a split batch takes a permit of its own (acquired below)
+        // instead of riding on the one the first request holds: a permit is
+        // one call on the wire — the registry, completeCall's release-once
+        // and await_in_flight_requests' drain all count calls, not collected
+        // batches — and several calls on one permit would put more than
+        // Collector.SpanBatch.MaxConcurrentRequests in flight.
+        const auto launch = [this, &return_permit](const std::shared_ptr<PendingSpanBatch>& call,
+                                                   const bool compressed) {
+            const auto count = static_cast<size_t>(call->request->span_size());
+            bool registered = false;
+            try {
+                build_grpc_context(&call->ctx, 0);
+                set_request_deadline(call->ctx);
+                if (compressed) {
+                    call->ctx.set_compression_algorithm(GRPC_COMPRESS_GZIP);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(inflight_->mutex);
+                    inflight_->pending.insert(call);
+                    registered = true;
+                    LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
+                              count, inflight_->max_permits - inflight_->permits, inflight_->max_permits);
+                }
+                // Captures the shared in-flight state, never `this`: the
+                // callback may fire after this GrpcSpan (or the whole agent)
+                // is destroyed.
+                auto state = inflight_;
+                const auto& stub = static_cast<const StubTransport<SpanStub>&>(*call->transport).stub;
+                stub->async()->SendSpanBatch(&call->ctx, call->request, &call->reply,
+                    [state, call, count, compressed](const grpc::Status& status) {
+                        state->completeCall(call);
+                        if (!status.ok()) {
+                            state->recordDrop(count);
+                            if (compressed && status.error_code() == grpc::StatusCode::UNIMPLEMENTED &&
+                                    !state->compression_fallback.exchange(true)) {
+                                LOG_WARN("SendSpanBatch with gzip failed: UNIMPLEMENTED, {}; "
+                                         "sending span batches uncompressed from now on",
+                                         status.error_message());
+                                return;
+                            }
+                            LOG_WARN_THROTTLED("SendSpanBatch failed: {}, {}",
+                                               static_cast<int>(status.error_code()), status.error_message());
+                            return;
+                        }
+                        LOG_DEBUG("SendSpanBatch success: batchSize={}", count);
+                        if (!call->reply.has_partial_success()) {
+                            return;
+                        }
+                        const auto& ps = call->reply.partial_success();
+                        if (ps.rejected_spans() > 0) {
+                            state->recordDrop(static_cast<size_t>(std::max<int64_t>(0, ps.rejected_spans())));
+                            LOG_WARN("SendSpanBatch partial success: rejectedSpans={}, errorId={}, errorMessage={}",
+                                     ps.rejected_spans(), ps.errorid(), ps.error_message());
+                        } else if (!ps.error_message().empty()) {
+                            LOG_INFO("SendSpanBatch warning: errorId={}, {}",
+                                     ps.errorid(), ps.error_message());
+                        }
+                    });
+                return;
+            } catch (const std::exception& e) {
+                LOG_INFO("SendSpanBatch failed synchronously: exception = {}", e.what());
+            } catch (...) {
+                LOG_INFO("SendSpanBatch failed synchronously: unknown exception");
+            }
+            inflight_->recordDrop(count);
+            return_permit(call, registered);
+        };
+
+        bool compressed = false;
         try {
             pending = std::make_shared<PendingSpanBatch>();
             // Snapshot before paying the serialization cost. It rides in
@@ -2743,64 +2904,46 @@ namespace pinpoint {
             }
             batch.clear();
 
-            build_grpc_context(&pending->ctx, 0);
-            set_request_deadline(pending->ctx);
-            const bool compressed = config_->collector.grpc.compression == "gzip" &&
+            // Measured against Collector.Grpc.MaxSendMessageSize before the
+            // launch: gRPC refuses a request past it with RESOURCE_EXHAUSTED
+            // before writing a byte, and the collector refuses one past its
+            // own inbound limit, either way losing every chunk the request
+            // carried. One size pass is all a batch that fits pays; a batch
+            // past the limit goes out in as many requests as it takes, and
+            // only a chunk no request can carry is dropped
+            // (split_oversize_batch). -1 is unlimited: nothing to measure
+            // against.
+            const auto max_size = config_->collector.grpc.channel.max_send_message_size;
+            if (max_size >= 0 && pending->request->ByteSizeLong() > static_cast<size_t>(max_size)) {
+                rest = split_oversize_batch(pending, static_cast<size_t>(max_size), *inflight_, split_dropped);
+            }
+            compressed = config_->collector.grpc.compression == "gzip" &&
                     !inflight_->compression_fallback.load(std::memory_order_relaxed);
-            if (compressed) {
-                pending->ctx.set_compression_algorithm(GRPC_COMPRESS_GZIP);
-            }
-
-            {
-                std::lock_guard<std::mutex> lock(inflight_->mutex);
-                inflight_->pending.insert(pending);
-                registered = true;
-                LOG_DEBUG("SendSpanBatch sending: batchSize={} concurrentRequests={}/{}",
-                          batch_count, inflight_->max_permits - inflight_->permits, inflight_->max_permits);
-            }
-
-            auto* ctx_ptr = &pending->ctx;
-            auto* request_ptr = pending->request;
-            auto* reply_ptr = &pending->reply;
-            // Captures the shared in-flight state, never `this`: the callback
-            // may fire after this GrpcSpan (or the whole agent) is destroyed.
-            auto state = inflight_;
-            transport->stub->async()->SendSpanBatch(ctx_ptr, request_ptr, reply_ptr,
-                [state, pending, batch_count, compressed](const grpc::Status& status) {
-                    state->completeCall(pending);
-                    if (!status.ok()) {
-                        state->recordDrop(batch_count);
-                        if (compressed && status.error_code() == grpc::StatusCode::UNIMPLEMENTED &&
-                                !state->compression_fallback.exchange(true)) {
-                            LOG_WARN("SendSpanBatch with gzip failed: UNIMPLEMENTED, {}; "
-                                     "sending span batches uncompressed from now on",
-                                     status.error_message());
-                            return;
-                        }
-                        LOG_WARN_THROTTLED("SendSpanBatch failed: {}, {}",
-                                           static_cast<int>(status.error_code()), status.error_message());
-                        return;
-                    }
-                    LOG_DEBUG("SendSpanBatch success: batchSize={}", batch_count);
-                    if (!pending->reply.has_partial_success()) {
-                        return;
-                    }
-                    const auto& ps = pending->reply.partial_success();
-                    if (ps.rejected_spans() > 0) {
-                        state->recordDrop(static_cast<size_t>(std::max<int64_t>(0, ps.rejected_spans())));
-                        LOG_WARN("SendSpanBatch partial success: rejectedSpans={}, errorId={}, errorMessage={}",
-                                 ps.rejected_spans(), ps.errorid(), ps.error_message());
-                    } else if (!ps.error_message().empty()) {
-                        LOG_INFO("SendSpanBatch warning: errorId={}, {}",
-                                 ps.errorid(), ps.error_message());
-                    }
-                });
         } catch (const std::exception& e) {
             LOG_INFO("SendSpanBatch failed synchronously: exception = {}", e.what());
             release_unlaunched();
+            return;
         } catch (...) {
             LOG_INFO("SendSpanBatch failed synchronously: unknown exception");
             release_unlaunched();
+            return;
+        }
+
+        if (pending->request->span_size() == 0) {
+            // Every chunk was over the limit on its own: each is counted and
+            // named by the split already, and nothing is left to send.
+            return_permit(pending, false);
+            return;
+        }
+        launch(pending, compressed);
+        for (const auto& part : rest) {
+            if (!try_acquire_permit(permit_timeout)) {
+                LOG_INFO("SendSpanBatch skipped: no available permits within {}ms for a request of a split batch",
+                         permit_timeout.count());
+                inflight_->recordDrop(static_cast<size_t>(part->request->span_size()));
+                continue;
+            }
+            launch(part, compressed);
         }
     } catch (const std::exception& e) {
         // Reached only by a throw before the permit is held (realistically

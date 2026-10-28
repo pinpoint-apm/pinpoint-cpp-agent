@@ -4566,4 +4566,68 @@ TEST_F(GrpcMockTest, GrpcAgentRegistrationWaitReportsCollectorRejection) {
     EXPECT_EQ(log.find("collector unreachable"), std::string::npos) << log;
 }
 
+// ============================================================
+// GrpcSpan SendSpanBatch over Collector.Grpc.MaxSendMessageSize
+// ============================================================
+
+// A batch over Collector.Grpc.MaxSendMessageSize goes out in several requests,
+// each within the limit, instead of being refused whole (gRPC answers
+// RESOURCE_EXHAUSTED before anything is sent, losing every chunk); a chunk
+// over the limit on its own is the only one dropped, and it is counted and
+// named.
+TEST_F(GrpcMockTest, GrpcSpanSplitsAnOversizeBatchTest) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 5;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 100;
+    cfg->collector.span_batch.max_concurrent_requests = 2;
+    // Four chunks of a little under 1 KB and a limit that takes two per
+    // request; the fifth is over the limit on its own.
+    constexpr int limit = 2500;
+    cfg->collector.grpc.channel.max_send_message_size = limit;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    LogCapture log;
+    for (int i = 0; i < 5; ++i) {
+        auto span_data = make_test_span_data_ptr(*mock_agent_service_, "bulk-op");
+        span_data->setSpanId(1000 + i);
+        span_data->getAnnotations()->AppendData(103, AnnotationData(std::string(i < 4 ? 800 : 2600, 'x')));
+        span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+    }
+
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
+
+    ASSERT_TRUE(fake->waitForBatchCount(2, std::chrono::seconds(2)))
+        << "the batch must go out in two requests";
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+
+    ASSERT_EQ(fake->batchCount(), 2u) << "two chunks fit a request";
+    std::vector<int64_t> delivered;
+    for (size_t i = 0; i < fake->batchCount(); ++i) {
+        const auto request = fake->request(i);
+        EXPECT_LE(request.ByteSizeLong(), static_cast<size_t>(limit))
+            << "every request stays within the limit";
+        for (const auto& msg : request.span()) {
+            delivered.push_back(msg.span().spanid());
+        }
+    }
+    EXPECT_EQ(delivered, (std::vector<int64_t>{1000, 1001, 1002, 1003}))
+        << "every chunk a request can carry is sent, in order";
+    EXPECT_EQ(span_client.droppedSpans(), 1u)
+        << "the one chunk no request can carry is dropped and counted";
+
+    const auto text = log.text();
+    EXPECT_EQ(LogCapture::count(text, "span dropped: "), 1u);
+    EXPECT_NE(text.find("exceeds Collector.Grpc.MaxSendMessageSize 2500"), std::string::npos) << text;
+    EXPECT_NE(text.find(" span 1004"), std::string::npos) << "the warning names the span: " << text;
+}
+
 } // namespace pinpoint

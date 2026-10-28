@@ -51,6 +51,20 @@ namespace pinpoint {
     inline constexpr size_t kMaxNormalizedSqlLength = 1024 * 1024;
 
     /**
+    * @brief Cap on the parameter string (the literals the normalizer
+    * extracts, comma-separated) a SQL annotation carries.
+    *
+    * The parameters are never cut: the web splits them on ',' and fills the
+    * <n># / <n>$ placeholders by index, so a cut list misplaces every value
+    * after the cut. Past the cap they are dropped whole instead and the web
+    * shows the statement with its placeholders unfilled, as it shows a
+    * statement with no literals. The statement keeps its id/UID, its SQL
+    * count and its bind args. Keeps a chunk of bulk-insert events within
+    * Collector.Grpc.MaxSendMessageSize (see GrpcSpan::send_batch_async).
+    */
+    inline constexpr size_t kMaxSqlParamLength = 64 * 1024;
+
+    /**
     * SQL normalizer for APM tracing. Replaces numeric literals with indexed
     * placeholders (0#, 1#, ...) and string literals with '0$', '1$', ...,
     * optionally strips comments, and extracts both literal kinds in order
