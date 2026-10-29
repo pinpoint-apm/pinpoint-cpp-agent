@@ -92,8 +92,9 @@ namespace pinpoint {
          * sees no duplicates. See `pinpoint::LogSink` for the contract the
          * callback owes us; shutdown() clears the sink, because past that
          * point the host's logger may already be gone.
+         * @param new_agent Starts a new ownership generation for StartAgent().
          */
-        void setSink(LogSink sink);
+        void setSink(LogSink sink, bool new_agent = false);
         /// @brief Waits for calls into a sink just replaced/cleared to return.
         /// No-op on a thread that is itself inside the sink (a sink that
         /// calls Shutdown() must not wait for itself).
@@ -105,9 +106,14 @@ namespace pinpoint {
         void shutdown();
         /// @brief Shuts down only if no sink/file reconfiguration happened
         ///        since @p revision was captured.
-        void shutdown(uint64_t revision);
+        /// @param generation Nonzero also requires the same agent owner.
+        void shutdown(uint64_t revision, uint64_t generation = 0);
         uint64_t revision() const noexcept {
             return revision_.load(std::memory_order_acquire);
+        }
+        /// @brief Stable across config reloads; changes only for a new agent.
+        uint64_t generation() const noexcept {
+            return generation_.load(std::memory_order_acquire);
         }
 
         template <typename... Args>
@@ -249,6 +255,7 @@ namespace pinpoint {
         std::atomic<bool> sink_enabled_{false};
         // Zero is reserved by shutdown() for its unconditional form.
         std::atomic<uint64_t> revision_{1};
+        std::atomic<uint64_t> generation_{1};
         mutable std::shared_mutex sink_gate_;
         mutable std::mutex mutex_;
         std::atomic<int> current_level_{static_cast<int>(LogLevel::kInfo)};

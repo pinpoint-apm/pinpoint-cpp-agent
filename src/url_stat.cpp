@@ -368,10 +368,7 @@ namespace pinpoint {
         if (!config.http.url_stat.enable) {
             return;
         }
-        // Shutdown gate; see the accepting_ declaration. Relaxed: a racing
-        // enqueue that slips past the flip lands in a shard queue and is
-        // simply never drained — bounded by queue_size, freed with this
-        // object — so no ordering is needed.
+        // Fast shutdown gate; rechecked under the shard lock before admission.
         if (!accepting_.load(std::memory_order_relaxed)) {
             return;
         }
@@ -380,6 +377,9 @@ namespace pinpoint {
         bool dropped_now = false;
         {
             std::lock_guard<std::mutex> shard_lock(shard.mutex_);
+            if (!accepting_.load(std::memory_order_relaxed)) {
+                return;
+            }
             // Per-shard bound (see queue_shards_ in url_stat.h). This bound is
             // url_stat.queue_size, not url_stat.limit: limit caps distinct
             // URL keys per snapshot, while queue_size caps the per-request
@@ -411,6 +411,7 @@ namespace pinpoint {
     }
 
     void UrlStats::drainQueueShards(const Config& config) {
+        std::lock_guard<std::mutex> drain_lock(drain_mutex_);
         // Bound how long snapshot_mutex_ is held per acquisition: a drained
         // batch can be as large as the whole queue limit, and each add does a
         // key build plus a map lookup — processing it under one lock would
@@ -442,6 +443,11 @@ namespace pinpoint {
                 }
             }
         }
+    }
+
+    void UrlStats::drainOnShutdown() {
+        accepting_.store(false, std::memory_order_relaxed);
+        drainQueueShards(*agent_->getConfig());
     }
 
     void UrlStats::addUrlStatsWorker() {

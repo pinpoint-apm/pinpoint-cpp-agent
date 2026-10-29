@@ -216,6 +216,9 @@ namespace pinpoint {
         void sendUrlStatsWorker();
         void stopSendUrlStatsWorker();
 
+        /// @brief Closes admission and aggregates all accepted records before the final send.
+        void drainOnShutdown();
+
         /// @brief Adds a runtime statistic to the current snapshot buffer.
         void addSnapshot(const UrlStatEntry* us, const Config& config);
         /// @brief Closes the tick in progress when its window has elapsed,
@@ -283,9 +286,11 @@ namespace pinpoint {
         // queue documents in benchmark/README.md.
         static constexpr std::chrono::milliseconds kDrainInterval{10};
         std::array<QueueShard, kQueueShardCount> queue_shards_{};
+        // Serializes the worker's local batch with the sender's final drain.
+        std::mutex drain_mutex_{};
         std::mutex add_mutex_{};
         std::condition_variable add_cond_var_{};
-        // Flipped once by stopAddUrlStatsWorker(); enqueueUrlStats drops
+        // Cleared by stopAddUrlStatsWorker() or drainOnShutdown(); enqueueUrlStats drops
         // entries from then on. Spans that reach this sink through their
         // runtime snapshot (UnsampledSpan) bypass the agent's enabled_ check in
         // recordUrlStat, and the snapshot keeps this object alive past agent

@@ -1562,6 +1562,28 @@ TEST_F(GrpcMockTest, GrpcStatsShutdownFlushDropsAndCountsWhenChannelNotReady) {
         << "a flush with no live stream must count the drop, not send";
 }
 
+TEST_F(GrpcMockTest, GrpcStatsShutdownFlushDrainsQueueBeforeAggregationWorkerExits) {
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    UrlStatEntry entry{"/api/queued-at-shutdown", "GET", 200};
+    entry.elapsed_ = 10;
+    entry.end_time_ = std::chrono::system_clock::now();
+    url_stats.enqueueUrlStats(entry);
+
+    // The sender exits first; the aggregation worker has not processed the queue.
+    mock_agent_service_->setExiting(true);
+    stats_client.flushUrlStatsOnShutdownForTest();
+    EXPECT_EQ(stats_client.shutdownDroppedUrlStatsForTest(), 1U)
+        << "without a live stream even queued records must be counted as dropped";
+
+    url_stats.addUrlStatsWorker();
+    EXPECT_TRUE(url_stats.takeSnapshot(true)->empty())
+        << "late aggregation must not strand a snapshot after the sender exited";
+    url_stats.enqueueUrlStats(entry);
+    url_stats.addUrlStatsWorker();
+    EXPECT_TRUE(url_stats.takeSnapshot(true)->empty()) << "shutdown must close admission";
+}
+
 // Reachability, driven through the real worker rather than the seam: the
 // original bug was not a wrong flush but an unreachable one, so the call site
 // is what needs locking. With readyChannel() false the worker never opens a

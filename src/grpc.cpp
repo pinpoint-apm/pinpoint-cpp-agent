@@ -3484,6 +3484,10 @@ namespace pinpoint {
     }
 
     void GrpcStats::flush_url_stats_on_shutdown() {
+        // The aggregation worker may still own a batch; finish it and the
+        // queued records before taking the final snapshot. Keep stream_mutex_
+        // free while waiting so stopStatsWorker() can still cancel a write.
+        agent_->getUrlStats().drainOnShutdown();
         // Include the tick in progress so up to 30 seconds of traffic and
         // completed snapshots are not lost on clean shutdown.
         //

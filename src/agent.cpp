@@ -167,6 +167,7 @@ namespace pinpoint {
                          std::unique_ptr<GrpcCommand> grpc_command,
                          int32_t app_type,
                          size_t cache_size) :
+        logger_generation_(Logger::getInstance().generation()),
         grpc_agent_(std::move(grpc_agent)),
         grpc_metadata_(std::move(grpc_metadata)),
         grpc_span_(std::move(grpc_span)),
@@ -781,10 +782,9 @@ namespace pinpoint {
     }
 
     void AgentImpl::request_stop_workers() noexcept {
-        // Every call here only sets flags, notifies condition variables or
-        // issues a best-effort TryCancel — none of them blocks. Signaling
-        // everything before any join lets all workers wind down in parallel
-        // inside the shutdown deadline instead of serially behind each other.
+        // Stop signals also acquire worker mutexes. Run them inside the
+        // teardown deadline: a host log sink may call Shutdown while holding
+        // one of those mutexes, and must return before the runner can proceed.
         // Per-call try/catch so one failing signal cannot skip the rest.
         // The config watcher is not a table worker (owned by ConfigFileWatcher,
         // joined first in teardown_workers()); signal it first as well.
@@ -801,6 +801,7 @@ namespace pinpoint {
     }
 
     void AgentImpl::teardown_workers() noexcept {
+        request_stop_workers();
         // The watcher's reload callback dereferences this agent, so it is
         // joined before anything else; the caller (inline teardown or the
         // deadline runner's keep-alive) guarantees the agent outlives this
@@ -957,7 +958,7 @@ namespace pinpoint {
             // Same mask as every other agent thread (see Start()): the runner
             // may outlive the deadline on the detached path.
             ScopedSignalBlock signal_block;
-            runner = std::thread([this, state] {
+            runner = std::thread([this, state, logger_generation = logger_generation_] {
                 teardown_workers();
                 bool abandoned;
                 bool delete_when_done;
@@ -977,7 +978,7 @@ namespace pinpoint {
                                  std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - state->started).count());
                     } catch (...) {}
-                    try { Logger::getInstance().shutdown(state->logger_revision); } catch (...) {}
+                    try { Logger::getInstance().shutdown(state->logger_revision, logger_generation); } catch (...) {}
                 }
                 if (delete_when_done) {
                     // Deferred destroy: the SharedDeleter skipped destruction
@@ -989,10 +990,7 @@ namespace pinpoint {
             });
         } catch (...) {
             // Allocation or thread creation (EAGAIN) failed: no runner can
-            // bound the joins, so tear down inline. Unbounded, but the stop
-            // signals are already sent and a process too resource-exhausted
-            // to spawn one thread during shutdown is past caring about the
-            // deadline.
+            // bound teardown, so send the stop signals and join inline.
             try { LOG_WARN("agent shutdown: teardown thread unavailable, tearing down inline"); } catch (...) {}
             teardown_workers();
             return false;
@@ -1338,29 +1336,14 @@ namespace pinpoint {
         }
 
         try { LOG_INFO("agent shutdown"); } catch (...) {}
-        request_stop_workers();
-
-        // A never-launched agent (Start() never ran, or its synchronous failure
-        // already reset started_ and stopped the watcher) has no init thread
-        // and no workers, so the blocking teardown cannot block. Run it inline
-        // to skip the deadline runner thread — which matters on the
-        // StartAgent() failure path, where the failure may itself have been
-        // thread-creation exhaustion. Reading started_ is stable: the lifecycle
-        // lock waited out any in-flight Start(), and later calls refuse on
-        // shutting_down_ before touching it.
-        if (!started_) {
-            teardown_workers();
-            try { shutdown_logger(); } catch (...) {}
-            return false;
-        }
-
+        const auto logger_generation = logger_generation_;
         const bool destroy_deferred = teardown_workers_with_deadline(may_defer_destroy);
         // The runner may already have deleted this object. Only locals and
         // the process-wide logger may be accessed from here.
         // Always release the host sink before returning to its owner. Logger
         // shutdown bans stdout, but still allows a configured file to reopen
         // for stragglers; the runner closes it again when they finish.
-        try { shutdown_logger(); } catch (...) {}
+        try { Logger::getInstance().shutdown(0, logger_generation); } catch (...) {}
         return destroy_deferred;
     }
 
@@ -1835,9 +1818,8 @@ namespace pinpoint {
                 global_agent().store(nullptr);
                 agent.reset();
             } else {
-                // Neither a shut-down agent nor one whose async init failed is
-                // restartable: drop it before installing the next log sink, so
-                // its teardown cannot clear the replacement's callback.
+                // Retained AgentPtrs may outlive replacement; their teardown
+                // must only close the logger generation they were created with.
                 init_failed_agent = agent->initFailed();
                 replaced_agent = true;
                 global_agent().store(nullptr);
@@ -1845,8 +1827,8 @@ namespace pinpoint {
             }
         }
 
-        // Install the new sink after the previous agent has released its own.
-        Logger::getInstance().setSink(options.log_sink);
+        // Start a new logger generation even if an old AgentPtr is still alive.
+        Logger::getInstance().setSink(options.log_sink, /*new_agent=*/true);
 
         // Every failure below must drop the host sink installed above: with
         // no agent published, pt_agent_shutdown() reaches the noop agent and

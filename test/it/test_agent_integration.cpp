@@ -1240,15 +1240,14 @@ TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
 TEST_F(AgentIntegrationTest, FlushesUrlStatTickInProgressOnShutdown) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
-    // Fed straight into the aggregator rather than through a span: the entry
-    // has to be in the snapshot, and in an *open* tick, at the moment
-    // Shutdown() runs, and the add worker's queue handoff is not synchronous.
+    // The final flush must include records still awaiting aggregation as
+    // well as the open tick, regardless of which worker exits first.
     // CloseUrlStatTick() is deliberately not called — nothing cuts this tick,
     // so only the shutdown flush can carry it.
     UrlStatEntry entry{"/it/shutdown-flush", "GET", 200};
     entry.elapsed_ = 15;
     entry.end_time_ = std::chrono::system_clock::now();
-    impl_->getUrlStats().addSnapshot(&entry, *impl_->getConfig());
+    impl_->getUrlStats().enqueueUrlStats(std::move(entry));
 
     // The fixture enables UrlStatMethodPrefix, so the key carries the method.
     constexpr std::string_view kUri = "GET /it/shutdown-flush";

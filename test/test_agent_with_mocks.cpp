@@ -1453,6 +1453,45 @@ TEST(AgentShutdownDeadlineTest, ShutdownReturnsByDeadlineWithWedgedWorker) {
         << "the reaper must release the agent once the wedged worker finishes";
 }
 
+TEST(AgentShutdownDeadlineTest, LogSinkCanShutdownWhileStatsStreamIsLocked) {
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    ASSERT_EXIT({
+        // Bound a regression that would otherwise deadlock the test process.
+        alarm(3);
+        ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(30));
+        class LockedStats : public GrpcStats {
+        public:
+            using GrpcStats::GrpcStats;
+            void consumeToken() {
+                std::lock_guard<std::mutex> lock(stream_mutex_);
+                next_write();
+            }
+        };
+        auto cfg = make_test_config();
+        auto stats = std::make_unique<LockedStats>(cfg);
+        auto* stats_ptr = stats.get();
+        auto agent = AgentImpl::createShared(
+            cfg, std::make_unique<GrpcAgent>(cfg), std::make_unique<GrpcMetadata>(cfg),
+            std::make_unique<GrpcSpan>(cfg), std::move(stats));
+        stats_ptr->setAgentService(agent.get());
+        bool shutdown_called = false;
+        Logger::getInstance().setLogLevel("debug");
+        Logger::getInstance().setSink([&](const char*, const char* message) {
+            if (std::string_view(message).find("no completed url stat tick") != std::string_view::npos) {
+                shutdown_called = true;
+                agent->Shutdown();
+            }
+        });
+        stats_ptr->enqueueStats(URL_STATS);
+        stats_ptr->consumeToken();
+        std::weak_ptr<AgentImpl> weak = agent;
+        agent.reset();
+        const bool released = wait_for_condition([&] { return weak.expired(); },
+                                                 std::chrono::seconds(1));
+        _exit(shutdown_called && released ? 0 : 1);
+    }, ::testing::ExitedWithCode(0), "");
+}
+
 TEST(AgentShutdownDeadlineTest, DetachedTeardownRunnerStillReachesTheLog) {
     ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(200));
 
@@ -2585,6 +2624,36 @@ TEST_F(StartAgentTest, ReplacingInitFailedAgentKeepsNewLogSink) {
     ASSERT_TRUE(StartAgent());
     LOG_WARN("replacement-marker");
     EXPECT_EQ(marker_calls.load(), 1);
+}
+
+TEST_F(StartAgentTest, RetainedInitFailedAgentDoesNotCloseReplacementLogSink) {
+    auto old_agent = make_init_failed_agent(make_test_config_for_create_agent());
+    ASSERT_TRUE(old_agent->initFailed());
+    set_global_agent(old_agent);
+
+    std::atomic<int> marker_calls{0};
+    options_.log_sink = [&](const char*, const char* message) {
+        if (std::string_view(message).find("replacement-marker") != std::string_view::npos) {
+            ++marker_calls;
+        }
+    };
+    set_config_string(kBaseConfigYaml);
+    ASSERT_TRUE(StartAgent());
+    auto replacement = GlobalAgent();
+    LOG_WARN("replacement-marker-before");
+    old_agent->Shutdown();
+    LOG_WARN("replacement-marker-after");
+    EXPECT_EQ(GlobalAgent(), replacement);
+    EXPECT_EQ(marker_calls.load(), 2);
+
+    const auto reloaded = ReloadAgentConfig(
+        std::string(kBaseConfigYaml) + "\nLog:\n  FilePath: " + log_file_.string() + "\n");
+    ASSERT_TRUE(reloaded.ok()) << reloaded.message;
+    LOG_WARN("replacement-marker-after-reload");
+    EXPECT_EQ(marker_calls.load(), 3);
+    replacement->Shutdown();
+    LOG_WARN("replacement-marker-after-current-shutdown");
+    EXPECT_EQ(marker_calls.load(), 3) << "the owning agent must still clear its sink after reload";
 }
 
 TEST_F(StartAgentTest, OldTeardownDoesNotCloseNewLogSink) {

@@ -263,6 +263,8 @@ namespace pinpoint {
         // for the instant around a reload.
         std::atomic<bool> raw_sql_cache_enabled_{true};
 
+        // A retained/reaping agent must not close its successor's logger.
+        const uint64_t logger_generation_;
         std::unique_ptr<GrpcAgent> grpc_agent_{};
         std::unique_ptr<GrpcMetadata> grpc_metadata_{};
         std::unique_ptr<GrpcSpan> grpc_span_{};

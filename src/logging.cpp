@@ -116,11 +116,15 @@ namespace pinpoint {
         thread_local bool in_sink_call = false;
     }
 
-    void Logger::setSink(LogSink sink) {
+    void Logger::setSink(LogSink sink, bool new_agent) {
+        auto next_sink = sink ? std::make_shared<const LogSink>(std::move(sink)) : nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             revision_.fetch_add(1, std::memory_order_release);
-            sink_ = sink ? std::make_shared<const LogSink>(std::move(sink)) : nullptr;
+            if (new_agent) {
+                generation_.fetch_add(1, std::memory_order_release);
+            }
+            sink_ = std::move(next_sink);
             // Release: publishes sink_ to the acquire-load in write(), which
             // reads it before taking mutex_.
             sink_enabled_.store(static_cast<bool>(sink_), std::memory_order_release);
@@ -144,7 +148,7 @@ namespace pinpoint {
         shutdown(0);
     }
 
-    void Logger::shutdown(uint64_t revision) {
+    void Logger::shutdown(uint64_t revision, uint64_t generation) {
         // Drop the host sink first. Unlike the file, it is not ours to keep
         // using: Shutdown() is where the host stops guaranteeing its logger is
         // alive, and a straggler calling into a torn-down callback is a
@@ -153,7 +157,8 @@ namespace pinpoint {
         // call is still in flight when this returns.
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (revision != 0 && revision_.load(std::memory_order_relaxed) != revision) {
+            if ((revision != 0 && revision_.load(std::memory_order_relaxed) != revision) ||
+                (generation != 0 && generation_.load(std::memory_order_relaxed) != generation)) {
                 return;
             }
             sink_enabled_.store(false, std::memory_order_release);
