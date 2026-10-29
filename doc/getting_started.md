@@ -71,7 +71,7 @@ built-in defaults.
 
 ```yaml
 ApplicationName: "MyApplication"
-ServiceName: "MyService"     # Required by default (UidVersion v4); see the Configuration Guide
+ServiceName: "MyService"     # Required by default (UidVersion v4); register it in the Web first, see the Configuration Guide
 AgentName: "my-agent-name"  # Optional label; the agent id is always auto-generated
 
 Collector:

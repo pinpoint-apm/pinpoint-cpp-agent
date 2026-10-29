@@ -200,7 +200,9 @@ The agent starts successfully but no traces appear.
 
    `ExcludeMethod` only applies when the span is created with the
    `NewSpan(operation, rpc_point, method, reader)` overload.
-4. **Check `ApplicationName`** is set.
+4. **Check `ApplicationName`** is set. For `UidVersion: v4`, also check that
+   `ServiceName` is registered in the Web. The Collector rejects an unregistered
+   one and drops its data. See [Identity Versions](config.md#identity-versions).
 5. **Wait for collection** — data may take 5–10 seconds to appear.
 6. **Check the collector side** — the agent log can show a clean `AgentInfo sent`
    and spans still be rejected downstream. Review the Pinpoint **collector** logs

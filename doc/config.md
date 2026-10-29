@@ -148,6 +148,12 @@ v1 and v3 are identical on the wire (both `protocol.version=100`); they differ o
 
 Leading and trailing whitespace in `ApplicationName`, `AgentName`, `ServiceName` and `ApiKey` is trimmed before validation, as the Java agent does, so `ServiceName: "svc "` resolves to `svc`. A whitespace-only `ApiKey` counts as unset.
 
+**Collector compatibility (v4):**
+
+- v4 needs a Pinpoint 4.0.0+ Collector. Against an older Collector, set `UidVersion: v3`.
+- With the Collector's service lookup on (the 4.0.0 default), `ServiceName` must already be registered as a service in the Web. For an unregistered name the Collector rejects the AgentInfo, and the agent keeps retrying with a `failed to register the agent: collector rejected it` error. The Collector drops that agent's spans and stats without closing the stream.
+- With service lookup off (`pinpoint.collector.service.lookup.enabled=false`), the Collector puts all data in the `DEFAULT` service and skips the check. Set `ServiceName: DEFAULT` to match.
+
 > **Note:** because the agent id is generated afresh on every startup, it changes across restarts. Use `AgentName` for a stable label.
 
 ---
