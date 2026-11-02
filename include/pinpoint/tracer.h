@@ -212,7 +212,10 @@ namespace pinpoint {
 
         /// @brief Sets the service type for the span event.
         virtual void SetServiceType(int32_t type) = 0;
-        /// @brief Sets the logical operation recorded by the event.
+        /// @brief Replaces the operation given to NewSpanEvent(); the last
+        /// call wins. Interned like that operation, so keep it
+        /// low-cardinality (see doc/api_contracts.md section 8). An empty
+        /// name is ignored.
         virtual void SetOperationName(std::string_view operation) = 0;
         /// @brief Records the event's start timestamp.
         virtual void SetStartTime(std::chrono::system_clock::time_point start_time) = 0;

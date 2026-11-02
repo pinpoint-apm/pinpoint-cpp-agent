@@ -121,9 +121,10 @@ TEST_F(SpanEventTest, SetServiceTypeTest) {
 
 TEST_F(SpanEventTest, SetOperationNameTest) {
     auto span_event = make_test_span_event(*test_span_, "test-op");
-    
+
     span_event.SetOperationName("new-operation");
-    EXPECT_EQ(span_event.getOperationName(), "new-operation") << "Operation name should be updated";
+    EXPECT_EQ(span_event.getApiId(), mock_agent_service_->getCachedApiId("new-operation"))
+        << "the new name is what the event's api id identifies";
 }
 
 TEST_F(SpanEventTest, SetStartTimeTest) {
@@ -169,13 +170,6 @@ TEST_F(SpanEventTest, SetAsyncIdTest) {
     
     span_event.setAsyncId(42);
     EXPECT_EQ(span_event.getAsyncId(), 42) << "Async ID should be updated";
-}
-
-TEST_F(SpanEventTest, SetApiIdTest) {
-    auto span_event = make_test_span_event(*test_span_, "test-op");
-    
-    span_event.setApiId(999);
-    EXPECT_EQ(span_event.getApiId(), 999) << "API ID should be updated";
 }
 
 // ========== Error Handling Tests ==========
@@ -753,6 +747,7 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
     span_event.SetError("RuntimeError", "err-before", callstack_reader);
     span_event.SetAnnotation(100, "before");
 
+    const auto baseline_api_id = span_event.getApiId();
     const auto baseline_start = span_event.getStartTime();
     const auto baseline_annotations = span_event.getAnnotations()->getAnnotations().size();
     const auto baseline_exceptions = test_span_->getExceptions().size();
@@ -779,7 +774,9 @@ TEST_F(SpanEventTest, RecordingMutatorsNoOpAfterFinishTest) {
 
     // Scalar / string fields keep their pre-finish values.
     EXPECT_EQ(span_event.getServiceType(), 1234) << "SetServiceType must no-op after finish";
-    EXPECT_EQ(span_event.getOperationName(), "before") << "SetOperationName must no-op after finish";
+    EXPECT_EQ(span_event.getApiId(), baseline_api_id) << "SetOperationName must no-op after finish";
+    EXPECT_EQ(mock_agent_service_->getCachedApiId("after"), -1)
+        << "a post-finish rename must not intern its name";
     EXPECT_EQ(span_event.getStartTime(), baseline_start) << "SetStartTime must no-op after finish";
     EXPECT_EQ(span_event.getEndPoint(), "ep-before") << "SetEndPoint must no-op after finish";
     EXPECT_EQ(span_event.getDestinationId(), "dest-before") << "SetDestination must no-op after finish";
@@ -1614,17 +1611,56 @@ TEST_F(SpanEventTest, SetSqlQueryWithSqlStatsDisabledTest) {
         << "cacheSql should be called when sql stats is disabled";
 }
 
-// ========== SetOperationName Does Not Update ApiId ==========
+// ========== SetOperationName Re-interns the API ==========
 
-TEST_F(SpanEventTest, SetOperationNameDoesNotUpdateApiIdTest) {
+// build_span_event sends the api id whenever there is one, so a rename that
+// only stored the name would leave the constructor's operation on the wire.
+TEST_F(SpanEventTest, SetOperationNameReplacesApiIdTest) {
     auto span_event = make_test_span_event(*test_span_, "original-op");
-    int32_t original_api_id = span_event.getApiId();
-    EXPECT_GT(original_api_id, 0);
+    const int32_t original_api_id = span_event.getApiId();
+    ASSERT_GT(original_api_id, 0);
 
     span_event.SetOperationName("new-op");
-    EXPECT_EQ(span_event.getOperationName(), "new-op");
-    EXPECT_EQ(span_event.getApiId(), original_api_id)
-        << "SetOperationName should NOT recache the API ID";
+    EXPECT_NE(span_event.getApiId(), original_api_id);
+    EXPECT_EQ(span_event.getApiId(), mock_agent_service_->getCachedApiId("new-op"));
+    EXPECT_EQ(span_event.getOperationName(), "")
+        << "with an api id the name lives in the API cache, not in the event";
+}
+
+TEST_F(SpanEventTest, SetOperationNameOnUnnamedEventInternsTheNameTest) {
+    auto span_event = make_test_span_event(*test_span_, "");
+    ASSERT_EQ(span_event.getApiId(), 0);
+
+    span_event.SetOperationName("named-later");
+    EXPECT_EQ(span_event.getApiId(), mock_agent_service_->getCachedApiId("named-later"));
+    EXPECT_GT(span_event.getApiId(), 0);
+    EXPECT_EQ(span_event.getOperationName(), "");
+}
+
+// The stale id must not survive a rename the cache cannot resolve: it would
+// win over the new name in build_span_event and send the old operation.
+TEST_F(SpanEventTest, SetOperationNameFallsBackToNameWhenApiIdUnavailableTest) {
+    auto span_event = make_test_span_event(*test_span_, "original-op");
+    ASSERT_GT(span_event.getApiId(), 0);
+
+    mock_agent_service_->setApiCachingDisabled(true);
+    span_event.SetOperationName("uncacheable-op");
+    EXPECT_EQ(span_event.getApiId(), 0);
+    EXPECT_EQ(span_event.getOperationName(), "uncacheable-op");
+
+    mock_agent_service_->setApiCachingDisabled(false);
+    span_event.SetOperationName("cacheable-op");
+    EXPECT_EQ(span_event.getApiId(), mock_agent_service_->getCachedApiId("cacheable-op"));
+    EXPECT_EQ(span_event.getOperationName(), "") << "the fallback name is dropped once an id identifies it";
+}
+
+TEST_F(SpanEventTest, SetOperationNameIgnoresEmptyNameTest) {
+    auto span_event = make_test_span_event(*test_span_, "kept-op");
+    const int32_t api_id = span_event.getApiId();
+    ASSERT_GT(api_id, 0);
+
+    span_event.SetOperationName("");
+    EXPECT_EQ(span_event.getApiId(), api_id) << "an empty name keeps the current API";
 }
 
 // Dropping the name is only safe because the branch that needs it still gets

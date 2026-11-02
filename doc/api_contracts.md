@@ -97,7 +97,7 @@ If the overflow warning appears regularly, create fewer, coarser span events per
 
 ## 8. Keep Operation and Error Names Low-Cardinality
 
-The `operation` passed to `NewSpan()`/`NewSpanEvent()`/`NewAsyncSpan()` and the `error_name` passed to `SetError()` are interned in bounded LRU caches, and **every new unique string enqueues a metadata message to the collector**. Per-request unique names churn the cache and flood the collector with metadata:
+The `operation` passed to `NewSpan()`/`NewSpanEvent()`/`NewAsyncSpan()`/`SpanEvent::SetOperationName()` and the `error_name` passed to `SetError()` are interned in bounded LRU caches, and **every new unique string enqueues a metadata message to the collector**. Per-request unique names churn the cache and flood the collector with metadata:
 
 ```cpp
 // DON'T: unique operation name per request

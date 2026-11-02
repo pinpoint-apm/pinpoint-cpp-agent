@@ -2744,6 +2744,78 @@ TEST_F(SpanTest, AsyncSpanSendsNoEmptyApiAnnotationTest) {
     parent.EndSpan();
 }
 
+// build_span_event sends the api id whenever there is one, so a rename that
+// only stored the name would send the constructor's operation instead.
+TEST_F(SpanTest, RenamedSpanEventSendsTheNewApiTest) {
+    SpanImpl span(mock_agent_service_.get(), "test-op", "test-rpc");
+    seed_test_trace_id(span, *mock_agent_service_);
+
+    auto named = span.NewSpanEvent("initial-name");
+    named->SetOperationName("renamed");
+    named->EndEvent();
+    auto unnamed = span.NewSpanEvent("");
+    unnamed->SetOperationName("named-later");
+    unnamed->EndEvent();
+    span.EndSpan();
+
+    google::protobuf::Arena arena;
+    auto* pspan = last_recorded_pspan(*mock_agent_service_, arena);
+    ASSERT_NE(pspan, nullptr);
+    ASSERT_EQ(pspan->spanevent_size(), 2);
+    EXPECT_EQ(pspan->spanevent(0).apiid(), mock_agent_service_->getCachedApiId("renamed"));
+    EXPECT_EQ(pspan->spanevent(1).apiid(), mock_agent_service_->getCachedApiId("named-later"));
+    for (const auto& se : pspan->spanevent()) {
+        EXPECT_GT(se.apiid(), 0);
+        for (const auto& annotation : se.annotation()) {
+            EXPECT_NE(annotation.key(), ANNOTATION_API)
+                << "an event its api id identifies sends no name";
+        }
+    }
+}
+
+// Pinpoint Web shows an INVOCATION api as a tag instead of parsing it as a
+// method signature, so renaming an async span's event must not demote it.
+TEST_F(SpanTest, RenamedAsyncEventKeepsInvocationApiTypeTest) {
+    SpanImpl parent(mock_agent_service_.get(), "parent-op", "parent-rpc");
+    seed_test_trace_id(parent, *mock_agent_service_);
+
+    auto prepare = parent.NewSpanEvent("prepare-async");
+    auto async_span = parent.NewAsyncSpan("async-task");
+    ASSERT_NE(async_span, nullptr);
+    auto* async_event = dynamic_cast<SpanEventImpl*>(async_span->GetSpanEvent());
+    ASSERT_NE(async_event, nullptr);
+    EXPECT_EQ(async_event->getApiId(), mock_agent_service_->getCachedApiId("async-task"));
+    EXPECT_EQ(mock_agent_service_->getCachedApiType("async-task"), API_TYPE_INVOCATION);
+
+    async_event->SetOperationName("async-worker");
+    EXPECT_EQ(async_event->getApiId(), mock_agent_service_->getCachedApiId("async-worker"));
+    EXPECT_EQ(mock_agent_service_->getCachedApiType("async-worker"), API_TYPE_INVOCATION);
+
+    async_span->EndSpan();
+    prepare->EndEvent();
+    parent.EndSpan();
+}
+
+// The async event used to be built nameless and handed its id afterwards, so
+// a failed cache left it with neither an id nor a name to send.
+TEST_F(SpanTest, AsyncEventFallsBackToNameWhenApiIdUnavailableTest) {
+    SpanImpl parent(mock_agent_service_.get(), "parent-op", "parent-rpc");
+    seed_test_trace_id(parent, *mock_agent_service_);
+
+    auto prepare = parent.NewSpanEvent("prepare-async");
+    mock_agent_service_->setApiCachingDisabled(true);
+    auto async_span = parent.NewAsyncSpan("async-task");
+    ASSERT_NE(async_span, nullptr);
+    auto* async_event = dynamic_cast<SpanEventImpl*>(async_span->GetSpanEvent());
+    ASSERT_NE(async_event, nullptr);
+    EXPECT_EQ(async_event->getApiId(), 0);
+    EXPECT_EQ(async_event->getOperationName(), "async-task");
+
+    async_span->EndSpan();
+    prepare->EndEvent();
+    parent.EndSpan();
+}
+
 TEST_F(SpanTest, OverflowedSpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     auto config = std::make_shared<Config>();
     config->span.max_event_depth = 1;

@@ -760,9 +760,8 @@ namespace pinpoint {
         async_span->data_->setAsyncId(se->getAsyncId());
         async_span->data_->setAsyncSequence(se->getAsyncSeqGen());
 
-        auto async_se = std::make_unique<SpanEventImpl>(async_span.get(), "");
-        auto async_api_id = agent_->cacheApi(async_operation, API_TYPE_INVOCATION);
-        async_se->setApiId(async_api_id);
+        auto async_se = std::make_unique<SpanEventImpl>(async_span.get(), async_operation,
+                                                        API_TYPE_INVOCATION);
         async_se->SetServiceType(SERVICE_TYPE_ASYNC);
         async_span->data_->addSpanEvent(std::move(async_se));
 
@@ -791,9 +790,8 @@ namespace pinpoint {
         // As in the overload above: the error flag lives on the trace root.
         async_span->trace_root_data_ = trace_root_data_ ? trace_root_data_ : data_;
 
-        auto async_se = std::make_unique<SpanEventImpl>(async_span.get(), "");
-        auto async_api_id = agent_->cacheApi(async_operation, API_TYPE_INVOCATION);
-        async_se->setApiId(async_api_id);
+        auto async_se = std::make_unique<SpanEventImpl>(async_span.get(), async_operation,
+                                                        API_TYPE_INVOCATION);
         async_se->SetServiceType(SERVICE_TYPE_ASYNC);
         async_span->data_->addSpanEvent(std::move(async_se));
 

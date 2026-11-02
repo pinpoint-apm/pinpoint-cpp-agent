@@ -33,7 +33,11 @@ namespace pinpoint {
     /// @brief Concrete span event implementation that records timing and metadata.
     class SpanEventImpl final : public SpanEvent {
     public:
-        SpanEventImpl(SpanImpl* span, std::string_view operation);
+        /// @param api_type The API type @p operation is interned as, and that
+        ///        a later SetOperationName() keeps: API_TYPE_INVOCATION for
+        ///        an async span's event, API_TYPE_DEFAULT otherwise.
+        SpanEventImpl(SpanImpl* span, std::string_view operation,
+                      int32_t api_type = API_TYPE_DEFAULT);
         ~SpanEventImpl() override {}
 
         // Unwarned twin of spanIfAlive(): a dead span here just means "no
@@ -101,8 +105,8 @@ namespace pinpoint {
         /// @brief Operation name, kept only as the api-id fallback.
         ///
         /// Empty whenever getApiId() is positive — the id identifies the
-        /// operation on the wire — unless SetOperationName() supplied one
-        /// explicitly. Only build_span_event's no-api-id branch consumes this.
+        /// operation on the wire. Only build_span_event's no-api-id branch
+        /// consumes this.
         const std::string& getOperationName() const { return operation_; }
 
         int64_t getStartTime() const { return start_time_; }
@@ -143,10 +147,15 @@ namespace pinpoint {
         void incrAsyncSeq() { async_seq_gen_++; }
         int32_t getAsyncSeqGen() const { return async_seq_gen_; }
 
-        void setApiId(int32_t api_id) { api_id_ = api_id; }
         int32_t getApiId() const { return api_id_; }
 
     private:
+        /// @brief Interns @p operation (non-empty) as this event's API: the id
+        /// when the cache yields one, else the name itself as the fallback.
+        /// The id is committed last, so a throwing name copy leaves the
+        /// previous id and name in place as a pair.
+        void setApi(std::string_view operation);
+
         /// @brief Shared tail of the callstack SetError overloads: wrap the
         /// built call stack in an Exception on the parent span and, for the
         /// first link of a chain (`chain_id` 0), admit a new chain and stamp
@@ -204,6 +213,9 @@ namespace pinpoint {
         // constructor is the one unguarded user — it runs on a live span.
         AgentService* agent_;
         int32_t service_type_;
+        // Fills the padding before operation_, so remembering the type costs
+        // no size in the most numerous object of a trace.
+        int32_t api_type_;
         std::string operation_;
         int32_t sequence_{0};
         int32_t depth_{0};

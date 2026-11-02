@@ -396,6 +396,19 @@ bool has_api_metadata(const CollectorSnapshot& snapshot,
         });
 }
 
+// The api id the agent registered `api_info` under, as the collector received
+// it; nullopt when that metadata has not arrived.
+std::optional<int32_t> api_id_for(const CollectorSnapshot& snapshot,
+                                  std::string_view api_info, int32_t type) {
+    for (const auto& received : snapshot.api_metadata) {
+        if (std::string_view(received.message.apiinfo()) == api_info &&
+            received.message.type() == type) {
+            return received.message.apiid();
+        }
+    }
+    return std::nullopt;
+}
+
 /**
  * The host application's "business logic": a fake request handler that must
  * produce its result no matter what state the agent or the collector is in.
@@ -1059,7 +1072,7 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
         return find_span_by_rpc(snapshot, "/orders/42").has_value() &&
                find_span_by_rpc(snapshot, "/downstream").has_value() &&
                !async_chunks_for(snapshot, root_span_id).empty() &&
-               !snapshot.api_metadata.empty() &&
+               has_api_metadata(snapshot, "async.audit.worker", API_TYPE_INVOCATION) &&
                !snapshot.string_metadata.empty() &&
                !snapshot.sql_uid_metadata.empty() &&
                !snapshot.exception_metadata.empty();
@@ -1142,6 +1155,19 @@ TEST_F(AgentIntegrationTest, SendsAllMetadataAndCompleteSpanShapes) {
     EXPECT_EQ(exception.exceptions(0).exceptionmessage(), "connection refused");
     ASSERT_EQ(exception.exceptions(0).stacktraceelement_size(), 2);
     EXPECT_EQ(exception.exceptions(0).stacktraceelement(1).methodname(), "execute");
+
+    // Renamed after NewAsyncSpan interned "async.order.audit": the new name
+    // identifies the async event, still as an invocation.
+    const auto async_worker_api_id =
+        api_id_for(snapshot, "async.audit.worker", API_TYPE_INVOCATION);
+    ASSERT_TRUE(async_worker_api_id.has_value());
+    const auto async_chunks = async_chunks_for(snapshot, root_span_id);
+    EXPECT_TRUE(std::any_of(async_chunks.begin(), async_chunks.end(), [&](const auto& chunk) {
+        return std::any_of(chunk.spanevent().begin(), chunk.spanevent().end(),
+                           [&](const auto& event) {
+                               return event.apiid() == *async_worker_api_id;
+                           });
+    }));
 
     ASSERT_FALSE(snapshot.span_batches.empty());
     expect_common_metadata(snapshot.span_batches.front().metadata, false, impl_->getAgentId());
@@ -1319,8 +1345,8 @@ TEST_F(AgentIntegrationTest,
     ASSERT_NE(outer, nullptr);
     outer->SetDestination("outer-before");
 
-    // An empty constructor operation leaves apiId unset, making the operation
-    // itself visible as ANNOTATION_API on the wire.
+    // An empty constructor operation interns nothing; the rename below is
+    // what identifies the event on the wire.
     auto* inner = span->NewSpanEvent("", SERVICE_TYPE_MEMCACHED);
     ASSERT_NE(inner, nullptr);
     inner->SetOperationName("event.inner.before");
@@ -1358,10 +1384,12 @@ TEST_F(AgentIntegrationTest,
 
     ASSERT_TRUE(collector_.WaitFor([span_id](const auto& snapshot) {
         return count_spans_by_rpc(snapshot, "/event-lifecycle") == 1 &&
-               events_for_span(snapshot, span_id).size() == 3;
+               events_for_span(snapshot, span_id).size() == 3 &&
+               has_api_metadata(snapshot, "event.inner.before", API_TYPE_DEFAULT);
     }, kWaitTimeout));
 
-    auto events = events_for_span(collector_.snapshot(), span_id);
+    const auto snapshot = collector_.snapshot();
+    auto events = events_for_span(snapshot, span_id);
     ASSERT_EQ(events.size(), 3U);
     std::sort(events.begin(), events.end(), [](const auto& lhs, const auto& rhs) {
         return lhs.sequence() < rhs.sequence();
@@ -1376,10 +1404,12 @@ TEST_F(AgentIntegrationTest,
     EXPECT_EQ(events[2].servicetype(), SERVICE_TYPE_KAFKA);
 
     const auto& inner_wire = events[1];
-    const auto* operation = find_annotation(inner_wire.annotation(),
-                                            ANNOTATION_API);
-    ASSERT_NE(operation, nullptr);
-    EXPECT_EQ(operation->value().stringvalue(), "event.inner.before");
+    const auto inner_api_id = api_id_for(snapshot, "event.inner.before", API_TYPE_DEFAULT);
+    ASSERT_TRUE(inner_api_id.has_value());
+    EXPECT_EQ(inner_wire.apiid(), *inner_api_id);
+    EXPECT_EQ(find_annotation(inner_wire.annotation(), ANNOTATION_API), nullptr);
+    EXPECT_FALSE(has_api_metadata(snapshot, "event.inner.after", API_TYPE_DEFAULT))
+        << "a rename after the event finished must not intern its name";
     ASSERT_TRUE(inner_wire.has_nextevent());
     EXPECT_EQ(inner_wire.nextevent().messageevent().destinationid(),
               "inner-before");

@@ -51,6 +51,18 @@
   [Configuration Guide § gRPC Transport](doc/config.md#grpc-transport-configuration)
   and [§ SQL Configuration](doc/config.md#sql-configuration).
 
+- **`SpanEvent::SetOperationName()` (and `pt_span_event_set_operation_name()`)
+  renames the event on the wire.** An event created with a name sent the api
+  id of that first name, so a later rename never reached the collector and
+  Pinpoint Web kept showing the original operation. The new name now replaces
+  the api id, as the Java agent's `recordApi()` does; the last call wins. An
+  async span's event keeps its `API_TYPE_INVOCATION` when renamed, an empty
+  name is ignored, and the new name is interned like the one passed to
+  `NewSpanEvent()`, so it must be low-cardinality too
+  ([API Contracts § 8](doc/api_contracts.md#8-keep-operation-and-error-names-low-cardinality)).
+  An async span's event whose operation could not be interned now falls back
+  to sending the name, as every other event does, instead of sending none.
+
 ## 2.2.0 (2026-10-23)
 
 ### Breaking

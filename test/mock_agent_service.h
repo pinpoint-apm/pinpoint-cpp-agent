@@ -114,6 +114,7 @@ public:
         auto key = std::string(api_str);
         if (cached_apis_.find(key) == cached_apis_.end()) {
             cached_apis_[key] = api_id_counter_++;
+            cached_api_types_[key] = api_type;
         }
         return cached_apis_[key];
     }
@@ -277,6 +278,11 @@ public:
         auto it = cached_apis_.find(api_str);
         return it != cached_apis_.end() ? it->second : -1;
     }
+    /// @brief API type of the first cacheApi() call for @p api_str, -1 if none.
+    int32_t getCachedApiType(const std::string& api_str) const {
+        auto it = cached_api_types_.find(api_str);
+        return it != cached_api_types_.end() ? it->second : -1;
+    }
     int32_t getCachedErrorId(const std::string& error_name) const {
         auto it = cached_errors_.find(error_name);
         return it != cached_errors_.end() ? it->second : -1;
@@ -315,6 +321,7 @@ public:
     // ThreadSanitizer reports the mock's own race.
     mutable std::mutex cache_mutex_;
     mutable std::map<std::string, int32_t> cached_apis_;
+    mutable std::map<std::string, int32_t> cached_api_types_;
     mutable std::map<std::string, int32_t> cached_errors_;
     mutable std::map<std::string, int32_t> cached_sqls_;
     mutable int32_t api_id_counter_ = 100;

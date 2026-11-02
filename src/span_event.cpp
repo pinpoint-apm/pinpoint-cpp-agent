@@ -130,26 +130,34 @@ namespace pinpoint {
 
     std::atomic<int64_t> Exception::exception_id_gen{1};
 
-    SpanEventImpl::SpanEventImpl(SpanImpl* span, std::string_view operation) :
+    SpanEventImpl::SpanEventImpl(SpanImpl* span, std::string_view operation, int32_t api_type) :
         // The span data, not the span: it owns this event and outlives the
         // SpanImpl (see spanIfAlive).
         data_(span->data_.get()),
         agent_(span->agent_),
         service_type_{defaults::SPAN_EVENT_SERVICE_TYPE},
+        api_type_{api_type},
         start_time_{to_milli_seconds(std::chrono::system_clock::now())} {
         assert(data_ != nullptr);
         assert(agent_ != nullptr);
 
         if (!operation.empty()) {
-            api_id_ = agent_->cacheApi(operation, API_TYPE_DEFAULT);
+            setApi(operation);
         }
+    }
+
+    void SpanEventImpl::setApi(std::string_view operation) {
+        const auto api_id = agent_->cacheApi(operation, api_type_);
         // Same trade as SpanData: the name is the fallback for an event with
         // no api id, and build_span_event reads it only on that branch. A
         // span event is created per traced call, so this is the copy that
         // repeats most within a single span.
-        if (api_id_ <= 0) {
+        if (api_id > 0) {
+            std::string{}.swap(operation_);
+        } else {
             operation_ = operation;
         }
+        api_id_ = api_id;
     }
 
     SpanImpl* SpanEventImpl::spanIfAlive() const {
@@ -280,7 +288,15 @@ namespace pinpoint {
 
     void SpanEventImpl::SetOperationName(std::string_view operation) try {
         if (warnIfFinished()) return;
-        operation_ = operation;
+        // An empty name would leave the event with no API at all; keep the
+        // current one, as Java's recordApi(null) does.
+        if (operation.empty()) return;
+        // Re-interned, not just stored: build_span_event sends the api id
+        // whenever there is one, so a name kept beside the constructor's id
+        // would never reach the wire. Through the gate because agent_ is
+        // valid only while the span is.
+        if (spanIfAlive() == nullptr) return;
+        setApi(operation);
     } CATCH_AND_LOG("set operation name")
 
     void SpanEventImpl::SetDestination(std::string_view dest) try {
