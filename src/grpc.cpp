@@ -1257,6 +1257,39 @@ namespace pinpoint {
         try {
             await_in_flight_requests();
         } CATCH_AND_LOG("await in-flight meta requests")
+        try {
+            release_stopped_pipeline();
+        } CATCH_AND_LOG("release stopped meta pipeline")
+    }
+
+    void GrpcMetadata::release_stopped_pipeline() {
+        // The worker never comes back once stopped (stop_requested and
+        // isExiting() are both terminal), so nothing drains these again. Each
+        // completed call still pins the channel it was launched on (its
+        // transport and used ClientContext) plus its arena, and the unsent
+        // items hold their metadata — all until this client is destroyed,
+        // which is as long as anything holds the agent. Moved out under the
+        // lock and destroyed outside it; the cache entries are not released,
+        // since nothing will be sent for this agent again. A straggler that
+        // completes later lands in `completed`, bounded by the permit count.
+        std::vector<std::shared_ptr<PendingMetaRpc>> completed;
+        completed.reserve(static_cast<size_t>(pipeline_->max_permits) * 4);
+        std::deque<PendingMeta> queue;
+        std::multimap<std::chrono::steady_clock::time_point, PendingMeta> retry_queue;
+        {
+            std::lock_guard<std::mutex> lock(pipeline_->mutex);
+            // Moved element-wise so `completed` keeps the capacity a late
+            // straggler's push_back relies on.
+            for (auto& call : pipeline_->completed) {
+                completed.push_back(std::move(call));
+            }
+            pipeline_->completed.clear();
+            queue.swap(pipeline_->queue);
+            retry_queue.swap(pipeline_->retry_queue);
+        }
+        if (const auto unsent = queue.size() + retry_queue.size(); unsent > 0) {
+            LOG_WARN("drop {} unsent metadata on shutdown", unsent);
+        }
     }
 
     void GrpcMetadata::run_meta_worker() {
@@ -2388,6 +2421,22 @@ namespace pinpoint {
                         [this] { return stopping(); },
                         [this] { return run_ping_worker(); },
                         [this] { drain_ping_stream_on_error(); });
+        release_finished_ping_stream();
+    }
+
+    void GrpcAgent::release_finished_ping_stream() noexcept try {
+        // A used ClientContext holds a shared_ptr to its channel, so the last
+        // session's context would keep the agent channel — and its TCP
+        // connection and keepalive pings — open after closeChannel() for as
+        // long as this client lives, which is as long as anything still holds
+        // the agent (a span, a host AgentPtr). Every exit from the supervisor
+        // has finished its stream, so this only frees; a live call (never
+        // expected here) keeps its context.
+        std::unique_lock<std::mutex> lock(stream_mutex_);
+        if (grpc_status_ == STREAM_DONE) {
+            stream_context_.reset();
+        }
+    } catch (...) {
     }
 
     bool GrpcAgent::run_ping_worker() {
@@ -3590,6 +3639,20 @@ namespace pinpoint {
         // the snapshot, so this call finds it empty; when it does not, there
         // is no stream left and it only records the drop.
         try { flush_url_stats_on_shutdown(); } CATCH_AND_LOG("grpc stats worker shutdown flush")
+        release_finished_stats_stream();
+    }
+
+    void GrpcStats::release_finished_stats_stream() noexcept try {
+        // As GrpcAgent::release_finished_ping_stream(): the finished context
+        // would pin the stats channel past closeChannel(). A shutdown flush
+        // that timed out also left its message on arena_; OnDone has run, so
+        // no write references it any more.
+        std::unique_lock<std::mutex> lock(stream_mutex_);
+        if (grpc_status_ == STREAM_DONE) {
+            release_written_message_locked();
+            stream_context_.reset();
+        }
+    } catch (...) {
     }
 
     bool GrpcStats::run_stats_worker() {

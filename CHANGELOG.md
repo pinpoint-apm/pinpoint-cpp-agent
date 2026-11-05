@@ -36,6 +36,15 @@
 
 ### Fixed
 
+- **A shut-down agent no longer keeps its collector connections open.** The
+  ping and stats streams kept their last finished `ClientContext`, and the
+  metadata sender kept the requests that completed while it was stopping;
+  each pins its gRPC channel, so an agent still referenced after `Shutdown()`
+  (a live span, a host `AgentPtr`) kept two or three TCP connections open
+  with keepalive pings, plus unsent metadata, until it was destroyed. They
+  are released when each worker stops, and so is a URL-stat message whose
+  shutdown flush timed out.
+
 - **Replacing an agent whose asynchronous initialization failed shuts it down
   first.** `StartAgent()` only dropped its own reference, so when the host
   still held an `AgentPtr` the failed agent's channels, AgentInfo sender,

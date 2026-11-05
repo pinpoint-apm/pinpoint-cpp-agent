@@ -104,6 +104,26 @@ private:
     std::vector<std::string> lines_;
 };
 
+// Expose the channel a long-lived-stream client's transport carries, for the
+// stream-release tests below. Real stubs against a real in-process server.
+class StreamReleaseProbeGrpcAgent : public GrpcAgent {
+public:
+    using GrpcAgent::GrpcAgent;
+    std::weak_ptr<grpc::Channel> channelRef() const {
+        const auto transport = current_transport<AgentStub>();
+        return transport ? transport->channel : std::shared_ptr<grpc::Channel>{};
+    }
+};
+
+class StreamReleaseProbeGrpcStats : public GrpcStats {
+public:
+    using GrpcStats::GrpcStats;
+    std::weak_ptr<grpc::Channel> channelRef() const {
+        const auto transport = current_transport<StatStub>();
+        return transport ? transport->channel : std::shared_ptr<grpc::Channel>{};
+    }
+};
+
 // A free 127.0.0.1 port that nothing listens on right now: bind an ephemeral
 // port, then release it.
 int free_local_port() {
@@ -860,6 +880,89 @@ TEST_F(GrpcTest, StreamStallKeepsCurrentChannelWhenSuccessorNeverReady) {
     EXPECT_EQ(first->generation, 1u);
 
     client.closeChannel();
+}
+
+namespace {
+
+// Waits until a debug line containing @p needle was logged.
+bool wait_for_log_line(const LogCapture& capture, std::string_view needle,
+                       std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!capture.linesContaining(needle).empty()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return false;
+}
+
+}  // namespace
+
+// A used grpc::ClientContext holds a shared_ptr to its channel. Once the ping
+// worker has stopped and closeChannel() has dropped the transport, the last
+// session's context must not keep that channel — and its TCP connection and
+// keepalive pings — alive for as long as something still holds the agent.
+// The bare server answers PingSession with UNIMPLEMENTED: a real call, a real
+// OnDone.
+TEST_F(GrpcTest, PingWorkerReleasesChannelOnceStopped) {
+    BareGrpcServer server;
+    ASSERT_NE(server.server, nullptr);
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.host = "127.0.0.1";
+    cfg->collector.agent_port = server.port;
+
+    LogCapture capture;
+    Logger::getInstance().setLogLevel("debug");
+    StreamReleaseProbeGrpcAgent agent(mock_agent_service_->getConfig());
+    agent.setAgentService(mock_agent_service_.get());
+    agent.openChannel();
+    const auto channel = agent.channelRef();
+    ASSERT_FALSE(channel.expired());
+
+    std::thread worker([&agent] { agent.sendPingWorker(); });
+    const bool session_ended = wait_for_log_line(capture, "ping - OnDone", std::chrono::seconds(5));
+    agent.stopPingWorker();
+    worker.join();
+    Logger::getInstance().setLogLevel("info");
+    ASSERT_TRUE(session_ended) << "a ping session must have run on the channel";
+
+    agent.closeChannel();
+    EXPECT_TRUE(channel.expired())
+        << "the finished ping stream's context must not pin the agent channel";
+}
+
+TEST_F(GrpcTest, StatsWorkerReleasesChannelOnceStopped) {
+    BareGrpcServer server;
+    ASSERT_NE(server.server, nullptr);
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.host = "127.0.0.1";
+    cfg->collector.stat_port = server.port;
+
+    LogCapture capture;
+    Logger::getInstance().setLogLevel("debug");
+    StreamReleaseProbeGrpcStats stats(mock_agent_service_->getConfig());
+    stats.setAgentService(mock_agent_service_.get());
+    stats.openChannel();
+    const auto channel = stats.channelRef();
+    ASSERT_FALSE(channel.expired());
+
+    std::thread worker([&stats] { stats.sendStatsWorker(); });
+    // The stats stream keeps its call open until it is closed, so its session
+    // ends only at the stop below. Wait for the channel to come up, then give
+    // the worker a moment to start the stream on it.
+    const bool connected = wait_for_log_line(capture, "-> READY", std::chrono::seconds(5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    stats.stopStatsWorker();
+    worker.join();
+    Logger::getInstance().setLogLevel("info");
+    ASSERT_TRUE(connected) << "the stat channel must have connected";
+    ASSERT_FALSE(capture.linesContaining("stats - OnDone").empty())
+        << "a stats session must have run on the channel";
+
+    stats.closeChannel();
+    EXPECT_TRUE(channel.expired())
+        << "the finished stats stream's context must not pin the stat channel";
 }
 
 TEST_F(GrpcTest, GrpcAgentRegisterAgentFailsWhenCollectorUnreachable) {

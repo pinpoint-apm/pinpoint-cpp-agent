@@ -594,6 +594,7 @@ public:
     void setMockMetaStub(std::unique_ptr<v1::Metadata::StubInterface> mock_stub) {
         set_meta_stub(std::move(mock_stub));
     }
+    std::weak_ptr<const Transport> transportRef() const { return current_transport<MetaStub>(); }
     bool stoppingForTest() const { return stopping(); }
 
     // The non-waiting probe the metadata pipeline uses (see
@@ -3811,6 +3812,45 @@ TEST_F(GrpcMockTest, GrpcMetadataPipelinesSendsUpToPermitCap) {
     if (meta_worker.joinable()) meta_worker.join();
 
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 0);
+}
+
+// A call that completes while the stopped worker awaits it lands in
+// `completed`, which nothing drains any more, and the items still queued sit
+// in `queue`. Both must be freed when the worker ends: a PendingMetaRpc pins
+// the transport (in production, the channel and its TCP connection) it was
+// launched on, and the client lives as long as anything holds the agent.
+TEST_F(GrpcMockTest, GrpcMetadataStoppedWorkerReleasesCompletedCallsAndQueue) {
+    GrpcClientTuning tuning;
+    tuning.meta_max_concurrent_requests = 1;
+    TestableGrpcMetadata metadata(mock_agent_service_.get(), tuning);
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::HOLD);
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+    const auto transport = metadata.transportRef();
+    ASSERT_FALSE(transport.expired());
+
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "stopped.in_flight")));
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(2, 100, "stopped.queued")));
+
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                             [&metadata] { metadata.sendMetaWorker(); });
+    ASSERT_TRUE(fake->waitForHeldCallbacks(1, std::chrono::seconds(5)));
+
+    // Stop first, so the completion below arrives while the worker waits in
+    // await_in_flight_requests() rather than in its drain loop.
+    metadata.stopMetaWorker();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    fake->releaseHeldCallbacks(grpc::Status::OK);
+    meta_worker.join();
+    // Read before closeChannel(): the transport owns the fake stub.
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 1u)
+        << "nothing is sent after the stop";
+
+    metadata.closeChannel();
+    EXPECT_TRUE(transport.expired())
+        << "a stopped metadata worker must not leave calls pinning their transport";
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataSurvivesReadyChannelExceptionWithoutLeakingPermit) {

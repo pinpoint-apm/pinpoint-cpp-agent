@@ -745,6 +745,8 @@ namespace pinpoint {
         // Bounded wait for in-flight calls at shutdown, escalating to
         // TryCancel (mirrors GrpcSpan::await_in_flight_requests).
         void await_in_flight_requests();
+        // Frees what a stopped worker leaves in the pipeline; see sendMetaWorker().
+        void release_stopped_pipeline();
         // Worker loop body; sendMetaWorker() restarts it after a transient exception.
         void run_meta_worker();
     };
@@ -909,6 +911,9 @@ namespace pinpoint {
         void close_ping_stream_locked();
         void finish_ping_stream();
         void drain_ping_stream_on_error() noexcept;
+        // Drops the last finished session's context once the worker is done
+        // with streams; see sendPingWorker().
+        void release_finished_ping_stream() noexcept;
         GrpcStreamStatus write_and_await_ping_stream();
         // Worker loop body; sendPingWorker() restarts it after a transient exception.
         // Returns true when it ended on a stop request; false when a stream
@@ -1165,6 +1170,9 @@ namespace pinpoint {
         void finish_stats_stream();
         void close_stats_stream_locked();
         void drain_stats_stream_on_error() noexcept;
+        // Drops the last finished session's context and message once the
+        // worker is done with streams; see sendStatsWorker().
+        void release_finished_stats_stream() noexcept;
 
         // Worker loop body; sendStatsWorker() restarts it after a transient exception.
         // Returns true when it ended on a stop request; false when a stream
