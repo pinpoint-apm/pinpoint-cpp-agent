@@ -22,6 +22,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -2512,11 +2513,15 @@ namespace pinpoint {
         // Collector.Grpc.MaxSendMessageSize (split_oversize_batch): the batch
         // whose arena holds this request and its messages, pinned until this
         // call's callback has run so no message outlives its arena. Declared
-        // first so it is destroyed last. `arena` below then stays untouched;
-        // an arena allocates nothing until its first use.
+        // first so it is destroyed last. Such a part has no arena of its own.
         std::shared_ptr<PendingSpanBatch> arena_owner;
         grpc::ClientContext ctx;
-        google::protobuf::Arena arena{arena_options()};
+        // Emplaced only by the batch that serializes into it (send_batch_async).
+        // Not a plain member: an Arena built with non-default options
+        // allocates its first block, start_block_size, at construction to
+        // hold the policy, so every split part would carry an unused 64 KiB
+        // for its call's lifetime.
+        std::optional<google::protobuf::Arena> arena;
         v1::PSpanMessageBatch* request{nullptr};
         v1::PSpanResultBatch reply;
         // Pins the channel (and stub) this batch was launched on until the
@@ -2620,7 +2625,7 @@ namespace pinpoint {
                 auto part = std::make_shared<PendingSpanBatch>();
                 part->arena_owner = first;
                 part->transport = first->transport;
-                part->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&first->arena);
+                part->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&*first->arena);
                 current = part->request;
                 rest.push_back(std::move(part));
                 size = 0;
@@ -2958,7 +2963,8 @@ namespace pinpoint {
                 throw std::runtime_error("span channel is closed");
             }
             pending->transport = transport;
-            pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&pending->arena);
+            pending->arena.emplace(PendingSpanBatch::arena_options());
+            pending->request = google::protobuf::Arena::Create<v1::PSpanMessageBatch>(&*pending->arena);
             // Reserve up front, like build_grpc_span does for span events: a
             // growing RepeatedPtrField doubles its pointer array, and on an arena
             // every regrow strands the old array there for the batch's lifetime.
@@ -2969,9 +2975,9 @@ namespace pinpoint {
                 const auto& span = span_chunk->getSpanData();
                 auto* msg = pending->request->add_span();
                 if (!span_chunk->isFinal() || span->isAsyncSpan()) {
-                    msg->unsafe_arena_set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &pending->arena));
+                    msg->unsafe_arena_set_allocated_spanchunk(build_grpc_span_chunk(std::move(span_chunk), &*pending->arena));
                 } else {
-                    msg->unsafe_arena_set_allocated_span(build_grpc_span(std::move(span_chunk), &pending->arena));
+                    msg->unsafe_arena_set_allocated_span(build_grpc_span(std::move(span_chunk), &*pending->arena));
                 }
             }
             batch.clear();

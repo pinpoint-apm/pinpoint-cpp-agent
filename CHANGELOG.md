@@ -58,6 +58,11 @@
   repeated or reset its sequence numbers, or never ended what it recorded,
   could grow a span past `Span.MaxEventSequence` and `Span.MaxEventDepth`.
 
+- **A span batch split over `Collector.Grpc.MaxSendMessageSize` no longer
+  allocates an unused 64 KiB block per request.** Protobuf allocates an
+  arena's first block when it is constructed with non-default options, and
+  every further request of a split batch built one it never used.
+
 - **`pt_global_agent()` hands out one library-owned handle per agent, so a
   missed `pt_agent_destroy()` no longer leaks.** Each call used to register a
   fresh owning handle, and the documented handlers call it once per request,
