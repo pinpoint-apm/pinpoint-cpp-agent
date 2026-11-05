@@ -370,7 +370,8 @@ processRequest->EndEvent();
 auto span_event = span->NewSpanEvent("operation");
 
 span_event->SetServiceType(pinpoint::SERVICE_TYPE_MYSQL_QUERY);
-span_event->SetOperationName("SELECT * FROM users");
+span_event->SetOperationName("UserRepository.findAll");  // a fixed name, not the SQL
+span_event->SetSqlQuery("SELECT * FROM users", {});
 span_event->SetDestination("user_database");
 span_event->SetEndPoint("mysql-server:3306");
 
@@ -379,6 +380,11 @@ span_event->SetStartTime(start_time);
 
 span_event->EndEvent();
 ```
+
+`SetOperationName()` replaces the name given to `NewSpanEvent()` (the last call
+wins) and is interned the same way, so it must be low-cardinality too
+([Contracts §8](api_contracts.md#8-keep-operation-and-error-names-low-cardinality)):
+the statement itself goes in `SetSqlQuery()` (see [Tracing SQL Queries](#tracing-sql-queries)).
 
 `span->GetSpanEvent()` returns the innermost active event when you need it
 without threading the handle through — see [Contracts §6](api_contracts.md#6-getspanevent-returns-the-innermost-active-event).

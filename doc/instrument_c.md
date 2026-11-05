@@ -477,6 +477,11 @@ pt_span_event_set_destination(se, "downstream-host:8090");
 pt_span_event_set_start_time_ms(se, start_ms);
 ```
 
+`pt_span_event_set_operation_name()` replaces the name given at creation and is
+interned like it, so keep it low-cardinality: a route template such as
+`GET /users/{id}`, never the raw path
+([Contracts §8](api_contracts.md#8-keep-operation-and-error-names-low-cardinality)).
+
 ### Nested span events
 
 `pt_span_new_event()` pushes onto an internal stack; `pt_span_event_end(se)` finalizes and pops that event. End events in innermost-first order so pops stay balanced with pushes. Ending the same event twice is a warning no-op — it does not pop another event.
