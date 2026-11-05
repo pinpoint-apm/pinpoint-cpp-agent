@@ -53,6 +53,11 @@
   (an out-of-range value falls back to the default, as a negative one did).
   Documented in [Configuration Guide § URL Statistics](doc/config.md#url-statistics).
 
+- **`RecordSpanEvent()` also stops at the span's own event count and depth.**
+  It checked only the sequence and depth the caller passed, so a binding that
+  repeated or reset its sequence numbers, or never ended what it recorded,
+  could grow a span past `Span.MaxEventSequence` and `Span.MaxEventDepth`.
+
 - **`pt_global_agent()` hands out one library-owned handle per agent, so a
   missed `pt_agent_destroy()` no longer leaks.** Each call used to register a
   fresh owning handle, and the documented handlers call it once per request,

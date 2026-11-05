@@ -813,9 +813,15 @@ namespace pinpoint {
 
         // Backstop only: a wrapper batching events enforces these limits at
         // event-creation time with its own copy of the config. Dropping here
-        // keeps a misconfigured wrapper from growing the span unbounded.
+        // keeps a misconfigured wrapper from growing the span unbounded. The
+        // caller's depth and sequence place the replayed event; the span's own
+        // counters, which addSpanEvent advances on every call, measure what the
+        // span actually holds — checked too, so a wrapper that repeats or
+        // resets its sequence numbers, or never ends what it records, still
+        // meets MaxEventSequence / MaxEventDepth.
         const auto& cfg = config_;
-        if (is_event_overflow(*cfg, depth, sequence)) {
+        if (is_event_overflow(*cfg, depth, sequence) ||
+            is_event_overflow(*cfg, data_->getEventDepth(), data_->getEventSequence())) {
             LOG_WARN_THROTTLED("recorded span event exceeds maximum depth/sequence. (depth:{}, seq:{})",
                                depth, sequence);
             return noopSpanEvent();

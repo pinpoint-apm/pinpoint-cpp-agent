@@ -581,6 +581,29 @@ TEST_F(SpanTest, RecordSpanEventEnforcesLimitsTest) {
         << "records past the limits are dropped, the valid one is kept";
 }
 
+// The caller's numbers are not the only bound: a wrapper that keeps reusing
+// one sequence number still meets MaxEventSequence, because the span counts
+// what it actually holds.
+TEST_F(SpanTest, RecordSpanEventEnforcesLimitsOnTheSpansOwnCountTest) {
+    auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
+    config->span.max_event_sequence = 8;
+    config->span.event_chunk_size = 1000;
+    mock_agent_service_->reloadConfig(config);
+    SpanImpl span(mock_agent_service_.get(), "test-operation", "test-rpc");
+
+    const int64_t now_ms = 1700000000000;
+    for (int i = 0; i < 20; ++i) {
+        auto event = span.RecordSpanEvent("replayed", 2100, /*sequence=*/0, /*depth=*/1,
+                                          now_ms, now_ms, NONE_ASYNC_ID);
+        event->EndEvent();
+    }
+    span.EndSpan();
+
+    ASSERT_FALSE(mock_agent_service_->recorded_spans_.empty());
+    EXPECT_EQ(mock_agent_service_->recorded_spans_.back()->getSpanEventChunk().size(), 8u)
+        << "a repeated sequence number must not let the span grow past MaxEventSequence";
+}
+
 // The binding-oriented overloads do not enforce the owner-thread contract:
 // a binding that serializes access itself may flush one chunk from thread A
 // (binding the owner lazily in the checked paths) and end the span from
