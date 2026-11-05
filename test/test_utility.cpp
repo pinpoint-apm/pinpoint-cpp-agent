@@ -634,4 +634,44 @@ TEST(UtilityTest, MessageLengthCaps) {
     EXPECT_EQ(kMaxUrlStatPatternLength, 1024u) << "PEachUriStat.uri";
 }
 
+namespace {
+std::atomic<int> g_late_constructed{0};
+std::atomic<int> g_late_destroyed{0};
+
+struct LateCounted {
+    LateCounted() { g_late_constructed.fetch_add(1); }
+    ~LateCounted() { g_late_destroyed.fetch_add(1); }
+};
+
+LateCounted& late_counted() {
+    return thread_local_lazy<LateCounted>([] { return new LateCounted(); });
+}
+
+// A host thread_local whose destructor reaches the agent during thread exit.
+struct ReentersAtThreadExit {
+    void touch() const {}
+    ~ReentersAtThreadExit() { (void)late_counted(); }
+};
+}  // namespace
+
+// A call that re-enters thread_local_lazy after its reclaim guard ran (from a
+// thread_local destructor, during thread exit) gets a replacement; it must be
+// freed once the thread is gone, not kept until the process ends.
+TEST(UtilityTest, ThreadLocalLazyReclaimsAReplacementMadeDuringThreadExit) {
+    g_late_constructed.store(0);
+    g_late_destroyed.store(0);
+    std::thread worker([] {
+        // Constructed before the slot's first use, so TLS teardown (reverse
+        // construction order) runs its destructor after the reclaim guard.
+        static thread_local ReentersAtThreadExit host;
+        host.touch();
+        (void)late_counted();
+    });
+    worker.join();
+
+    EXPECT_GE(g_late_constructed.load(), 1);
+    EXPECT_EQ(g_late_destroyed.load(), g_late_constructed.load())
+        << "every per-thread instance, a teardown replacement included, must be freed";
+}
+
 } // namespace pinpoint

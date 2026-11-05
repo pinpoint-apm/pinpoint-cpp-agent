@@ -63,6 +63,12 @@
   arena's first block when it is constructed with non-default options, and
   every further request of a split batch built one it never used.
 
+- **A per-thread cache rebuilt from a `thread_local` destructor during thread
+  exit is freed with the thread.** Such a call (a host recording a final span
+  at thread exit) got a replacement object that stayed allocated until the
+  process ended, one per exiting thread; a thread-specific key now reclaims
+  it after the thread's other destructors.
+
 - **`pt_global_agent()` hands out one library-owned handle per agent, so a
   missed `pt_agent_destroy()` no longer leaks.** Each call used to register a
   fresh owning handle, and the documented handlers call it once per request,

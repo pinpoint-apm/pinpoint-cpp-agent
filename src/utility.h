@@ -25,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <optional>
+#include <pthread.h>
 #include <sys/types.h>
 #include <thread>
 #include <string_view>
@@ -391,9 +392,15 @@ namespace pinpoint {
      * after it). The slot has no destructor, so it is never "destroyed" and
      * stays valid for the whole thread lifetime; only the object it points at
      * is reclaimed, by the guard. Once the guard has run, a re-entering call
-     * gets a replacement that is deliberately leaked — bounded at one per
-     * thread that re-enters during its own exit. An exception from `make`
-     * propagates and nothing is cached.
+     * gets a replacement, which a POSIX thread-specific key reclaims: key
+     * destructors run after the C++ thread_local destructors (glibc calls
+     * them after __call_tls_dtors; on macOS the TLS destructors themselves
+     * run from a key destructor, and a key set meanwhile is visited in a
+     * later round). A replacement that re-enters from its own destructor is
+     * reclaimed the same way, for up to PTHREAD_DESTRUCTOR_ITERATIONS rounds;
+     * only past those, or if no key could be created, does one stay until
+     * the process ends — the heap does not go away with the thread. An
+     * exception from `make` propagates and nothing is cached.
      */
     template <typename T, typename Make>
     T& thread_local_lazy(Make&& make) {
@@ -407,7 +414,7 @@ namespace pinpoint {
             if (!slot.reclaimed) {
                 // Normal first use on this thread: register the guard that
                 // reclaims the object at thread exit. (Unreachable once TLS
-                // destructors have started — hence the reclaimed leak path.)
+                // destructors have started — hence the late path below.)
                 struct Reclaim {
                     ~Reclaim() {
                         delete slot.value;
@@ -417,14 +424,37 @@ namespace pinpoint {
                 };
                 static thread_local Reclaim reclaim;
                 (void)reclaim;
-#if defined(PINPOINT_HAS_LSAN)
             } else {
-                // Re-entry after the TLS reclaim guard has run intentionally
-                // keeps this replacement alive until the OS releases the
-                // thread. Tell LeakSanitizer about that documented lifetime so
-                // it still reports every other unreachable allocation.
+                // Re-entry after the reclaim guard has run, i.e. from a
+                // thread_local destructor during this thread's exit. Hand the
+                // replacement to a key destructor, which runs after the TLS
+                // destructors. It runs on this thread, so it can clear this
+                // thread's slot before deleting: a re-entry from ~T then
+                // makes (and hands over) a fresh replacement.
+                static const auto late_key = []() -> std::optional<pthread_key_t> {
+                    pthread_key_t key;
+                    const auto reclaim_late = [](void* value) {
+                        if (slot.value == value) {
+                            slot.value = nullptr;
+                        }
+                        delete static_cast<T*>(value);
+                    };
+                    if (pthread_key_create(&key, reclaim_late) != 0) {
+                        return std::nullopt;
+                    }
+                    return key;
+                }();
+#if defined(PINPOINT_HAS_LSAN)
+                // Key destructors never run for the main thread at exit(), and
+                // there may be no key: then it stays until the process ends.
+                // Tell LeakSanitizer about that documented lifetime so it
+                // still reports every other unreachable allocation.
                 __lsan_ignore_object(slot.value);
 #endif
+                if (late_key) {
+                    // Failure (ENOMEM) leaves it to the process, as above.
+                    (void)pthread_setspecific(*late_key, slot.value);
+                }
             }
         }
         return *slot.value;
