@@ -93,6 +93,7 @@ If the overflow warning appears regularly, create fewer, coarser span events per
 - String views are **consumed and copied during the call** and do not need to outlive it. No annotation payload string is materialized for a no-op, unsampled, or already-ended span/event.
 - `SetAnnotation()` never throws; on allocation failure the annotation is dropped with an error log.
 - There is no key de-duplication: recording the same key twice records two annotations.
+- One span's (or one event's) annotation list keeps at most **1024** entries, every internal annotation (status code, recorded headers, SQL) included. Later appends are dropped with a throttled `annotation limit (1024) reached` warning. A span's own list is sent only with its final chunk, so a long-lived span that annotates per message should record on short-lived events instead.
 - Every annotation byte is copied into the span and shipped to the collector — keep annotations small and sanitized (see [instrument.md §5](instrument.md#5-annotations)).
 
 ## 8. Keep Operation and Error Names Low-Cardinality

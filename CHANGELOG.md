@@ -51,6 +51,14 @@
   already-started workers and config watcher kept running beside the new
   agent, and an enabled watcher kept reconfiguring the shared logger.
 
+- **A span's or span event's annotation list is capped at 1024 entries.** A
+  span's own annotations are sent only with its final chunk, and an event's
+  only when it ends, so a long-lived span annotating per message, or an event
+  left open around a `SetSqlQuery()` loop, grew until it ended — tens of
+  megabytes per million calls, for a PSpan the collector limit then dropped
+  anyway. Later appends are dropped with a throttled warning. Documented in
+  [API contracts § Annotation Rules](doc/api_contracts.md#7-annotation-rules).
+
 - **A span batch over `Collector.Grpc.MaxSendMessageSize` is sent in several
   requests, not lost.** gRPC refuses a request over the limit with
   `RESOURCE_EXHAUSTED` before sending it, and the collector refuses one over

@@ -42,9 +42,23 @@ namespace pinpoint {
         return true;
     }
 
+    bool PinpointAnnotation::warnIfFull(int32_t key) const noexcept {
+        if (annotation_list_.size() < kMaxAnnotations) {
+            return false;
+        }
+        try {
+            LOG_WARN_THROTTLED("annotation limit ({}) reached, dropping annotation key {}",
+                               kMaxAnnotations, key);
+        } catch (...) {
+        }
+        return true;
+    }
+
     template <typename... Args>
     void PinpointAnnotation::append(int32_t key, Args&&... args) {
-        if (warnIfSealed()) return;
+        // Both checks run before the payload is built, so a dropped string
+        // annotation copies nothing.
+        if (warnIfSealed() || warnIfFull(key)) return;
         try {
             reserveInitial();
             annotation_list_.emplace_back(key, AnnotationData(std::forward<Args>(args)...));

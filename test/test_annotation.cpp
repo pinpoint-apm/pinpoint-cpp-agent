@@ -595,6 +595,27 @@ TEST_F(AnnotationTest, CachedSqlParameterAliasKeepsPreparedEntryAlive) {
     EXPECT_TRUE(weak.expired());
 }
 
+// A list drains only when its owner ends, so it is capped: a long-lived span
+// annotating per message must not grow without bound. Appends past the cap
+// are dropped through every overload and the kept entries are the first ones.
+TEST_F(AnnotationTest, AppendsPastTheLimitAreDropped) {
+    constexpr auto limit = PinpointAnnotation::kMaxAnnotations;
+    for (size_t i = 0; i < limit; ++i) {
+        annotation->AppendInt(static_cast<int32_t>(i), 1);
+    }
+
+    annotation->AppendInt(-1, 1);
+    annotation->AppendLong(-2, 2);
+    annotation->AppendStringString(-3, "a", "b");
+    annotation->AppendLongIntIntByteByteString(-4, 4, 5, 6, 7, 8, "s");
+    annotation->AppendData(-5, AnnotationData("late"));
+
+    const auto& annotations = annotation->getAnnotations();
+    ASSERT_EQ(annotations.size(), limit) << "appends past the limit must be dropped";
+    EXPECT_EQ(annotations.front().first, 0);
+    EXPECT_EQ(annotations.back().first, static_cast<int32_t>(limit - 1));
+}
+
 // Once sealed (the owner handed the list to the gRPC layer for
 // serialization), every Append overload must become a no-op instead of
 // growing a vector the worker may be iterating.

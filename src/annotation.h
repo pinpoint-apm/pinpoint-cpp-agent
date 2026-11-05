@@ -211,6 +211,20 @@ namespace pinpoint {
         /// @brief Const overload for read-only consumers (the gRPC serializer).
         const std::vector<std::pair<int32_t,AnnotationData>>& getAnnotations() const { return annotation_list_; }
 
+        /**
+         * @brief Most annotations one list keeps; later appends are dropped
+         *        with a throttled warning.
+         *
+         * A span's own list drains only with its final PSpan, and an event's
+         * only when the event ends, so a long-lived span that annotates per
+         * message (a websocket, a batch loop), or an event left open around a
+         * SetSqlQuery loop, would otherwise grow until it ends — by tens of
+         * megabytes per million calls, for a PSpan that then exceeds
+         * Collector.Grpc.MaxSendMessageSize and is dropped anyway. Far above
+         * what real instrumentation records on one span or event.
+         */
+        static constexpr size_t kMaxAnnotations = 1024;
+
     private:
         // Shared body of every Append overload: seal guard, initial reserve,
         // emplace, with allocation failures logged and swallowed. Defined in
@@ -230,6 +244,9 @@ namespace pinpoint {
         /// called, signalling that an Append must no-op. Mirrors the
         /// warnIfFinished guard on span events.
         bool warnIfSealed() const noexcept;
+        /// @brief Returns true (after a throttled warning) once the list holds
+        /// kMaxAnnotations entries, signalling that an Append must no-op.
+        bool warnIfFull(int32_t key) const noexcept;
 
         std::vector<std::pair<int32_t,AnnotationData>> annotation_list_;
         std::atomic<bool> sealed_{false};
