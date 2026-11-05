@@ -711,7 +711,9 @@ namespace pinpoint {
     // here (same position), and its place in kTeardownOrder; the static_asserts
     // below fail the build otherwise. Bodies and stop signals are captureless
     // lambdas so the table stays constexpr; they run with `this` as the
-    // argument. The stop entries must not block (see request_stop_workers).
+    // argument. The stop entries only signal: they may take a worker's mutex
+    // for a moment, but must never wait for the worker itself (see
+    // request_stop_workers).
     constexpr std::array<AgentImpl::WorkerSpec, AgentImpl::kWorkerCount> AgentImpl::worker_specs() {
         return {{
             // kInit's stop signal is requestStopAgentInfo(): the init thread
@@ -782,9 +784,16 @@ namespace pinpoint {
     }
 
     void AgentImpl::request_stop_workers() noexcept {
-        // Stop signals also acquire worker mutexes. Run them inside the
-        // teardown deadline: a host log sink may call Shutdown while holding
-        // one of those mutexes, and must return before the runner can proceed.
+        // Signals only: each entry sets a flag, notifies a condition variable
+        // or issues a best-effort TryCancel, and none waits for its worker, so
+        // all of them are signaled before teardown_workers() joins any and
+        // they wind down in parallel instead of serially behind each other.
+        // Several take a worker mutex to signal (the wait mutexes, the ping
+        // and stats stream_mutex_), which is why this runs on the deadline
+        // runner, as the first step of teardown_workers(): a host log sink
+        // may call Shutdown() from a line logged under one of those mutexes,
+        // and signaling from that thread would deadlock it, while the runner
+        // just waits for the sink to return.
         // Per-call try/catch so one failing signal cannot skip the rest.
         // The config watcher is not a table worker (owned by ConfigFileWatcher,
         // joined first in teardown_workers()); signal it first as well.
@@ -1337,6 +1346,11 @@ namespace pinpoint {
 
         try { LOG_INFO("agent shutdown"); } catch (...) {}
         const auto logger_generation = logger_generation_;
+        // Through the runner even for an agent that never started, which has
+        // no worker to join: its stop signals take the same worker mutexes,
+        // and the caller may be holding one (a log sink calling Shutdown(), see
+        // request_stop_workers()). Only a runner that cannot be spawned makes
+        // the teardown inline.
         const bool destroy_deferred = teardown_workers_with_deadline(may_defer_destroy);
         // The runner may already have deleted this object. Only locals and
         // the process-wide logger may be accessed from here.
