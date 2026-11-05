@@ -121,7 +121,7 @@ The lifecycle for a dynamic module is:
 |---|---|---|
 | `init_module` | master | Nothing agent-related (parse directives only). |
 | `init_process` | each worker | `pt_start_agent()` — only when `ngx_process` is `NGX_PROCESS_WORKER` or `NGX_PROCESS_SINGLE`; skip helper processes (cache manager/loader). |
-| `exit_process` | each worker | `pt_agent_shutdown()` + `pt_agent_destroy()`. |
+| `exit_process` | each worker | `pt_agent_shutdown()`. |
 
 ```c
 /* init_process (worker) */
@@ -150,7 +150,6 @@ static ngx_int_t ngx_http_pinpoint_init_process(ngx_cycle_t *cycle) {
 static void ngx_http_pinpoint_exit_process(ngx_cycle_t *cycle) {
     if (g_agent != NULL) {
         pt_agent_shutdown(g_agent);
-        pt_agent_destroy(g_agent);
         g_agent = NULL;
     }
 }

@@ -199,6 +199,20 @@ public:
         return found == shard.live.end() ? Entry{} : found->second;
     }
 
+    // Swaps the wrapper behind a live token and returns the previous one, for
+    // the caller to destroy after the shard mutex is released. Null (and
+    // nothing swapped) when the token is unknown.
+    Entry retarget(Handle handle, Entry replacement) {
+        auto& shard = shard_for(handle);
+        std::lock_guard<std::shared_mutex> lock(shard.mutex);
+        const auto found = shard.live.find(handle);
+        if (found == shard.live.end()) {
+            return {};
+        }
+        std::swap(found->second, replacement);
+        return replacement;
+    }
+
     // Removes and returns the shared wrapper. Moving it out before erasing
     // ensures destruction happens after the shard mutex is released.
     Entry erase(Handle handle) {
@@ -358,11 +372,92 @@ static void pt_handle_call(pt_span_event_t handle, F&& fn) {
 // is exact: a real (live) object can never share an address with the live noop
 // singleton, so this never misclassifies a span that should record.
 
-static pt_agent_t make_agent_handle(pinpoint::AgentPtr ptr) {
-    if (!ptr) return nullptr;
-    if (ptr.get() == noop_agent_sentinel()->ptr.get()) return noop_agent_sentinel();
-    return agent_handle_registry().insert(
-        std::make_shared<pt_agent_s>(pt_agent_s{std::move(ptr)}));
+// ============================================================================
+// The global agent's handle
+//
+// pt_global_agent() is the only source of agent handles, and the documented
+// handlers call it once per request. Minting a fresh token per call made every
+// pt_agent_destroy() a handler skipped on some return path a registry entry
+// leaked for good, per request. So the library owns ONE token per global agent
+// instance and hands that same token to every caller; pt_agent_destroy() has
+// nothing left to release. As soon as the C API sees the global agent change —
+// on the next pt_global_agent(), pt_start_agent() or pt_agent_shutdown() — the
+// token is retargeted at the disabled agent, which releases the old agent (one
+// shut down through the C++ API stays pinned until one of those runs: one
+// agent at most). A copy a caller kept therefore keeps behaving as a handle to
+// a shut-down agent always did: enabled 0, noop spans. What stays behind is
+// one small registry entry per replaced agent, not per call.
+// ============================================================================
+
+namespace {
+struct GlobalAgentHandle {
+    std::mutex mutex;
+    // The current agent's token, or null. Written under `mutex`; read without
+    // it on the fast path, which confirms the token against the registry.
+    std::atomic<pt_agent_t> handle{nullptr};
+};
+
+GlobalAgentHandle& global_agent_handle() {
+    // Immortal for the same shutdown-order reason as the registries above.
+    static auto* cache = new GlobalAgentHandle();
+    return *cache;
+}
+
+// True when @p handle is still registered for @p agent.
+bool handle_wraps(pt_agent_t handle, const pinpoint::AgentPtr& agent) {
+    if (handle == nullptr) {
+        return false;
+    }
+    const auto owned = agent_handle_registry().find(handle);
+    return owned && owned->ptr == agent;
+}
+}  // namespace
+
+// Returns the token of the current global agent — the disabled-agent sentinel
+// when there is none — minting it on the first call for that agent and
+// retargeting the previous agent's token once the global agent changed.
+static pt_agent_t sync_global_agent_handle() {
+    auto& cache = global_agent_handle();
+    const auto is_none = [](const pinpoint::AgentPtr& agent) {
+        return agent.get() == noop_agent_sentinel()->ptr.get();
+    };
+
+    // Fast paths, lock-free: the cached token still wraps the global agent,
+    // or there is no agent and nothing cached (a disabled process calling
+    // this per request must not serialize on the mutex).
+    {
+        const auto agent = pinpoint::GlobalAgent();
+        if (!agent) return nullptr;
+        const auto cached = cache.handle.load(std::memory_order_acquire);
+        if (is_none(agent) ? cached == nullptr : handle_wraps(cached, agent)) {
+            return cached != nullptr ? cached : noop_agent_sentinel();
+        }
+    }
+
+    // Built before the lock: the stale token's new target. Declared before
+    // the lock too, so the previous agent's wrapper — possibly its last
+    // reference — is destroyed after the mutex is released.
+    auto disabled = std::make_shared<pt_agent_s>(pt_agent_s{pinpoint::noopAgent()});
+    std::shared_ptr<pt_agent_s> stale;
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    // Re-read under the lock: global agents only ever move forward, so the
+    // serialized loads here never mint a token for an agent older than the
+    // one already cached — which would disable the live agent's token.
+    auto agent = pinpoint::GlobalAgent();
+    if (!agent) return nullptr;
+    const bool none = is_none(agent);
+    const auto cached = cache.handle.load(std::memory_order_relaxed);
+    if (none ? cached == nullptr : handle_wraps(cached, agent)) {
+        return cached != nullptr ? cached : noop_agent_sentinel();
+    }
+    const pt_agent_t result = none
+        ? nullptr
+        : agent_handle_registry().insert(std::make_shared<pt_agent_s>(pt_agent_s{std::move(agent)}));
+    cache.handle.store(result, std::memory_order_release);
+    if (cached != nullptr) {
+        stale = agent_handle_registry().retarget(cached, std::move(disabled));
+    }
+    return result != nullptr ? result : noop_agent_sentinel();
 }
 
 static pt_span_t make_span_handle(pinpoint::SpanPtr ptr) {
@@ -692,6 +787,13 @@ int pt_start_agent(pt_agent_options_t options) {
         const bool started = owned
             ? pinpoint::StartAgent(owned->options)
             : pinpoint::StartAgent();
+        // Release the replaced agent's handle now rather than at the next
+        // pt_global_agent(). Its own boundary: a failure here must not turn a
+        // started agent into a 0 return.
+        try {
+            (void)sync_global_agent_handle();
+        } catch (...) {
+        }
         return started ? 1 : 0;
     });
 }
@@ -742,17 +844,19 @@ pt_reload_status_t pt_reload_agent_config(const char* yaml,
 
 pt_agent_t pt_global_agent(void) {
     return pt_api_call(__func__, static_cast<pt_agent_t>(nullptr), [] {
-        // A missing global agent collapses to the shared noop-agent sentinel; an
-        // existing one is wrapped in a handle whose shared_ptr keeps it alive
-        // regardless of whether the caller ever calls pt_agent_destroy().
-        return make_agent_handle(pinpoint::GlobalAgent());
+        // One library-owned token per global agent instance; a missing global
+        // agent collapses to the shared noop-agent sentinel.
+        return sync_global_agent_handle();
     });
 }
 
 void pt_agent_destroy(pt_agent_t agent) {
-    pt_api_call(__func__, [&] {
-        destroy_handle(agent);
-    });
+    // Every agent handle is the library-owned token of a global agent (see
+    // sync_global_agent_handle), shared by all callers, so there is nothing
+    // to release here — destroying it would invalidate everyone else's copy.
+    // Kept for API compatibility; any value, including a stale or repeated
+    // one, is accepted.
+    (void)agent;
 }
 
 int pt_agent_is_enabled(pt_agent_t agent) {
@@ -768,6 +872,9 @@ void pt_agent_shutdown(pt_agent_t agent) {
         pt_handle_call(agent, [](pt_agent_t valid) {
             valid->ptr->Shutdown();
         });
+        // The agent just left the singleton: retarget its handle at the
+        // disabled agent so the library no longer pins it.
+        (void)sync_global_agent_handle();
     });
 }
 

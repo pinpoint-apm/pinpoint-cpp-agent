@@ -130,8 +130,8 @@ Points to keep in mind:
 - **Calling `StartAgent()` while an agent is running** is safe: it leaves the
   running agent untouched and returns `true` with a warning log.
 
-In C the same cycle is `pt_agent_shutdown()` + `pt_agent_destroy()` followed by a
-new `pt_start_agent()`; see the [C API guide](instrument_c.md#3-bootstrapping-the-agent).
+In C the same cycle is `pt_agent_shutdown()` followed by a new `pt_start_agent()`
+and a fresh `pt_global_agent()` handle; see the [C API guide](instrument_c.md#3-bootstrapping-the-agent).
 
 ---
 

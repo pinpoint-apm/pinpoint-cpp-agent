@@ -714,7 +714,7 @@ contract alone: by the time `SharedDeleter` runs the strong count is zero and
 `weak_from_this().lock()` is guaranteed to return nullptr. The
 final-release-without-`Shutdown()` case — promised bounded in `tracer.h` — is
 covered *only* by the `delete_when_done` ownership transfer. Without it,
-`agent.reset()` (or `pt_agent_destroy` without a prior shutdown) blocks
+`agent.reset()` (the last reference released without a prior shutdown) blocks
 unboundedly on a wedged worker and
 `AgentShutdownDeadlineTest.ReleaseWithoutShutdownDefersDestructionWhenWedged`
 fails immediately.

@@ -34,14 +34,14 @@ Pinpoint models each transaction as a tree of **spans**.
 
 ### Handle lifetime rules
 
-Agent and span handles own C wrapper storage and must be destroyed when you are done with them:
+Span handles own C wrapper storage and must be destroyed when you are done with them:
 
 ```c
-pt_agent_t      → pt_agent_destroy()
 pt_span_t       → pt_span_destroy()        (call pt_span_end() first)
+pt_agent_t      → nothing to release       (owned by the library)
 ```
 
-`pt_agent_destroy()` releases the C handle wrapper. It does not shut down tracing by itself; call `pt_agent_shutdown()` only for an agent you intend to stop.
+The agent handle `pt_global_agent()` returns is owned by the library: every call made while the same agent is global returns that same handle, so calling it once per request allocates nothing. `pt_agent_destroy()` is accepted for compatibility and does nothing. After that agent is shut down or replaced, a copy you kept behaves as the disabled agent — take a fresh one from `pt_global_agent()`. Call `pt_agent_shutdown()` only for an agent you intend to stop.
 
 Span-event handles are non-owning views. They allocate no resources, and `pt_span_event_destroy()` is a safe no-op kept for API symmetry and compatibility. Use these handles only while their parent span is alive and active; do not read, mutate, or store them for work that can run after `pt_span_event_end()`, `pt_span_end()`, or `pt_span_destroy()`.
 
@@ -96,7 +96,6 @@ int main(void) {
     /* application logic ... */
 
     pt_agent_shutdown(agent);  /* flush pending spans */
-    pt_agent_destroy(agent);   /* release the handle  */
     return 0;
 }
 ```
@@ -110,13 +109,12 @@ int main(void) {
 > Verify startup through the agent log, never through the return value.
 
 `pt_agent_shutdown()` is terminal for that agent: the same handle can never come
-back online. To stop and later resume tracing, destroy the handle and run
-`pt_start_agent()` again for each cycle — the full contract is in
+back online. To stop and later resume tracing, run `pt_start_agent()` again
+and take the new agent's handle from `pt_global_agent()` for each cycle — the full contract is in
 [Stopping and Resuming the Agent](troubleshooting.md#stopping-and-resuming-the-agent):
 
 ```c
-pt_agent_shutdown(agent);
-pt_agent_destroy(agent);          /* drop the dead handle */
+pt_agent_shutdown(agent);         /* `agent` is a disabled agent from here on */
 
 /* ... later: a NEW agent; the old one cannot restart */
 pt_start_agent(NULL);
@@ -182,18 +180,16 @@ one; the parts that decide whether your sink is correct:
 
 ### Using the global agent
 
-`pt_global_agent()` returns a C handle wrapper around the singleton agent that was installed by the most recent `pt_start_agent()` call. If no global agent exists, it returns a disabled no-op agent handle. Release the returned wrapper with `pt_agent_destroy()` when done. Do not call `pt_agent_shutdown()` from request-handling code unless you intentionally want to stop the process-wide agent.
+`pt_global_agent()` returns the handle of the singleton agent that was installed by the most recent `pt_start_agent()` call — the same library-owned handle on every call, so there is nothing to release. If no global agent exists, it returns a disabled no-op agent handle. Do not call `pt_agent_shutdown()` from request-handling code unless you intentionally want to stop the process-wide agent.
 
 ```c
 /* In a request handler, far from main() */
-pt_agent_t agent = pt_global_agent();  /* wrapper around the global agent */
+pt_agent_t agent = pt_global_agent();  /* library-owned; nothing to release */
 
 pt_span_t span = pt_agent_new_span(agent, "MyService", "/api/v1");
 /* ... */
 pt_span_end(span);
 pt_span_destroy(span);
-
-pt_agent_destroy(agent);  /* releases this C handle wrapper */
 ```
 
 ### Checking agent status
@@ -206,7 +202,6 @@ work while tracing is off. The request is served normally either way:
 void handle_request(request_t* req) {
     pt_agent_t agent = pt_global_agent();
     if (!pt_agent_is_enabled(agent)) {
-        pt_agent_destroy(agent);
         process(req);              /* tracing is off — skip instrumentation */
         return;
     }
@@ -215,7 +210,6 @@ void handle_request(request_t* req) {
     process(req);
     pt_span_end(span);
     pt_span_destroy(span);
-    pt_agent_destroy(agent);
 }
 ```
 
@@ -710,7 +704,6 @@ static void handle_request(const my_request_t* req, my_response_t* res) {
 
     pt_span_end(span);
     pt_span_destroy(span);
-    pt_agent_destroy(agent);  /* releases the pt_global_agent() handle wrapper */
 }
 ```
 

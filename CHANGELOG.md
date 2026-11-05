@@ -36,6 +36,17 @@
 
 ### Fixed
 
+- **`pt_global_agent()` hands out one library-owned handle per agent, so a
+  missed `pt_agent_destroy()` no longer leaks.** Each call used to register a
+  fresh owning handle, and the documented handlers call it once per request,
+  so a handler that skipped `pt_agent_destroy()` on one return path leaked a
+  wrapper per request (and pinned the agent past a restart). Every call made
+  while the same agent is global now returns the same handle, and
+  `pt_agent_destroy()` is a no-op kept for compatibility. Once the agent is
+  shut down or replaced the library releases it; a handle a caller kept
+  behaves as the disabled agent, as a handle to a shut-down agent always did.
+  Documented in [C API § Handle lifetime rules](doc/instrument_c.md#handle-lifetime-rules).
+
 - **A shut-down agent no longer keeps its collector connections open.** The
   ping and stats streams kept their last finished `ClientContext`, and the
   metadata sender kept the requests that completed while it was stopping;

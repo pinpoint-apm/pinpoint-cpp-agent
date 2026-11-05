@@ -159,7 +159,9 @@ protected:
         pt_agent_destroy(agent_);
         agent_ = nullptr;
 
-        mock_agent_->Shutdown();
+        if (mock_agent_) {
+            mock_agent_->Shutdown();
+        }
         mock_agent_.reset();
         pinpoint::reset_global_agent();
     }
@@ -512,6 +514,36 @@ TEST_F(TracerCApiTest, DoubleDestroyIsSafe) {
         pt_agent_destroy(global);
         EXPECT_NO_FATAL_FAILURE(pt_agent_destroy(global));
     }
+}
+
+// pt_global_agent() runs once per request in the documented handlers, so it
+// hands back one library-owned handle per agent: a pt_agent_destroy() a
+// handler skips on some return path can no longer leak a wrapper per request.
+TEST_F(TracerCApiTest, GlobalAgentHandleIsOneLibraryOwnedHandlePerAgent) {
+    EXPECT_EQ(pt_global_agent(), agent_) << "the same agent must keep one handle";
+
+    pt_agent_destroy(agent_);
+    pt_agent_destroy(agent_);
+    EXPECT_EQ(pt_agent_is_enabled(agent_), 1) << "destroy must not invalidate the shared handle";
+    EXPECT_EQ(pt_global_agent(), agent_);
+}
+
+// Once the agent leaves the singleton, the C layer stops pinning it, and a
+// copy a caller kept behaves as the disabled agent — as a handle to a
+// shut-down agent always did.
+TEST_F(TracerCApiTest, ShutDownAgentIsReleasedAndKeptHandleActsDisabled) {
+    const std::weak_ptr<pinpoint::AgentImpl> watched = mock_agent_;
+    pt_agent_shutdown(agent_);
+    mock_agent_.reset();
+    EXPECT_TRUE(watched.expired()) << "the C layer must not pin a shut-down agent";
+
+    EXPECT_EQ(pt_agent_is_enabled(agent_), 0);
+    pt_span_t span = pt_agent_new_span(agent_, "op", "/rpc");
+    ASSERT_NE(span, nullptr) << "a kept handle still yields a (no-op) span";
+    EXPECT_EQ(pt_span_is_sampled(span), 0);
+    pt_span_end(span);
+    pt_span_destroy(span);
+    EXPECT_NE(pt_global_agent(), agent_) << "with no global agent, the disabled sentinel";
 }
 
 // A destroyed handle must never be recycled as the identity of a later live

@@ -50,7 +50,6 @@
  *   pt_span_destroy(span);
  *
  *   pt_agent_shutdown(agent);
- *   pt_agent_destroy(agent);
  * @endcode
  *
  * Span-event handles are non-owning views that hold no resources of their
@@ -61,12 +60,13 @@
  *
  * ## Handle validity
  *
- * Agent and span handles are owning and must be released with their
- * pt_*_destroy(). Passing an unknown or already-destroyed handle to any
- * function in this header is ignored with a warning, or returns that
- * function's documented failure value — it is never undefined behavior.
- * NULL and the shared disabled-agent / no-op-span sentinels are ignored
- * silently.
+ * Span handles are owning and must be released with pt_span_destroy().
+ * Agent handles are owned by the library (see pt_global_agent()), so
+ * pt_agent_destroy() is a no-op kept for compatibility. Passing an unknown or
+ * already-destroyed handle to any function in this header is ignored with a
+ * warning, or returns that function's documented failure value — it is never
+ * undefined behavior. NULL and the shared disabled-agent / no-op-span
+ * sentinels are ignored silently.
  */
 
 #ifndef PINPOINT_TRACER_C_H
@@ -559,21 +559,27 @@ pt_reload_status_t pt_reload_agent_config(const char* yaml,
 /**
  * @brief Returns a handle to the singleton global agent.
  *
- * For a live global agent, each call returns a distinct owning handle that
- * should be released with pt_agent_destroy(). Destroying it only releases the
- * C wrapper; the global agent itself is managed internally. If no global
- * agent exists, calls share a disabled-agent sentinel whose destroy operation
- * is a no-op. NULL is returned only if handle setup itself fails.
+ * Every call made while the same agent is global returns the same handle. It
+ * is owned by the library, so calling this once per request costs no
+ * allocation and a caller never has to release it; pt_agent_destroy() is
+ * accepted and does nothing. Once that agent is shut down or replaced, the
+ * library releases it and any copy a caller kept behaves as the disabled
+ * agent (pt_agent_is_enabled() 0, no-op spans), as a handle to a shut-down
+ * agent always has; call pt_global_agent() again for the new agent. If no
+ * global agent exists, calls share a disabled-agent sentinel. NULL is
+ * returned only if handle setup itself fails.
  *
  * Mirrors pinpoint::GlobalAgent().
  */
 pt_agent_t pt_global_agent(void);
 
 /**
- * @brief Releases an agent handle obtained from pt_global_agent().
+ * @brief Accepts an agent handle obtained from pt_global_agent(); does nothing.
  *
- * This only frees the C wrapper; the global agent itself is unaffected.
- * See "Handle validity" at the top of this header.
+ * Agent handles are owned by the library and shared by every caller (see
+ * pt_global_agent()), so there is nothing to release. Kept so existing code
+ * that pairs each pt_global_agent() with a destroy keeps compiling and stays
+ * correct; any value, including a repeated or stale one, is accepted.
  */
 void pt_agent_destroy(pt_agent_t agent);
 
@@ -597,10 +603,11 @@ int pt_agent_is_enabled(pt_agent_t agent);
  * the global agent it is also removed from the singleton, so pt_global_agent()
  * returns the disabled-agent sentinel until a new one is installed.
  *
- * To resume tracing in the same process, release the handle with
- * pt_agent_destroy() and call pt_start_agent() again; pt_global_agent() then
- * hands out the fresh agent. Each such cycle re-resolves the agent identity,
- * so it registers a NEW agent instance with the collector.
+ * To resume tracing in the same process, call pt_start_agent() again and take
+ * the fresh agent's handle from pt_global_agent(); the old handle stays a
+ * disabled agent.
+ * Each such cycle re-resolves the agent identity, so it registers a NEW agent
+ * instance with the collector.
  *
  * Mirrors pinpoint::Agent::Shutdown().
  */
