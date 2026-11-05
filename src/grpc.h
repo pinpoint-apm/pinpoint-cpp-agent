@@ -1042,10 +1042,15 @@ namespace pinpoint {
         /// @param permit_timeout how long to wait for an in-flight permit
         ///        before dropping the batch; the periodic sender passes the
         ///        flush interval, the shutdown drain what is left of its budget.
+        ///        It bounds the call's permit waits together: a batch split
+        ///        over Collector.Grpc.MaxSendMessageSize spends it once, not
+        ///        once per request.
         void send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch,
                               std::chrono::milliseconds permit_timeout);
         void send_batch_async(std::vector<std::unique_ptr<SpanChunk>>& batch);
-        bool try_acquire_permit(std::chrono::milliseconds timeout);
+        /// Takes a permit, waiting for one until @p deadline at most; a
+        /// deadline already past still takes a permit that is free now.
+        bool try_acquire_permit(std::chrono::steady_clock::time_point deadline);
         bool try_acquire_all_permits(std::chrono::milliseconds timeout);
         void await_in_flight_requests();
         void flush_remaining(std::vector<std::unique_ptr<SpanChunk>>& pending_batch);

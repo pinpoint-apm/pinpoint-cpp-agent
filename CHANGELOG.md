@@ -63,6 +63,15 @@
   arena's first block when it is constructed with non-default options, and
   every further request of a split batch built one it never used.
 
+- **A span batch split over `Collector.Grpc.MaxSendMessageSize` waits for
+  in-flight permits once, not once per request.** Each further request of a
+  split batch waited the whole permit timeout again, so while the collector
+  held every permit a batch split into N requests blocked N + 1 times as
+  long: the shutdown drain ran that far past its budget (a process exit
+  behind `install_atexit_shutdown` waited it out), and the span worker
+  stalled for N + 1 flush intervals. The requests of a batch now share one
+  deadline.
+
 - **A per-thread cache rebuilt from a `thread_local` destructor during thread
   exit is freed with the thread.** Such a call (a host recording a final span
   at thread exit) got a replacement object that stayed allocated until the

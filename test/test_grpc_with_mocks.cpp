@@ -4692,4 +4692,51 @@ TEST_F(GrpcMockTest, GrpcSpanSplitsAnOversizeBatchTest) {
     EXPECT_NE(text.find(" span 1004"), std::string::npos) << "the warning names the span: " << text;
 }
 
+// The requests of a split batch share the batch's permit timeout instead of
+// each waiting it out again. With the collector holding the only permit, a
+// shutdown drain of one batch split into eight requests used to block once
+// per further request, seven times its budget, and so outlived the agent's
+// shutdown deadline (an exit behind install_atexit_shutdown waited it out).
+TEST_F(GrpcMockTest, GrpcSpanSplitBatchWaitsForPermitsWithinOneTimeoutTest) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 8;
+    cfg->collector.span_batch.max_concurrent_requests = 1;
+    // A chunk of a little under 1 KB per request: the batch splits in eight.
+    cfg->collector.grpc.channel.max_send_message_size = 1200;
+
+    GrpcClientTuning tuning;
+    tuning.span_shutdown_flush_budget = std::chrono::milliseconds(300);
+    tuning.span_shutdown_await_timeout = std::chrono::milliseconds(20);
+    TestableGrpcSpan span_client(mock_agent_service_.get(), tuning);
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    // A collector that never answers keeps the only permit.
+    fake->setReplyMode(FakeSpanStub::ReplyMode::HOLD);
+    span_client.setMockSpanStub(std::move(fake_stub));
+    span_client.setSpanChannelReady(true);
+
+    for (int i = 0; i < 8; ++i) {
+        auto span_data = make_test_span_data_ptr(*mock_agent_service_, "bulk-op");
+        span_data->setSpanId(2000 + i);
+        span_data->getAnnotations()->AppendData(103, AnnotationData(std::string(800, 'x')));
+        span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+    }
+
+    // Stopped before it runs, the worker goes straight to the shutdown drain.
+    span_client.stopSpanWorker();
+    const auto started = std::chrono::steady_clock::now();
+    span_client.sendSpanWorker();
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    fake->releaseHeldCallbacks(grpc::Status::OK);
+
+    EXPECT_EQ(fake->batchCount(), 1u) << "only the first request gets the permit";
+    EXPECT_EQ(span_client.droppedSpans(), 7u)
+        << "every further request is dropped once the batch's permit timeout is spent";
+    // One budget plus the two in-flight awaits, with slack: a wait per
+    // further request would take seven budgets.
+    EXPECT_LT(elapsed_ms, 2 * tuning.span_shutdown_flush_budget.count())
+        << "ms the drain took, for a " << tuning.span_shutdown_flush_budget.count() << "ms budget";
+}
+
 } // namespace pinpoint

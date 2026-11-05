@@ -2648,9 +2648,11 @@ namespace pinpoint {
         set_span_stub(v1::Span::NewStub(channel), channel);
     }
 
-    bool GrpcSpan::try_acquire_permit(std::chrono::milliseconds timeout) {
+    bool GrpcSpan::try_acquire_permit(std::chrono::steady_clock::time_point deadline) {
         std::unique_lock<std::mutex> lock(inflight_->mutex);
-        if (!inflight_->cv.wait_for(lock, timeout, [this]{ return inflight_->permits > 0; })) {
+        // A deadline already past does not wait, but still takes a permit
+        // that is free at this moment.
+        if (!inflight_->cv.wait_until(lock, deadline, [this]{ return inflight_->permits > 0; })) {
             return false;
         }
         --inflight_->permits;
@@ -2825,6 +2827,15 @@ namespace pinpoint {
             return;
         }
 
+        // One deadline for every permit this call waits for. A batch split
+        // over Collector.Grpc.MaxSendMessageSize takes a permit per request
+        // (see `launch` below); if each waited permit_timeout anew, a split
+        // into N requests could block N + 1 times as long while the collector
+        // holds every permit — past what is left of the shutdown drain's
+        // budget, which flush_remaining() passes in as permit_timeout, and
+        // for N + 1 flush intervals of the periodic sender.
+        const auto permit_deadline = std::chrono::steady_clock::now() + permit_timeout;
+
         // Reserve an in-flight slot before serializing anything. When the
         // pipeline is saturated the batch is dropped without paying the
         // (potentially large) protobuf build cost, and backpressure engages
@@ -2832,7 +2843,7 @@ namespace pinpoint {
         // Every drop path below charges this count: the batch is cleared as
         // soon as it is serialized, so the size is taken up front.
         const auto batch_count = batch.size();
-        if (!try_acquire_permit(permit_timeout)) {
+        if (!try_acquire_permit(permit_deadline)) {
             LOG_WARN_THROTTLED("SendSpanBatch dropped {} span(s): no available permit within {}ms",
                                batch_count, permit_timeout.count());
             inflight_->recordDrop(batch_count);
@@ -3017,9 +3028,12 @@ namespace pinpoint {
         }
         launch(pending, compressed);
         for (const auto& part : rest) {
-            if (!try_acquire_permit(permit_timeout)) {
-                LOG_WARN_THROTTLED("SendSpanBatch dropped {} span(s) of a split batch: no available permit within {}ms",
-                                   part->request->span_size(), permit_timeout.count());
+            // Only what is left of the batch's permit timeout (see
+            // permit_deadline): once it has passed, a request goes out only
+            // on a permit that is free at once.
+            if (!try_acquire_permit(permit_deadline)) {
+                LOG_WARN_THROTTLED("SendSpanBatch dropped {} span(s) of a split batch: no available permit "
+                                   "within the batch's {}ms", part->request->span_size(), permit_timeout.count());
                 inflight_->recordDrop(static_cast<size_t>(part->request->span_size()));
                 continue;
             }
