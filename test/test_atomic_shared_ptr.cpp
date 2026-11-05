@@ -241,6 +241,35 @@ TEST(AtomicSharedPtrTest, ReusedAddressDoesNotResurrectCachedSnapshot) {
     second->~Holder();
 }
 
+// A replaced holder (an agent restarted on a long-lived thread pool) gets a
+// new address, so its successor never overwrites the old entry. The first
+// slow-path load of the successor must free it instead of pinning the old
+// snapshot for the thread's lifetime.
+TEST(AtomicSharedPtrTest, DestroyedHolderEntryIsFreedOnNextSlowPathLoad) {
+    using Holder = CachedAtomicSharedPtr<const int>;
+    auto old_value = std::make_shared<const int>(1);
+    const std::weak_ptr<const int> old_snapshot = old_value;
+    auto old_holder = std::make_unique<Holder>(std::move(old_value));
+    // Built before the old holder dies, so the two can never share an address.
+    auto new_holder = std::make_unique<Holder>(std::make_shared<const int>(2));
+
+    EXPECT_EQ(*old_holder->load_cached_ref(), 1);
+    old_holder.reset();
+    EXPECT_FALSE(old_snapshot.expired())
+        << "until this thread loads again, its cache entry still pins the snapshot";
+
+    EXPECT_EQ(*new_holder->load_cached_ref(), 2);
+    EXPECT_TRUE(old_snapshot.expired())
+        << "the successor's first load must free the destroyed holder's entry";
+
+    // A live holder's entry survives another holder's slow path.
+    auto other = std::make_unique<Holder>(std::make_shared<const int>(3));
+    EXPECT_EQ(*other->load_cached_ref(), 3);
+    const auto& cached = new_holder->load_cached_ref();
+    EXPECT_EQ(*cached, 2);
+    EXPECT_EQ(&cached, &new_holder->load_cached_ref()) << "a live entry is served, not rebuilt";
+}
+
 // State for ThreadCachedLoadDuringTlsTeardownStaysSafe: the host-object
 // destructor runs during thread TLS teardown, where gtest assertions are
 // awkward, so it reports what it observed through these globals instead.

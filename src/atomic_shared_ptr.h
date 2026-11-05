@@ -21,6 +21,7 @@
 #include <memory>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "utility.h"  // pinpoint::thread_local_lazy
 
@@ -52,12 +53,16 @@ namespace pinpoint {
      *
      * Retention that opt-in accepts: after a store(), threads that never load
      * this holder again keep the previous snapshot until they exit, and a
-     * destroyed holder's per-thread entries are reclaimed only when a new
-     * holder of the same T reuses its address or the thread exits. Keep
+     * destroyed holder's per-thread entries are reclaimed on that thread's
+     * next slow-path load of any holder of the same T (a first load or a
+     * generation change), or when the thread exits. So replacing a holder —
+     * an agent restarted in a long-lived thread pool — frees the old entry
+     * the first time each reader thread loads the new one, instead of pinning
+     * one snapshot per replaced holder for the thread's lifetime. Keep
      * ThreadCached holders few, long-lived and their snapshots small, or that
-     * memory lingers for every reader thread's lifetime. A load during the
-     * calling thread's own TLS teardown stays defined but leaks one small
-     * replacement map for that thread — see thread_cache().
+     * memory lingers for every reader thread that stops loading them. A load
+     * during the calling thread's own TLS teardown stays defined but leaks one
+     * small replacement map for that thread — see thread_cache().
      */
     enum class SnapshotCache { Uncached, ThreadCached };
 
@@ -165,10 +170,15 @@ namespace pinpoint {
                 return cached->second.snapshot;
             }
 
+            // Slow path. Free the entries of holders destroyed since — their
+            // snapshots can run ~T, which may re-enter a load and rehash the
+            // map, so `cached` is looked up again afterwards.
+            sweep_destroyed_holders(cache);
             auto snapshot = localize_shared(load_shared_source());
+            cached = cache.find(this);
             if (cached == cache.end()) {
                 cached = cache.emplace(
-                    this, CacheEntry{instance_id_, generation, std::move(snapshot)}).first;
+                    this, CacheEntry{instance_id_, generation, std::move(snapshot), alive_}).first;
                 return cached->second.snapshot;
             }
             // Bind a reference before assigning: the assignment may drop the
@@ -176,7 +186,7 @@ namespace pinpoint {
             // ThreadCached load on this thread the map can rehash. A rehash
             // invalidates iterators (`cached`) but not references.
             auto& entry = cached->second;
-            entry = CacheEntry{instance_id_, generation, std::move(snapshot)};
+            entry = CacheEntry{instance_id_, generation, std::move(snapshot), alive_};
             return entry.snapshot;
         }
 
@@ -208,9 +218,37 @@ namespace pinpoint {
             uint64_t instance_id;
             uint64_t generation;
             std::shared_ptr<T> snapshot;
+            // Expires with the holder (see alive_), which is how a thread
+            // tells a destroyed holder's entry from a live one.
+            std::weak_ptr<const char> alive;
         };
 
         using ThreadCache = std::unordered_map<const AtomicSharedPtr*, CacheEntry>;
+
+        // Erases this thread's entries whose holder is gone. Runs on the slow
+        // path only, where the map holds one entry per holder this thread
+        // loaded — a handful. The snapshots are moved out and destroyed after
+        // the loop, so a ~T that re-enters a load finds a consistent map.
+        static void sweep_destroyed_holders(ThreadCache& cache) {
+            size_t destroyed = 0;
+            for (const auto& [holder, entry] : cache) {
+                (void)holder;
+                destroyed += entry.alive.expired() ? 1 : 0;
+            }
+            if (destroyed == 0) {
+                return;
+            }
+            std::vector<std::shared_ptr<T>> released;
+            released.reserve(destroyed);
+            for (auto it = cache.begin(); it != cache.end();) {
+                if (it->second.alive.expired()) {
+                    released.push_back(std::move(it->second.snapshot));
+                    it = cache.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
 
         static ThreadCache& thread_cache() {
             // The map is per T and per thread (thread_local_lazy keeps a
@@ -236,6 +274,11 @@ namespace pinpoint {
         inline static std::atomic<uint64_t> next_instance_id_{1};
         const uint64_t instance_id_{
             next_instance_id_.fetch_add(1, std::memory_order_relaxed)};
+        // Owned only by this holder, so the weak copies in reader threads'
+        // cache entries expire exactly when it is destroyed. Uncached holders
+        // keep no entries and pay no allocation.
+        const std::shared_ptr<const char> alive_{
+            Cache == SnapshotCache::ThreadCached ? std::make_shared<const char>('\0') : nullptr};
         std::atomic<uint64_t> generation_{0};
 
 #if defined(__cpp_lib_atomic_shared_ptr)

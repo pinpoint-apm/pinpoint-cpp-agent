@@ -45,6 +45,14 @@
   are released when each worker stops, and so is a URL-stat message whose
   shutdown flush timed out.
 
+- **Restarting the agent on a long-lived thread pool no longer pins one old
+  runtime per thread per restart.** Each reader thread caches the agent's
+  config snapshot by holder address, and a replacement agent lands at a new
+  address, so every `Shutdown()` + `StartAgent()` cycle left the old
+  `AgentRuntime` (its config, stats and URL-stat tables, tens of KB) pinned by
+  every thread that had traced. A thread now frees entries of destroyed agents
+  the first time it loads the new one.
+
 - **Replacing an agent whose asynchronous initialization failed shuts it down
   first.** `StartAgent()` only dropped its own reference, so when the host
   still held an `AgentPtr` the failed agent's channels, AgentInfo sender,
