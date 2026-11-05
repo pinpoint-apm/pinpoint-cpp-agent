@@ -1266,6 +1266,13 @@ TEST_F(AgentIntegrationTest, StreamsAgentAndUrlStatistics) {
 TEST_F(AgentIntegrationTest, FlushesUrlStatTickInProgressOnShutdown) {
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
+    // StartStack() only waits for registration. The flush rides the stats
+    // stream, and a shutdown that beats the stream open drops the tick by
+    // design; an agent stat on the collector proves the stream is live.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return agent_stat_count(snapshot) >= 1;
+    }, kWaitTimeout));
+
     // The final flush must include records still awaiting aggregation as
     // well as the open tick, regardless of which worker exits first.
     // CloseUrlStatTick() is deliberately not called — nothing cuts this tick,
@@ -3562,6 +3569,11 @@ TEST_F(AgentIntegrationTest, AppliesPercentSamplingPattern) {
     cfg_.sampling_percent_rate = 50.0;
     ASSERT_NO_FATAL_FAILURE(StartStack());
 
+    // The stats worker resets the transaction counters when it starts, so
+    // decisions made before its first collection can be wiped.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return agent_stat_count(snapshot) >= 1;
+    }, kWaitTimeout));
     const auto baseline = agent_stat_count(collector_.snapshot());
 
     // PercentSampler accumulates rate (50% == 5000/10000) per request and admits
