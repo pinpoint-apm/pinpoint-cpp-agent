@@ -1822,6 +1822,17 @@ namespace pinpoint {
                 // must only close the logger generation they were created with.
                 init_failed_agent = agent->initFailed();
                 replaced_agent = true;
+                if (init_failed_agent) {
+                    // An init failure only disables the agent: whatever
+                    // init_grpc_workers() brought up before it threw — channels,
+                    // the AgentInfo scheduler, early workers, the config
+                    // watcher — keeps running until shutdown. Dropping our
+                    // reference is not enough when the host still holds an
+                    // AgentPtr, so tear it down here, before the successor
+                    // takes over the logger below. Shutdown() also evicts it
+                    // from the global handle.
+                    agent->Shutdown();
+                }
                 global_agent().store(nullptr);
                 agent.reset();
             }

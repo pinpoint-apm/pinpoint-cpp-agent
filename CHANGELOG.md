@@ -36,6 +36,12 @@
 
 ### Fixed
 
+- **Replacing an agent whose asynchronous initialization failed shuts it down
+  first.** `StartAgent()` only dropped its own reference, so when the host
+  still held an `AgentPtr` the failed agent's channels, AgentInfo sender,
+  already-started workers and config watcher kept running beside the new
+  agent, and an enabled watcher kept reconfiguring the shared logger.
+
 - **A span batch over `Collector.Grpc.MaxSendMessageSize` is sent in several
   requests, not lost.** gRPC refuses a request over the limit with
   `RESOURCE_EXHAUSTED` before sending it, and the collector refuses one over

@@ -2608,6 +2608,11 @@ TEST_F(StartAgentTest, StartAgentReplacesInitFailedGlobalAgent) {
     EXPECT_NE(returned_impl.get(), dead_agent.get())
         << "an init-failed agent must never be kept as the running agent";
     EXPECT_FALSE(returned_impl->initFailed());
+    // The test still holds dead_agent, as a host's cached AgentPtr would:
+    // replacement must tear it down rather than leave whatever its init
+    // brought up running beside the successor until that reference dies.
+    EXPECT_TRUE(dead_agent->isExiting())
+        << "a replaced init-failed agent must be shut down, not just dropped";
 }
 
 TEST_F(StartAgentTest, ReplacingInitFailedAgentKeepsNewLogSink) {
