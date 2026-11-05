@@ -36,6 +36,13 @@
 
 ### Fixed
 
+- **An async span keeps only its trace's error mask and SQL count alive, not
+  the whole root span.** A child pointed at its root's span data, so every
+  async span still queued or left open kept the ended root's event husks (up
+  to `Span.MaxEventSequence` of them, about 1.3 MB at the default), span
+  annotations and strings alive. The two fields a child writes now move into
+  a small block of their own when the first child is spawned.
+
 - **`pt_global_agent()` hands out one library-owned handle per agent, so a
   missed `pt_agent_destroy()` no longer leaks.** Each call used to register a
   fresh owning handle, and the documented handlers call it once per request,

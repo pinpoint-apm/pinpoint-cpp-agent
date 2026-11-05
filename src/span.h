@@ -88,6 +88,36 @@ namespace pinpoint {
     InboundTrace readInboundTrace(const TraceContextReader& reader, std::string_view cluster_namespace);
 
     /**
+     * @brief The part of a trace root its async children write: the
+     *        transaction's error mask and SQL count.
+     *
+     * A root keeps it inline in its SpanData until it spawns its first async
+     * child, which moves it into a block of its own (see
+     * SpanData::shareTraceRootState) that every child of the trace holds. A
+     * child routinely outlives the root span, and holding the root's whole
+     * SpanData instead would keep its retired event husks, span annotations
+     * and strings alive for as long as any child is queued or left open.
+     *
+     * Both fields are written from foreign threads — a child marking the
+     * transaction failed can race a gRPC worker already serializing the
+     * root's PSpan, and every child counts its statements here. Relaxed is
+     * enough: fetch_or / fetch_add are atomic whatever the ordering, and
+     * neither value carries other state with it.
+     */
+    struct TraceRootState {
+        /// @brief ORs one ErrorCategory bit into the accumulated mask, so a
+        /// transaction that failed for several reasons reports all of them.
+        void maskErr(int err) { err_.fetch_or(err, std::memory_order_relaxed); }
+        int getErr() const { return err_.load(std::memory_order_relaxed); }
+        /// @brief Returns the post-increment SQL count, which is what
+        /// SpanImpl::countSqlExecution compares against Sql.ErrorCount.
+        int incrementAndGetSqlCount() { return sql_count_.fetch_add(1, std::memory_order_relaxed) + 1; }
+
+        std::atomic<int> err_{SPAN_ERR_NONE};
+        std::atomic<int> sql_count_{0};
+    };
+
+    /**
      * @brief Holds mutable span state until it is converted into the
      *        `SpanChunk` messages destined for the collector.
      */
@@ -236,15 +266,37 @@ namespace pinpoint {
         }
         void decrEventDepth() { event_depth_.fetch_sub(1, std::memory_order_relaxed); }
 
-        /// @brief ORs one ErrorCategory bit into the accumulated mask, so a transaction
-        /// that failed for several reasons reports all of them.
-        void maskErr(int err) { err_.fetch_or(err, std::memory_order_relaxed); }
-        int getErr() const { return err_.load(std::memory_order_relaxed); }
+        /// @brief This span's trace-root state: the shared block once an
+        /// async child exists, the inline one before (see TraceRootState).
+        TraceRootState& traceRootState() { return *root_state_ptr_.load(std::memory_order_acquire); }
+        const TraceRootState& traceRootState() const { return *root_state_ptr_.load(std::memory_order_acquire); }
+        void maskErr(int err) { traceRootState().maskErr(err); }
+        int getErr() const { return traceRootState().getErr(); }
+        int incrementAndGetSqlCount() { return traceRootState().incrementAndGetSqlCount(); }
 
-        /// @brief Returns the post-increment SQL count,
-        /// which is what SpanImpl::countSqlExecution compares against
-        /// Sql.ErrorCount.
-        int incrementAndGetSqlCount() { return sql_count_.fetch_add(1, std::memory_order_relaxed) + 1; }
+        /**
+         * @brief Moves this root's error mask and SQL count into a block of
+         *        their own and returns it, for an async child to hold.
+         *
+         * Called by NewAsyncSpan on the span's own thread, or under the
+         * binding's own serialization for the binding overload. The move
+         * happens on the first call, when no child exists yet, so nothing
+         * writes the inline state concurrently; later calls return the same
+         * block. The switch is published through an atomic pointer, so a
+         * reader elsewhere (the gRPC worker serializing the final PSpan) never
+         * sees a half-written one.
+         */
+        std::shared_ptr<TraceRootState> shareTraceRootState() {
+            if (!shared_root_state_) {
+                auto shared = std::make_shared<TraceRootState>();
+                shared->err_.store(root_state_.getErr(), std::memory_order_relaxed);
+                shared->sql_count_.store(root_state_.sql_count_.load(std::memory_order_relaxed),
+                                         std::memory_order_relaxed);
+                shared_root_state_ = std::move(shared);
+                root_state_ptr_.store(shared_root_state_.get(), std::memory_order_release);
+            }
+            return shared_root_state_;
+        }
 
         void setErrorFuncId(int32_t error_func_id) { error_func_id_ = error_func_id; }
         int32_t getErrorFuncId() const { return error_func_id_; }
@@ -361,19 +413,13 @@ namespace pinpoint {
 
         int32_t logging_flag_{SPAN_LOGGING_FLAG_OFF};
         int flags_{SPAN_FLAG_NONE};
-        // The one field of a trace root that a foreign thread writes: an async
-        // child marks its parent's error mask (SpanImpl::traceRootData), and
-        // that can race a gRPC worker already serializing the root's PSpan.
-        // Relaxed is enough — fetch_or is atomic whatever the ordering, and
-        // the mask carries no other state with it.
-        std::atomic<int> err_{SPAN_ERR_NONE};
-        // The other field a foreign thread writes, and for the same reason:
-        // SQL statements are counted per transaction, so every async child of
-        // this root increments THIS counter from its own thread (see
-        // SpanImpl::countSqlExecution). Relaxed is enough — fetch_add is
-        // atomic whatever the ordering, and the count carries no other state
-        // with it.
-        std::atomic<int> sql_count_{0};
+        // The error mask and SQL count, inline until the first async child
+        // moves them into shared_root_state_ (see TraceRootState);
+        // root_state_ptr_ names whichever is current. SpanData is never
+        // copied or moved, so the self-pointer stays valid.
+        TraceRootState root_state_;
+        std::shared_ptr<TraceRootState> shared_root_state_;
+        std::atomic<TraceRootState*> root_state_ptr_{&root_state_};
         int32_t error_func_id_{};
         std::string error_string_;
 
@@ -643,14 +689,15 @@ namespace pinpoint {
             const Config* config_{nullptr};
             std::shared_ptr<const Config> config_owner_;
             std::shared_ptr<SpanData> data_;
-            // The SpanData holding this trace's shared error flag. Null on a
-            // trace root, where it is data_ itself; NewAsyncSpan points an
-            // async child at its spawner's root, so a chain of async spans all
-            // resolve to the same one. Held by shared_ptr because a child
-            // routinely outlives the root span object.
-            std::shared_ptr<SpanData> trace_root_data_;
-            SpanData& traceRootData() const {
-                return trace_root_data_ ? *trace_root_data_ : *data_;
+            // This trace's error mask and SQL count. Null on a trace root,
+            // which keeps them in data_; NewAsyncSpan points an async child at
+            // its spawner's root state, so a chain of async spans all resolve
+            // to the same one. Held by shared_ptr because a child routinely
+            // outlives the root span — and only this small block, not the
+            // root's SpanData (see TraceRootState).
+            std::shared_ptr<TraceRootState> trace_root_state_;
+            TraceRootState& traceRoot() const {
+                return trace_root_state_ ? *trace_root_state_ : data_->traceRootState();
             }
             std::atomic<bool> finished_;
             // Registration in the active-request registry (see active_span.h):
@@ -696,7 +743,7 @@ namespace pinpoint {
             // atomic runtime load. Falls back to the agent call for spans
             // constructed without a snapshot (tests).
             bool isStatusFail(int status) const;
-            // Single point that writes SpanData::err_: span-level SetError,
+            // Single point that writes the trace's error mask: span-level SetError,
             // 5xx status codes, SQL count overflow and SpanEventImpl::SetError
             // all route here.
             //
@@ -717,7 +764,7 @@ namespace pinpoint {
                 if ((config_->span.error_mark_mask & bit) == 0) {
                     return;
                 }
-                traceRootData().maskErr(bit);
+                traceRoot().maskErr(bit);
             }
             // The overload both SetError paths use, so the Span.IgnoreErrors
             // filter is applied in exactly one place. A status code carries
@@ -753,8 +800,8 @@ namespace pinpoint {
             //
             // The count is kept on the TRACE ROOT, so it is one budget per
             // transaction rather than a fresh one per async span, and the
-            // failure lands on that same SpanData like every other error.
-            // traceRootData() is held by shared_ptr, so a child may count — and
+            // failure lands on that same root state like every other error.
+            // A child holds that state by shared_ptr, so it may count — and
             // fail the root — after the root SpanImpl itself is gone.
             //
             // The name-less markSpanError overload deliberately bypasses
@@ -764,10 +811,10 @@ namespace pinpoint {
             // just that cause with Span.ErrorMarkExclude and keep the count.
             void countSqlExecution() {
                 const auto limit = config_->sql.error_count;
-                if (limit <= 0 || traceRootData().getErr() != SPAN_ERR_NONE) {
+                if (limit <= 0 || traceRoot().getErr() != SPAN_ERR_NONE) {
                     return;
                 }
-                if (traceRootData().incrementAndGetSqlCount() >= limit) {
+                if (traceRoot().incrementAndGetSqlCount() >= limit) {
                     markSpanError(ErrorCategory::kSql);
                 }
             }

@@ -746,7 +746,7 @@ namespace pinpoint {
         async_span->data_->setSpanId(data_->getSpanId());
         // An error on the child fails the whole transaction, and only the
         // root's PSpan carries that flag — see markSpanError.
-        async_span->trace_root_data_ = trace_root_data_ ? trace_root_data_ : data_;
+        async_span->trace_root_state_ = trace_root_state_ ? trace_root_state_ : data_->shareTraceRootState();
 
         if (se->getAsyncId() == NONE_ASYNC_ID) {
             int32_t async_id;
@@ -774,9 +774,11 @@ namespace pinpoint {
         // No checkOwnerThread(): this overload exists for language bindings
         // that own their span events and serialize every crossing into the
         // span themselves. Nothing on this span's native stack is mutated
-        // (the async link arrives as arguments), so the owner-thread
-        // contract has nothing to protect here, and a binding that ends a
-        // shared span from another thread must degrade, not assert.
+        // (the async link arrives as arguments; the one write, the first
+        // child's shareTraceRootState(), is published atomically), so the
+        // owner-thread contract has nothing to protect here, and a binding
+        // that ends a shared span from another thread must degrade, not
+        // assert.
 
         // The caller manages its span events outside this library (see
         // RecordSpanEvent), so the async link arrives as arguments instead of
@@ -788,7 +790,7 @@ namespace pinpoint {
         async_span->data_->setAsyncId(async_id);
         async_span->data_->setAsyncSequence(async_sequence);
         // As in the overload above: the error flag lives on the trace root.
-        async_span->trace_root_data_ = trace_root_data_ ? trace_root_data_ : data_;
+        async_span->trace_root_state_ = trace_root_state_ ? trace_root_state_ : data_->shareTraceRootState();
 
         auto async_se = std::make_unique<SpanEventImpl>(async_span.get(), async_operation,
                                                         API_TYPE_INVOCATION);
@@ -1002,7 +1004,7 @@ namespace pinpoint {
         // this is data_ itself, but the flag's home is the root either way and
         // an async child that ended first has already marked it.
         url_stat_->failed_ = isStatusFail(url_stat_->status_code_) ||
-                             traceRootData().getErr() != SPAN_ERR_NONE;
+                             traceRoot().getErr() != SPAN_ERR_NONE;
         agent_->recordUrlStat(std::move(*url_stat_), *config_);
         url_stat_.reset();
     }

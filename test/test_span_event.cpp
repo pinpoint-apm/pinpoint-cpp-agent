@@ -1145,7 +1145,26 @@ TEST_F(SpanEventTest, SqlCountIsSharedAcrossTheWholeTransaction) {
            "in the trace it ran";
 }
 
-// trace_root_data_ resolves to the spawner's root, so a chain of async spans
+// A child holds only the trace's error mask and SQL count, so a root that
+// ended and was released is freed even while a child lives on (queued, or
+// never ended): its event husks and annotations must not ride along.
+TEST_F(SpanEventTest, AsyncChildDoesNotPinTheRootSpanData) {
+    test_span_->SetAnnotation(1, std::string(4096, 'a'));
+    auto child = spawn_async(*test_span_);
+    ASSERT_NE(as_impl(child), nullptr);
+    const auto root_state = test_span_data_->shareTraceRootState();
+    const std::weak_ptr<TestSpanData> root_data = test_span_data_;
+
+    test_span_data_.reset();
+    test_span_.reset();
+    EXPECT_TRUE(root_data.expired()) << "a live async child must not keep the root's SpanData";
+
+    child->SetError("late child failure");
+    EXPECT_NE(root_state->getErr(), SPAN_ERR_NONE)
+        << "the child still fails the transaction through the shared root state";
+}
+
+// trace_root_state_ resolves to the spawner's root, so a chain of async spans
 // all land on the first root rather than each async span becoming a new one.
 TEST_F(SpanEventTest, SqlCountOnNestedAsyncSpansReachesTheOriginalRoot) {
     auto config = std::make_shared<Config>(*mock_agent_service_->getConfig());
