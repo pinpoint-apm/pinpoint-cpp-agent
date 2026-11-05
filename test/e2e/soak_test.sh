@@ -397,10 +397,14 @@ slope, _ = trend_per_hour(el[h:], rss[h:])
 print(f"\n  RSS slope, 2nd half only: {slope:+.3f} MB/h")
 if hours < 1:
     print("  Verdict: run too short for a leak verdict -- RSS is still warming up.")
-elif abs(slope) < 0.5:
-    print("  Verdict: flat -- no leak signal.")
-else:
+elif slope >= 0.5:
     print(f"  Verdict: sustained growth, ~{slope*24:+.1f} MB/day extrapolated -- investigate.")
+elif slope <= -0.5:
+    # Memory handed back to the OS (an allocator trim, or valgrind releasing
+    # its own structures) is a falling slope, and no leak ever shrinks RSS.
+    print("  Verdict: falling -- RSS was returned, no leak signal.")
+else:
+    print("  Verdict: flat -- no leak signal.")
 PY
     fi
     cat <<EOF
