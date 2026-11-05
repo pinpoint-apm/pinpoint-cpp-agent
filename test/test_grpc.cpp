@@ -476,8 +476,8 @@ TEST_F(GrpcTest, StringMetaBoundsQueuedErrorNameByItsOwnCap) {
     EXPECT_EQ(cut.str_val_, at_cap + "...(300)");
     EXPECT_EQ(cut.str_val_.find("...(", kMaxErrorStringLength + 1), std::string::npos)
         << "the marker is appended exactly once";
-    EXPECT_EQ(cut.error_key_, over_cap)
-        << "the eviction key is the whole name the error cache stored under, not the cut copy";
+    EXPECT_EQ(cut.error_key_, cut.str_val_)
+        << "the eviction key is the cut copy the error cache stored under, not the whole name";
 
     // The same length as SQL is not cut, so the caps are really per type.
     const StringMeta as_sql(3, over_cap, STRING_META_SQL);

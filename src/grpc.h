@@ -589,8 +589,10 @@ namespace pinpoint {
     /// The item also carries the id cache key the entry was stored under, so
     /// removeCacheError() / removeCacheSql() can evict exactly that entry with
     /// `remove(key, id_)`, like every other metadata kind: `error_key_` is the
-    /// whole error name (a class name in practice, so the whole key is cheap
-    /// to keep), and `sql_key_` is the SqlUid the SQL id cache keys by (see
+    /// transmitted error name — the error cache keys by that abbreviated copy
+    /// too (AgentImpl::cacheError), so no entry keeps more than
+    /// kMaxErrorStringLength (+ marker) bytes of a name — and `sql_key_` is
+    /// the SqlUid the SQL id cache keys by (see
     /// SqlIdCache) — 16 bytes, whatever the statement's length. The
     /// normalized SQL text itself is never kept in full: a queued SQL item
     /// holds at most kMaxSqlMetaLength (+ marker) bytes of it, so a full
@@ -604,7 +606,7 @@ namespace pinpoint {
 
         StringMeta(int32_t id, std::string_view str_val, StringMetaType type)
             : id_(id), str_val_(abbreviateString(str_val, maxLength(type))),
-              error_key_(type == STRING_META_ERROR ? std::string(str_val) : std::string()),
+              error_key_(type == STRING_META_ERROR ? str_val_ : std::string()),
               sql_key_(type == STRING_META_SQL ? generate_sql_uid(str_val) : SqlUid{}),
               type_(type) {}
 

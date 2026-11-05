@@ -1089,6 +1089,17 @@ TEST_F(ConfigTest, ValueValidationTest) {
     EXPECT_EQ(config->http.url_stat.queue_size, 1024) << "URL stat queue size < 1 should be corrected to default (1024)";
 }
 
+// The per-tick key count is the URL-stat tables' only bound, so it has a
+// ceiling too: an out-of-range value falls back to the default, the limit
+// itself is kept.
+TEST_F(ConfigTest, UrlStatLimitHasACeiling) {
+    set_config_string("Http:\n  UrlStatLimit: 10001\n");
+    EXPECT_EQ(make_config()->http.url_stat.limit, 1000) << "a limit over 10000 falls back to the default";
+
+    set_config_string("Http:\n  UrlStatLimit: 10000\n");
+    EXPECT_EQ(make_config()->http.url_stat.limit, 10000) << "the ceiling itself is accepted";
+}
+
 TEST_F(ConfigTest, PercentRateEdgeCasesTest) {
     std::string small_percent_yaml = R"(
 Sampling:

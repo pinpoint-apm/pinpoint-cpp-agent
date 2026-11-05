@@ -1509,6 +1509,16 @@ namespace pinpoint {
             return 0;
         }
 
+        // Cached, keyed and sent abbreviated past the cap: two long names
+        // that share the kept prefix and their length then share one id,
+        // which is harmless — the collector would show both as that same
+        // abbreviated text anyway.
+        std::string abbreviated;
+        if (api_str.size() > kMaxApiNameLength) {
+            abbreviated = abbreviateString(api_str, kMaxApiNameLength);
+            api_str = abbreviated;
+        }
+
         const auto hash = ApiCacheKeyHash{}(ApiCacheKey{api_str, api_type});
         const auto generation = api_cache_->invalidations();
         auto& entry = api_front_cache()[hash % kApiFrontCacheSlots];
@@ -1552,7 +1562,16 @@ namespace pinpoint {
             return 0;
         }
 
-        const auto [id, found] = error_cache_->get(error_name);
+        // Keyed by the transmitted copy, abbreviated like StringMeta::str_val_
+        // (see its error_key_), so an entry keeps at most
+        // kMaxErrorStringLength bytes of the name.
+        std::string abbreviated;
+        std::string_view key = error_name;
+        if (error_name.size() > kMaxErrorStringLength) {
+            abbreviated = abbreviateString(error_name, kMaxErrorStringLength);
+            key = abbreviated;
+        }
+        const auto [id, found] = error_cache_->get(key);
         if (found) {
             return id;
         }

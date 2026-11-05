@@ -140,8 +140,12 @@ namespace pinpoint {
         std::chrono::system_clock::time_point end_time_;
         int32_t elapsed_;
 
+        /// @p url_pattern past kMaxUrlStatPatternLength is kept abbreviated.
         UrlStatEntry(std::string_view url_pattern, std::string_view method, int status_code)
-                : url_pattern_{url_pattern}, method_{method}, status_code_{status_code},
+                : url_pattern_{url_pattern.size() > kMaxUrlStatPatternLength
+                                   ? abbreviateString(url_pattern, kMaxUrlStatPatternLength)
+                                   : std::string{url_pattern}},
+                  method_{method}, status_code_{status_code},
                   failed_{false}, end_time_{}, elapsed_{} {}
     };
 

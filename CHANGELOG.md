@@ -43,6 +43,16 @@
   annotations and strings alive. The two fields a child writes now move into
   a small block of their own when the first child is spawned.
 
+- **Operation names, error names and URL-stat patterns are capped in the
+  agent's caches.** An operation name over 1024 bytes and an error name over
+  256 bytes are now cached, keyed and sent abbreviated (the kept prefix plus
+  `...(<length>)`), as SQL already was, so names built from URIs no longer
+  make every API cache slot and each thread's lookup cache keep kilobytes. A
+  URL-stat pattern over 1024 bytes is kept abbreviated in the queue and the
+  tick tables, and `Http.UrlStatLimit` accepts at most `10000` keys per tick
+  (an out-of-range value falls back to the default, as a negative one did).
+  Documented in [Configuration Guide § URL Statistics](doc/config.md#url-statistics).
+
 - **`pt_global_agent()` hands out one library-owned handle per agent, so a
   missed `pt_agent_destroy()` no longer leaks.** Each call used to register a
   fresh owning handle, and the documented handlers call it once per request,

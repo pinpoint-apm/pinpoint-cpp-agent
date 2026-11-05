@@ -626,10 +626,12 @@ TEST(UtilityTest, AbbreviateStringCutsOnAUtf8Boundary) {
     EXPECT_TRUE(isValidUtf8(abbreviated)) << "the result must stay valid UTF-8 for protobuf";
 }
 
-// The two caps the agent abbreviates against, both collector-facing.
+// The caps the agent abbreviates against, all collector-facing.
 TEST(UtilityTest, MessageLengthCaps) {
     EXPECT_EQ(kMaxErrorStringLength, 256u) << "PException.exceptionMessage / span error string";
     EXPECT_EQ(kMaxSqlMetaLength, 64u * 1024u) << "PSqlMetaData.sql / PSqlUidMetaData.sql";
+    EXPECT_EQ(kMaxApiNameLength, 1024u) << "PApiMetaData.apiInfo";
+    EXPECT_EQ(kMaxUrlStatPatternLength, 1024u) << "PEachUriStat.uri";
 }
 
 } // namespace pinpoint

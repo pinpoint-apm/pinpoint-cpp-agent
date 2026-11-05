@@ -1278,6 +1278,18 @@ TEST_F(UrlStatTest, UrlStatEntryFieldsTest) {
     EXPECT_EQ(stat.end_time_.time_since_epoch().count(), 0);
 }
 
+// A raw path passed as the pattern has no length of its own; every queued
+// entry and tick table keeps it, so a long one is kept abbreviated.
+TEST_F(UrlStatTest, UrlStatEntryAbbreviatesAnOverlongPattern) {
+    const std::string path = "/" + std::string(kMaxUrlStatPatternLength + 99, 'p');
+    const UrlStatEntry stat(path, "GET", 200);
+    EXPECT_EQ(stat.url_pattern_, abbreviateString(path, kMaxUrlStatPatternLength));
+    EXPECT_EQ(stat.url_pattern_.rfind("...(1124)"), kMaxUrlStatPatternLength);
+
+    const std::string at_cap(kMaxUrlStatPatternLength, 'p');
+    EXPECT_EQ(UrlStatEntry(at_cap, "GET", 200).url_pattern_, at_cap) << "a pattern within the cap is verbatim";
+}
+
 // ========== Additional UrlStats Tests ==========
 
 TEST_F(UrlStatTest, TakeSnapshotReplacesWithFreshTest) {

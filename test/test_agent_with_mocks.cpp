@@ -790,6 +790,36 @@ TEST_F(AgentImplTest, CacheApiReturnsDifferentIdForDifferentTypes) {
     EXPECT_NE(id1, id2);
 }
 
+// Past kMaxApiNameLength a name is cached, keyed and queued abbreviated, so no
+// cache slot keeps more than the cap. Names sharing the kept prefix and their
+// length share an id; the queued item's copy still evicts the entry.
+TEST_F(AgentImplTest, CacheApiKeysAnOverlongNameByItsAbbreviation) {
+    const std::string prefix(kMaxApiNameLength, 'a');
+    const auto long_x = prefix + std::string(500, 'x');
+    const auto long_y = prefix + std::string(500, 'y');
+    const auto id = agent_->cacheApi(long_x, 100);
+    ASSERT_GT(id, 0);
+    EXPECT_EQ(agent_->cacheApi(long_y, 100), id) << "only the kept prefix and the length key the cache";
+    EXPECT_NE(agent_->cacheApi(prefix + "x", 100), agent_->cacheApi(prefix + "xx", 100))
+        << "different lengths stay apart";
+
+    agent_->removeCacheApi(ApiMeta{id, 100, abbreviateString(long_x, kMaxApiNameLength)});
+    EXPECT_NE(agent_->cacheApi(long_x, 100), id) << "the abbreviated copy evicts the entry it keyed";
+}
+
+// The error cache keys by the abbreviated name StringMeta transmits and evicts
+// by (error_key_), so a long error name keeps at most kMaxErrorStringLength.
+TEST_F(AgentImplTest, CacheErrorKeysAnOverlongNameByItsAbbreviation) {
+    const std::string prefix(kMaxErrorStringLength, 'E');
+    const auto id = agent_->cacheError(prefix + std::string(100, 'x'));
+    ASSERT_GT(id, 0);
+    EXPECT_EQ(agent_->cacheError(prefix + std::string(100, 'y')), id);
+
+    agent_->removeCacheError(StringMeta{id, prefix + std::string(100, 'x'), STRING_META_ERROR});
+    EXPECT_NE(agent_->cacheError(prefix + std::string(100, 'x')), id)
+        << "the queued item's key must evict the entry the name was cached under";
+}
+
 TEST_F(AgentImplTest, CacheErrorReturnsNonZeroId) {
     int32_t id = agent_->cacheError("TestError");
     EXPECT_NE(id, 0);

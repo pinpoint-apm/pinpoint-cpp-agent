@@ -855,6 +855,10 @@ namespace pinpoint {
     constexpr int MIN_GRPC_IDLE_TIMEOUT_MS = 1000;
     constexpr int MIN_URL_STAT_QUEUE_SIZE = 1;
     constexpr int MAX_URL_STAT_QUEUE_SIZE = 65536;
+    // Keys per tick, and up to six ticks are held at once (the one in
+    // progress and five completed), so this bounds the URL-stat tables
+    // themselves: ten times the default, around tens of MB at the ceiling.
+    constexpr int MAX_URL_STAT_LIMIT = 10000;
     // Per SQL cache; three caches, each bounded by this x Sql.CacheLengthLimit
     // (the id cache by the largest statement seen), so the cap keeps a typo
     // from committing gigabytes at startup.
@@ -1184,9 +1188,11 @@ namespace pinpoint {
 
         // A negative limit would cast to a huge size_t at the use site
         // (UrlStatSnapshot::add), disabling the cap and letting the URL map grow
-        // unbounded with cardinality. Reject it. Likewise a negative queue size
-        // would wrap into a huge size_t, so the range check rejects it too.
-        at_least(config->http.url_stat.limit, 0, defaults::HTTP_URL_STAT_LIMIT, "http url stat limit");
+        // unbounded with cardinality, and an unbounded positive one does the
+        // same in effect. Reject both. Likewise a negative queue size would
+        // wrap into a huge size_t, so the range check rejects it too.
+        in_range(config->http.url_stat.limit, 0, MAX_URL_STAT_LIMIT, defaults::HTTP_URL_STAT_LIMIT,
+                 "http url stat limit");
         in_range<size_t>(config->http.url_stat.queue_size, MIN_URL_STAT_QUEUE_SIZE, MAX_URL_STAT_QUEUE_SIZE,
                          defaults::HTTP_URL_STAT_QUEUE_SIZE, "http url stat queue size");
 

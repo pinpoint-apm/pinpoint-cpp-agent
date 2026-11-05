@@ -222,6 +222,18 @@ namespace pinpoint {
     /// @brief Cap on the SQL text carried by PSqlMetaData/PSqlUidMetaData.
     inline constexpr size_t kMaxSqlMetaLength = 64 * 1024;
 
+    /// @brief Cap on an operation (API) name as the agent caches and sends it.
+    /// The API id caches, each thread's front cache and the metadata queue
+    /// keep the name; a longer one is abbreviated (see abbreviateString)
+    /// before any of them sees it, so names built from URIs or SQL cannot
+    /// make every cache slot keep kilobytes.
+    inline constexpr size_t kMaxApiNameLength = 1024;
+
+    /// @brief Cap on the URL pattern a URL-stat entry keys by. Each queued
+    /// entry and each tick's table keeps the pattern, and a raw path passed
+    /// as the pattern has no length of its own; a longer one is abbreviated.
+    inline constexpr size_t kMaxUrlStatPatternLength = 1024;
+
     /**
      * @brief Abbreviates @p s: a string within the cap is returned verbatim, a
      * longer one keeps its first @p max_len bytes and gains a
