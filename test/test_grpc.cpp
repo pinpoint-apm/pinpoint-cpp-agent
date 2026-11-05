@@ -122,6 +122,12 @@ public:
         const auto transport = current_transport<StatStub>();
         return transport ? transport->channel : std::shared_ptr<grpc::Channel>{};
     }
+    // True while a stats stream is open: start_stats_stream() has published
+    // its context and OnDone has not run yet.
+    bool streamOpen() {
+        std::lock_guard<std::mutex> lock(stream_mutex_);
+        return stream_context_ != nullptr && grpc_status_ != STREAM_DONE;
+    }
 };
 
 // A free 127.0.0.1 port that nothing listens on right now: bind an ephemeral
@@ -897,6 +903,19 @@ bool wait_for_log_line(const LogCapture& capture, std::string_view needle,
     return false;
 }
 
+// Waits until @p pred holds.
+template <typename Pred>
+bool poll_until(Pred&& pred, std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!pred()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}
+
 }  // namespace
 
 // A used grpc::ClientContext holds a shared_ptr to its channel. Once the ping
@@ -949,14 +968,12 @@ TEST_F(GrpcTest, StatsWorkerReleasesChannelOnceStopped) {
 
     std::thread worker([&stats] { stats.sendStatsWorker(); });
     // The stats stream keeps its call open until it is closed, so its session
-    // ends only at the stop below. Wait for the channel to come up, then give
-    // the worker a moment to start the stream on it.
-    const bool connected = wait_for_log_line(capture, "-> READY", std::chrono::seconds(5));
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // ends only at the stop below: wait until the worker has opened one.
+    const bool opened = poll_until([&stats] { return stats.streamOpen(); }, std::chrono::seconds(5));
     stats.stopStatsWorker();
     worker.join();
     Logger::getInstance().setLogLevel("info");
-    ASSERT_TRUE(connected) << "the stat channel must have connected";
+    ASSERT_TRUE(opened) << "the worker must have opened a stats stream on the channel";
     ASSERT_FALSE(capture.linesContaining("stats - OnDone").empty())
         << "a stats session must have run on the channel";
 

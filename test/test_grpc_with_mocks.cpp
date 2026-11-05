@@ -3834,14 +3834,29 @@ TEST_F(GrpcMockTest, GrpcMetadataStoppedWorkerReleasesCompletedCallsAndQueue) {
     metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "stopped.in_flight")));
     metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(2, 100, "stopped.queued")));
 
+    // Raised by the "send meta worker end" line, which the worker logs once
+    // its supervised loop has returned, right before it awaits the call.
+    std::atomic<bool> loop_ended{false};
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setSink([&loop_ended](const char*, const char* message) {
+        if (std::string_view(message).find("send meta worker end") != std::string_view::npos) {
+            loop_ended = true;
+        }
+    });
+    struct SinkReset {
+        ~SinkReset() { Logger::getInstance().setSink({}); }
+    } sink_reset;
+
     ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
                              [&metadata] { metadata.sendMetaWorker(); });
     ASSERT_TRUE(fake->waitForHeldCallbacks(1, std::chrono::seconds(5)));
 
-    // Stop first, so the completion below arrives while the worker waits in
-    // await_in_flight_requests() rather than in its drain loop.
+    // Stop first, and complete the call only once the worker's loop has
+    // returned: the completion then lands while the worker waits in
+    // await_in_flight_requests(), not in its drain loop.
     metadata.stopMetaWorker();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    ASSERT_TRUE(wait_for_condition([&loop_ended] { return loop_ended.load(); }, std::chrono::seconds(5)))
+        << "the stopped worker's loop must return";
     fake->releaseHeldCallbacks(grpc::Status::OK);
     meta_worker.join();
     // Read before closeChannel(): the transport owns the fake stub.
