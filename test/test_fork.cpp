@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -490,12 +491,30 @@ void verify_agent_shut_down_at_exit() {
     _exit((hook_ran && global_cleared) ? 0 : 2);
 }
 
+#if defined(__SANITIZE_THREAD__)
+#define PINPOINT_TEST_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define PINPOINT_TEST_TSAN 1
+#endif
+#endif
+
 void verify_agent_untouched_at_exit() {
     auto impl = g_child_agent ? std::dynamic_pointer_cast<AgentImpl>(*g_child_agent) : nullptr;
     const bool untouched = impl != nullptr && !impl->isExiting();
     const bool still_global =
         std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get() == impl.get();
-    _exit((untouched && still_global) ? 0 : 2);
+    const int code = (untouched && still_global) ? 0 : 2;
+#ifdef PINPOINT_TEST_TSAN
+    // The agent is left running on purpose, so its finished init worker is
+    // never joined. TSan's _exit() interceptor reports that as a thread leak
+    // and rewrites the status to 66. tsan.supp cannot scope it to this test
+    // (libtsan matches thread-leak suppressions against only the top few
+    // creation frames, all inside AgentImpl::spawn_worker), so this one child
+    // exits through the raw syscall and skips TSan's exit-time checks.
+    syscall(SYS_exit_group, code);
+#endif
+    _exit(code);
 }
 
 } // namespace
