@@ -1268,7 +1268,9 @@ namespace pinpoint {
 
     void AgentImpl::Shutdown() noexcept {
         // Teardown log callbacks must not wait on StartAgent's global lock.
-        if (shutting_down_.load(std::memory_order_relaxed)) {
+        // Acquire pairs with do_shutdown()'s exchange, so an early return
+        // still sees the first Shutdown()'s unpublish without that lock.
+        if (shutting_down_.load(std::memory_order_acquire)) {
             return;
         }
         // Keep *this alive across do_shutdown(): if the global handle holds the
