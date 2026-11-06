@@ -49,6 +49,11 @@
 
 ### Fixed
 
+- **Restarting an init-failed agent cannot deadlock on a repeated shutdown
+  from its teardown log sink.** `Shutdown()` now returns before taking the
+  global agent lock when shutdown is already in progress, so the teardown
+  callback can return while `StartAgent()` holds that lock during replacement.
+
 - **An async span keeps only its trace's error mask and SQL count alive, not
   the whole root span.** A child pointed at its root's span data, so every
   async span still queued or left open kept the ended root's event husks (up

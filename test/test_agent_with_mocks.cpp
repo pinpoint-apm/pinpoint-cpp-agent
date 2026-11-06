@@ -2661,6 +2661,34 @@ TEST_F(StartAgentTest, ReplacingInitFailedAgentKeepsNewLogSink) {
     EXPECT_EQ(marker_calls.load(), 1);
 }
 
+TEST_F(StartAgentTest, ReplacingInitFailedAgentAllowsShutdownFromTeardownLogSink) {
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    ASSERT_EXIT({
+        // A regression must fail the child instead of hanging the test runner.
+        alarm(5);
+        ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(30));
+        auto old_agent = make_init_failed_agent(make_test_config_for_create_agent());
+        if (!old_agent->initFailed()) _exit(2);
+        set_global_agent(old_agent);
+
+        std::atomic<bool> callback_returned{false};
+        Logger::getInstance().setLogLevel("info");
+        Logger::getInstance().setSink([&](const char*, const char* message) {
+            if (std::string_view(message).find("close grpc workers done") != std::string_view::npos) {
+                // Runs on the teardown thread while StartAgent holds the global lock.
+                old_agent->Shutdown();
+                callback_returned = true;
+            }
+        });
+        set_config_string(kBaseConfigYaml);
+        const bool started = StartAgent();
+        const auto replacement = GlobalAgent();
+        const bool replaced = replacement.get() != old_agent.get();
+        replacement->Shutdown();
+        _exit(started && replaced && old_agent->isExiting() && callback_returned ? 0 : 1);
+    }, ::testing::ExitedWithCode(0), "");
+}
+
 TEST_F(StartAgentTest, RetainedInitFailedAgentDoesNotCloseReplacementLogSink) {
     auto old_agent = make_init_failed_agent(make_test_config_for_create_agent());
     ASSERT_TRUE(old_agent->initFailed());

@@ -1267,6 +1267,10 @@ namespace pinpoint {
     }
 
     void AgentImpl::Shutdown() noexcept {
+        // Teardown log callbacks must not wait on StartAgent's global lock.
+        if (shutting_down_.load(std::memory_order_relaxed)) {
+            return;
+        }
         // Keep *this alive across do_shutdown(): if the global handle holds the
         // last reference, resetting it would destroy the agent mid-call when
         // Shutdown() was reached through a raw pointer or reference.
