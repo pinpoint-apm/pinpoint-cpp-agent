@@ -110,8 +110,10 @@ struct MockCollector::Impl {
         grpc::Status RequestAgentInfo(grpc::ServerContext* context,
                                       const v1::PAgentInfo* request,
                                       v1::PResult* response) override {
+            auto fault = owner_.take_ready_fault(CollectorRpc::AgentInfo, 0);
             owner_.record(&CollectorSnapshot::agent_infos, *request, copy_metadata(*context));
-            return owner_.complete_unary(CollectorRpc::AgentInfo, context, response);
+            return owner_.complete_unary(CollectorRpc::AgentInfo, context, response,
+                                         std::move(fault));
         }
 
         grpc::Status PingSession(
@@ -193,8 +195,9 @@ struct MockCollector::Impl {
                 const Message* request,
                 v1::PResult* response,
                 std::vector<Received<Message>> CollectorSnapshot::*member) {
+            auto fault = owner_.take_ready_fault(rpc, 0);
             owner_.record(member, *request, copy_metadata(*context));
-            return owner_.complete_unary(rpc, context, response);
+            return owner_.complete_unary(rpc, context, response, std::move(fault));
         }
 
         Impl& owner_;
@@ -231,8 +234,10 @@ struct MockCollector::Impl {
         grpc::Status SendSpanBatch(grpc::ServerContext* context,
                                    const v1::PSpanMessageBatch* request,
                                    v1::PSpanResultBatch*) override {
+            auto fault = owner_.take_ready_fault(CollectorRpc::SendSpanBatch, 0);
             owner_.record(&CollectorSnapshot::span_batches, *request, copy_metadata(*context));
-            return owner_.complete_unary(CollectorRpc::SendSpanBatch, context, nullptr);
+            return owner_.complete_unary(CollectorRpc::SendSpanBatch, context, nullptr,
+                                         std::move(fault));
         }
 
     private:
@@ -292,8 +297,10 @@ struct MockCollector::Impl {
         grpc::Status CommandEcho(grpc::ServerContext* context,
                                  const v1::PCmdEchoResponse* request,
                                  google::protobuf::Empty*) override {
+            auto fault = owner_.take_ready_fault(CollectorRpc::CommandEcho, 0);
             owner_.record(&CollectorSnapshot::echo_responses, *request, copy_metadata(*context));
-            return owner_.complete_unary(CollectorRpc::CommandEcho, context, nullptr);
+            return owner_.complete_unary(CollectorRpc::CommandEcho, context, nullptr,
+                                         std::move(fault));
         }
 
         grpc::Status CommandStreamActiveThreadCount(
@@ -329,7 +336,8 @@ struct MockCollector::Impl {
                 const v1::PCmdActiveThreadDumpRes*,
                 google::protobuf::Empty*) override {
             return owner_.complete_unary(
-                CollectorRpc::CommandActiveThreadDump, context, nullptr);
+                CollectorRpc::CommandActiveThreadDump, context, nullptr,
+                owner_.take_ready_fault(CollectorRpc::CommandActiveThreadDump, 0));
         }
 
     private:
@@ -416,10 +424,14 @@ struct MockCollector::Impl {
         }
     }
 
+    // The caller takes `fault` BEFORE it records the request. A test woken
+    // by the record must not be able to change the outcome of a request it
+    // has already seen: an EndOutage() landing between the record and the
+    // fault lookup would turn a send made during the outage into a success.
     grpc::Status complete_unary(CollectorRpc rpc,
                                 grpc::ServerContext* context,
-                                v1::PResult* response) {
-        const auto fault = take_ready_fault(rpc, 0);
+                                v1::PResult* response,
+                                std::optional<FaultAction> fault) {
         if (!fault.has_value()) {
             if (response != nullptr) {
                 set_success(response);
