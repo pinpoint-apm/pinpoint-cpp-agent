@@ -571,6 +571,39 @@ TEST_F(LoggingTest, RotationReopenFailureDropsLogsAndNotifiesOnce) {
     std::filesystem::remove_all(dir, ec);
 }
 
+// When the live file cannot be renamed to its backup, the stream reopens the
+// same file. Rotation is then switched off, with a single note in that file,
+// rather than letting every later "rotation" grow it by another MaxFileSize.
+TEST_F(LoggingTest, RotationRenameFailureDisablesRotationWithOneNote) {
+    const auto dir = std::filesystem::temp_directory_path() / "pinpoint_rotation_rename";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    const auto path = (dir / "agent.log").string();
+    // A non-empty directory where the only backup goes: the backup shift
+    // cannot remove it, and the live file's rename onto it fails.
+    ASSERT_TRUE(std::filesystem::create_directories(path + ".1/occupied", ec)) << ec.message();
+    {
+        std::ofstream ofs(path);
+        ofs << std::string(2 * 1024 * 1024, 'x');  // already past the 1 MB threshold
+    }
+    Logger::getInstance().setFileLogger(path, 1, 1);
+
+    Logger::getInstance().logInfo("test.cpp", 1, "the line that rotates");
+    for (int i = 0; i < 5; ++i) {
+        Logger::getInstance().logInfo("test.cpp", 2, "after the failed rotation {}", i);
+    }
+    Logger::getInstance().shutdown();
+
+    const auto text = read_file(path);
+    EXPECT_EQ(count_occurrences(text, "log rotation disabled: rename to " + path + ".1 failed"), 1u)
+        << "the failure must be noted exactly once";
+    EXPECT_NE(text.find("after the failed rotation 4"), std::string::npos)
+        << "logging carries on in the same file";
+    EXPECT_TRUE(std::filesystem::is_directory(path + ".1/occupied"));
+
+    std::filesystem::remove_all(dir, ec);
+}
+
 // Restart (a second StartAgent) reconfigures the file logger, which must lift
 // the closed state instead of leaving the agent permanently mute.
 TEST_F(LoggingTest, SetFileLoggerReopensAfterShutdown) {

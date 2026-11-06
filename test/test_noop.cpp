@@ -550,6 +550,28 @@ TEST_F(NoopTest, NoopSpanEventAllMethodsTest) {
     SUCCEED() << "All NoopSpanEvent methods should execute without throwing exceptions";
 }
 
+// The noop objects inherit these tracer.h defaults unchanged, so a binding
+// layer talking to a disabled agent sees them: an unresolved config snapshot
+// (revision 0 per SpanConfigSnapshot::revision), and SetIgnoredError()
+// accepted like SetError().
+TEST_F(NoopTest, NoopObjectsAnswerTheInterfaceDefaults) {
+    const auto agent_snapshot = noopAgent()->GetConfigSnapshot();
+    EXPECT_EQ(agent_snapshot.revision, 0);
+    EXPECT_TRUE(agent_snapshot.application_name.empty());
+
+    const auto span = noopSpan();
+    EXPECT_EQ(span->GetConfigRevision(), 0);
+    const auto span_snapshot = span->GetConfigSnapshot();
+    EXPECT_EQ(span_snapshot.revision, 0);
+    EXPECT_TRUE(span_snapshot.cluster_namespace.empty());
+    span->SetIgnoredError("IgnoredError", "matched by the caller's ignore rule");
+    EXPECT_FALSE(span->IsSampled());
+
+    const std::vector<CallStackFrame> frames{{"app", "handle", "handler.cpp", 7}};
+    const std::vector<ExceptionChainEntry> causes{{"Cause", "root cause", {}}};
+    noopSpanEvent()->SetIgnoredError("IgnoredError", "ignored", frames, causes);
+}
+
 TEST_F(NoopTest, AnnotationStringViewsDoNotAllocateOnNoopPaths) {
     constexpr std::string_view long_value =
         "annotation-value-longer-than-every-standard-library-small-string-buffer";

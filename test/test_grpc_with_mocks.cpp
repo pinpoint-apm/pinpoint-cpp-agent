@@ -2557,6 +2557,121 @@ TEST_F(GrpcMockTest, GrpcCommandWorkerActiveThreadCountTest) {
     EXPECT_EQ(atc_response.activethreadcount_size(), 4);
 }
 
+// A response stream that fails (no writer, or a Write() throwing a std or a
+// non-std exception) must still mark itself done. Otherwise its slot stays
+// taken and every later active thread count request is rejected. With a cap
+// of one, the collector re-issues a second request until it is admitted,
+// which can only happen once the failed stream has been swept.
+TEST_F(GrpcMockTest, GrpcCommandFailedActiveThreadCountStreamFreesItsSlot) {
+    enum class Failure { NullWriter, StdException, NonStdException };
+    for (const auto failure : {Failure::NullWriter, Failure::StdException, Failure::NonStdException}) {
+        SCOPED_TRACE(::testing::Message() << "failure mode " << static_cast<int>(failure));
+        mock_agent_service_->setExiting(false);
+
+        GrpcClientTuning tuning;
+        tuning.max_active_thread_count_streams = 1;
+        tuning.active_thread_count_flush_interval = std::chrono::milliseconds(20);
+        TestableGrpcCommand command(mock_agent_service_.get(), tuning);
+
+        auto mock_command_stub = std::make_unique<NiceMock<v1::MockProfilerCommandServiceStub>>();
+        const auto make_atc_request = [](int32_t request_id) {
+            v1::PCmdRequest request;
+            request.set_requestid(request_id);
+            request.mutable_commandactivethreadcount();
+            return request;
+        };
+
+        // Both mocks run on the command worker thread, which handles one
+        // request per Read(): a rejected re-issue has written its fail
+        // message by the next Read(), an admitted one has not.
+        std::atomic<int> reads{0};
+        std::atomic<int> rejections{0};
+        auto* stream = new NiceMock<MockCmdStream>();
+        ON_CALL(*stream, Read(_)).WillByDefault(Invoke([&](v1::PCmdRequest* request) {
+            const int n = reads.fetch_add(1);
+            if (n == 0) {
+                *request = make_atc_request(201);
+                return true;
+            }
+            if (n >= 2 && rejections.load() < n - 1) {
+                return false;  // the last re-issue was admitted
+            }
+            // Paces the re-issues while the failed stream winds down.
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            *request = make_atc_request(202);
+            return true;
+        }));
+        ON_CALL(*stream, Write(_, _))
+            .WillByDefault(Invoke([&rejections](const v1::PCmdMessage& message, grpc::WriteOptions) {
+                if (message.has_failmessage()) {
+                    rejections.fetch_add(1);
+                }
+                return true;
+            }));
+        EXPECT_CALL(*mock_command_stub, HandleCommandV2Raw(_))
+            .WillOnce(Return(stream))
+            .WillRepeatedly(Invoke(make_idle_cmd_stream));
+
+        std::promise<void> admitted_seen;
+        EXPECT_CALL(*mock_command_stub, CommandStreamActiveThreadCountRaw(_, _))
+            .WillOnce(InvokeWithoutArgs(
+                [failure]() -> grpc::ClientWriterInterface<v1::PCmdActiveThreadCountRes>* {
+                    if (failure == Failure::NullWriter) {
+                        return nullptr;
+                    }
+                    auto* writer = new NiceMock<MockActiveThreadCountWriter>();
+                    if (failure == Failure::StdException) {
+                        EXPECT_CALL(*writer, Write(_, _))
+                            .WillOnce(::testing::Throw(std::runtime_error("injected write failure")));
+                    } else {
+                        EXPECT_CALL(*writer, Write(_, _)).WillOnce(::testing::Throw(42));
+                    }
+                    // The unwind skips the orderly close; the RPC is cancelled instead.
+                    EXPECT_CALL(*writer, WritesDone()).Times(0);
+                    EXPECT_CALL(*writer, Finish()).Times(0);
+                    return writer;
+                }))
+            .WillOnce(InvokeWithoutArgs([&admitted_seen] {
+                // The admitted stream ends at once and the collector closes it
+                // with an error status, which is reported, not thrown.
+                auto* writer = new NiceMock<MockActiveThreadCountWriter>();
+                ON_CALL(*writer, Write(_, _)).WillByDefault(Return(false));
+                ON_CALL(*writer, Finish())
+                    .WillByDefault(Return(grpc::Status(grpc::StatusCode::UNAVAILABLE, "injected close")));
+                admitted_seen.set_value();
+                return writer;
+            }));
+        command.setMockCommandStub(std::move(mock_command_stub));
+
+        // The admitted stream's error close is reported on its own thread; wait
+        // for that line before stopping, which would otherwise silence it.
+        std::promise<void> close_reported;
+        std::atomic<bool> close_seen{false};
+        Logger::getInstance().setSink([&close_reported, &close_seen](const char*, const char* message) {
+            if (std::string_view(message).find("active thread count stream closed: 14, injected close") !=
+                    std::string_view::npos &&
+                !close_seen.exchange(true)) {
+                close_reported.set_value();
+            }
+        });
+        struct SinkReset {
+            ~SinkReset() { Logger::getInstance().setSink({}); }
+        } sink_reset;
+
+        ScopedWorker worker([&command] { command.stopCommandWorker(); },
+                            [&command] { command.commandWorker(); });
+
+        EXPECT_EQ(admitted_seen.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
+            << "the failed stream must free its slot for the next request";
+        EXPECT_EQ(close_reported.get_future().wait_for(std::chrono::seconds(5)), std::future_status::ready)
+            << "a stream the collector closes with an error status must report it";
+
+        mock_agent_service_->setExiting(true);
+        command.stopCommandWorker();
+        if (worker.joinable()) worker.join();
+    }
+}
+
 TEST_F(GrpcMockTest, GrpcCommandWorkerExitsWhenChannelNotReady) {
     TestableGrpcCommand command(mock_agent_service_.get());
     command.setReadyChannel(false);
@@ -3147,6 +3262,44 @@ TEST_F(GrpcMockTest, GrpcSpanSynchronousLaunchFailureReleasesPermitTest) {
     mock_agent_service_->setExiting(true);
     span_client.stopSpanWorker();
     if (worker.joinable()) worker.join();
+}
+
+// After closeChannel() (agent shutdown) a batch finds no transport. It is
+// dropped and counted, not thrown out of the worker, and its permit comes
+// back, so the channel opened next still gets the only permit.
+TEST_F(GrpcMockTest, GrpcSpanBatchWithoutTransportIsDroppedAndReturnsItsPermit) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 1;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 10;
+    cfg->collector.span_batch.max_concurrent_requests = 1;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    span_client.setMockSpanStub(std::make_unique<FakeSpanStub>());
+    span_client.closeChannel();
+
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
+
+    auto lost = make_test_span_data_ptr(*mock_agent_service_, "no-transport-op");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(lost, true));
+    ASSERT_TRUE(wait_for_condition([&span_client] { return span_client.droppedSpans() == 1; },
+                                   std::chrono::seconds(2)))
+        << "a batch with no transport must be dropped and counted";
+
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    span_client.setMockSpanStub(std::move(fake_stub));
+    auto next = make_test_span_data_ptr(*mock_agent_service_, "reopened-op");
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(next, true));
+    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)))
+        << "the dropped batch must return its permit";
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+
+    EXPECT_EQ(span_client.droppedSpans(), 1u);
 }
 
 TEST_F(GrpcMockTest, GrpcSpanErrorStatusReleasesPermitTest) {
@@ -4816,6 +4969,57 @@ TEST_F(GrpcMockTest, GrpcSpanSplitsAnOversizeBatchTest) {
     EXPECT_EQ(LogCapture::count(text, "span dropped: "), 1u);
     EXPECT_NE(text.find("exceeds Collector.Grpc.MaxSendMessageSize 2500"), std::string::npos) << text;
     EXPECT_NE(text.find(" span 1004"), std::string::npos) << "the warning names the span: " << text;
+}
+
+// When every chunk of a batch is over Collector.Grpc.MaxSendMessageSize on its
+// own, the split leaves nothing to send. No RPC goes out, each chunk is
+// dropped and counted, and the permit the batch took is handed back.
+// Defined after GrpcSpanSplitsAnOversizeBatchTest on purpose: both drop chunks
+// through one LOG_WARN_THROTTLED site, which logs once per 60 s per process,
+// and that test asserts the line is there.
+TEST_F(GrpcMockTest, GrpcSpanBatchOfOnlyOversizeChunksSendsNothingAndReturnsItsPermit) {
+    auto& cfg = mock_agent_service_->mutableConfig();
+    cfg->collector.span_batch.size = 2;
+    cfg->collector.span_batch.flush_interval_ms = 50;
+    cfg->collector.span_batch.collect_deadline_ms = 100;
+    cfg->collector.span_batch.max_concurrent_requests = 1;
+    cfg->collector.grpc.channel.max_send_message_size = 1000;
+
+    TestableGrpcSpan span_client(mock_agent_service_.get());
+    auto fake_stub = std::make_unique<FakeSpanStub>();
+    auto* fake = fake_stub.get();
+    span_client.setMockSpanStub(std::move(fake_stub));
+
+    for (int i = 0; i < 2; ++i) {
+        auto span_data = make_test_span_data_ptr(*mock_agent_service_, "oversize-op");
+        span_data->setSpanId(3000 + i);
+        span_data->getAnnotations()->AppendData(103, AnnotationData(std::string(2600, 'x')));
+        span_client.enqueueSpan(std::make_unique<SpanChunk>(span_data, true));
+    }
+
+    ScopedWorker worker([&span_client] { span_client.stopSpanWorker(); },
+                     [&span_client] { span_client.sendSpanWorker(); });
+
+    ASSERT_TRUE(wait_for_condition([&span_client] { return span_client.droppedSpans() == 2; },
+                                   std::chrono::seconds(2)));
+    EXPECT_EQ(fake->batchCount(), 0u) << "nothing that fits was left to send";
+
+    // The only permit came back, so a chunk that fits still goes out.
+    auto fitting = make_test_span_data_ptr(*mock_agent_service_, "fitting-op");
+    fitting->setSpanId(3002);
+    span_client.enqueueSpan(std::make_unique<SpanChunk>(fitting, true));
+    ASSERT_TRUE(fake->waitForBatchCount(1, std::chrono::seconds(2)))
+        << "a batch that sent nothing must return its permit";
+
+    mock_agent_service_->setExiting(true);
+    span_client.stopSpanWorker();
+    if (worker.joinable()) worker.join();
+
+    ASSERT_EQ(fake->batchCount(), 1u);
+    const auto request = fake->request(0);
+    ASSERT_EQ(request.span_size(), 1);
+    EXPECT_EQ(request.span(0).span().spanid(), 3002);
+    EXPECT_EQ(span_client.droppedSpans(), 2u);
 }
 
 // The requests of a split batch share the batch's permit timeout instead of

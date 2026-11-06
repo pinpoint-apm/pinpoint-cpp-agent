@@ -135,6 +135,54 @@ TEST_F(AgentImplTest, EnableAfterInit) {
     EXPECT_TRUE(agent_->Enable());
 }
 
+// recordServerHeader() / recordClientHeader() are the agent-side recorders a
+// span falls back to when it carries no runtime snapshot. A live agent
+// records exactly the configured headers; an unknown header type, or an agent
+// that is shut down, records nothing.
+TEST_F(AgentImplTest, AgentRecordsConfiguredHttpHeadersForSpansWithoutARuntime) {
+    auto cfg = make_test_config();
+    cfg->http.server.rec_request_header = {"X-Request-Id"};
+    cfg->http.client.rec_request_header = {"X-Client-Tag"};
+    auto agent = make_test_agent(cfg);
+    wait_agent_enabled(agent);
+    ASSERT_TRUE(agent->Enable());
+
+    MockHeaderReader headers;
+    headers.SetHeader("X-Request-Id", "req-1");
+    headers.SetHeader("X-Client-Tag", "client-1");
+    headers.SetHeader("X-Unconfigured", "not recorded");
+
+    using Recorded = std::vector<std::pair<int32_t, std::pair<std::string, std::string>>>;
+    const auto recorded = [](const PinpointAnnotation& annotation) {
+        Recorded out;
+        for (const auto& [key, data] : annotation.getAnnotations()) {
+            if (const auto* header = std::get_if<std::pair<std::string, std::string>>(&data.data)) {
+                out.emplace_back(key, *header);
+            }
+        }
+        return out;
+    };
+
+    PinpointAnnotation server;
+    agent->recordServerHeader(HTTP_REQUEST, headers, &server);
+    EXPECT_EQ(recorded(server),
+              (Recorded{{ANNOTATION_HTTP_REQUEST_HEADER, {"X-Request-Id", "req-1"}}}));
+
+    PinpointAnnotation client;
+    agent->recordClientHeader(HTTP_REQUEST, headers, &client);
+    EXPECT_EQ(recorded(client),
+              (Recorded{{ANNOTATION_HTTP_REQUEST_HEADER, {"X-Client-Tag", "client-1"}}}));
+
+    PinpointAnnotation unknown_type;
+    agent->recordServerHeader(static_cast<HeaderType>(HTTP_COOKIE + 1), headers, &unknown_type);
+    EXPECT_TRUE(recorded(unknown_type).empty()) << "a header type past HTTP_COOKIE is ignored";
+
+    agent->Shutdown();
+    PinpointAnnotation after_shutdown;
+    agent->recordServerHeader(HTTP_REQUEST, headers, &after_shutdown);
+    EXPECT_TRUE(recorded(after_shutdown).empty()) << "a shut-down agent records nothing";
+}
+
 // Start() reports whether initialization is running: true on the first call
 // and on idempotent repeats, false once the agent was shut down. StartAgent()
 // relies on this to publish only successfully launched agents as the global
@@ -1483,6 +1531,47 @@ TEST(AgentShutdownDeadlineTest, ShutdownReturnsByDeadlineWithWedgedWorker) {
         << "the reaper must release the agent once the wedged worker finishes";
 }
 
+// An agent no shared_ptr owns cannot hand a straggling worker a keep-alive, so
+// past the deadline Shutdown() waits for the workers instead of detaching
+// them, and says so with the names of what is still running. The same holds
+// for an agent destroyed without Shutdown(): it is no longer shared-owned.
+TEST(AgentShutdownDeadlineTest, ShutdownOfAnAgentNotSharedOwnedWaitsForItsWorkers) {
+    ShutdownDeadlineGuard deadline_guard(std::chrono::milliseconds(50));
+    const auto cfg = make_test_config();
+
+    auto wedged_owner = std::make_unique<WedgedRegisterGrpcAgent>(cfg);
+    auto* wedged = wedged_owner.get();
+    wedged->injectMockStubs();
+    auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
+    auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
+    auto grpc_stat = std::make_unique<TestableGrpcStats>(cfg);
+    grpc_metadata->injectMockStubs();
+    grpc_span->injectMockStubs();
+    grpc_stat->injectMockStubs();
+    auto agent = std::make_unique<AgentImpl>(cfg, std::move(wedged_owner), std::move(grpc_metadata),
+                                             std::move(grpc_span), std::move(grpc_stat));
+    agent->Start();
+    wedged->waitUntilWedged();
+
+    // The warning is logged on this thread right before the unbounded join:
+    // releasing the wedged worker from the sink lets that join finish.
+    std::atomic<int> warnings{0};
+    std::string warning;
+    Logger::getInstance().setSink([&](const char*, const char* message) {
+        if (std::string_view(message).find("not shared-owned") != std::string_view::npos) {
+            warning = message;
+            warnings.fetch_add(1);
+            wedged->release();
+        }
+    });
+    agent->Shutdown();
+    Logger::getInstance().setSink({});
+
+    EXPECT_EQ(warnings.load(), 1) << "the wait past the deadline must be reported once";
+    EXPECT_NE(warning.find("still running: "), std::string::npos) << warning;
+    EXPECT_TRUE(agent->isExiting());
+}
+
 TEST(AgentShutdownDeadlineTest, LogSinkCanShutdownWhileStatsStreamIsLocked) {
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     ASSERT_EXIT({
@@ -2519,6 +2608,64 @@ Collector:
     // Nothing was installed: GlobalAgent() keeps serving the noop agent.
     EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()), nullptr)
         << "no agent must be installed when config is invalid";
+}
+
+// --- helper::ScopedAgent, the header-only guard around StartAgent() ---
+
+TEST_F(StartAgentTest, ScopedAgentShutsDownTheAgentItStartedAtScopeExit) {
+    set_config_string(kBaseConfigYaml);
+    std::shared_ptr<AgentImpl> started;
+    {
+        helper::ScopedAgent guard(options_);
+        ASSERT_TRUE(guard.started());
+        started = std::dynamic_pointer_cast<AgentImpl>(guard.agent());
+        ASSERT_NE(started, nullptr) << "a started guard holds the real agent";
+        EXPECT_EQ(GlobalAgent(), guard.agent());
+        EXPECT_FALSE(started->isExiting());
+    }
+    EXPECT_TRUE(started->isExiting()) << "the guard must shut its agent down at scope exit";
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()), nullptr)
+        << "and that Shutdown() evicts it from the singleton";
+}
+
+TEST_F(StartAgentTest, ScopedAgentEarlyShutdownIsIdempotentAndSparesALaterAgent) {
+    set_config_string(kBaseConfigYaml);
+    std::shared_ptr<AgentImpl> successor;
+    {
+        helper::ScopedAgent guard(options_);
+        ASSERT_TRUE(guard.started());
+        const auto first = std::dynamic_pointer_cast<AgentImpl>(guard.agent());
+        ASSERT_NE(first, nullptr);
+
+        guard.Shutdown();
+        guard.Shutdown();
+        EXPECT_TRUE(first->isExiting());
+        EXPECT_FALSE(guard->Enable()) << "the same handle serves the disabled agent now";
+
+        // A restart owned elsewhere, while the guard is still in scope.
+        ASSERT_TRUE(StartAgent());
+        successor = std::dynamic_pointer_cast<AgentImpl>(GlobalAgent());
+        ASSERT_NE(successor, nullptr);
+        ASSERT_NE(successor, first);
+    }
+    EXPECT_FALSE(successor->isExiting())
+        << "the guard shuts down only the agent it started, not the global one";
+    EXPECT_EQ(std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()), successor);
+}
+
+TEST_F(StartAgentTest, ScopedAgentWhoseStartFailedHoldsTheNoopAgent) {
+    set_config_string(R"(
+ApplicationName: test-app
+Enable: false
+Collector:
+  GrpcHost: 127.0.0.1
+)");
+    helper::ScopedAgent guard(options_);
+    EXPECT_FALSE(guard.started()) << "a disabled config starts nothing";
+    EXPECT_EQ(guard.agent(), noopAgent());
+    EXPECT_FALSE(guard->Enable());
+    // Harmless on the noop agent, as is the destructor's own call.
+    guard.Shutdown();
 }
 
 // --- Shut-down global agent is replaced, never returned ---
