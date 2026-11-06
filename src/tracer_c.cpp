@@ -251,7 +251,66 @@ private:
     Shard shards_[kShardCount];
 };
 
-using AgentHandleRegistry = OwnedHandleRegistry<pt_agent_t, pt_agent_s>;
+class AgentHandleRegistry {
+public:
+    using Entry = std::shared_ptr<pt_agent_s>;
+
+    pt_agent_t insert(Entry entry) {
+        return registry_.insert(std::move(entry));
+    }
+
+    Entry find(pt_agent_t handle) {
+        // Distribute readers of the same token, including their refcount traffic.
+        static thread_local const size_t index =
+            next_reader_.fetch_add(1, std::memory_order_relaxed) % kReaderCount;
+        auto& reader = readers_[index];
+        {
+            std::shared_lock<std::shared_mutex> lock(reader.mutex);
+            if (reader.handle == handle) return reader.entry;
+        }
+        Entry displaced;
+        std::lock_guard<std::shared_mutex> lock(reader.mutex);
+        if (reader.handle == handle) return reader.entry;
+        // Hold the reader lock through lookup/install so retarget cannot miss a stale fill.
+        const auto owned = registry_.find(handle);
+        if (!owned) return {};
+        auto local = std::make_shared<ReaderAgent>(owned->ptr);
+        displaced = std::move(reader.entry);
+        reader.entry = std::move(local);
+        reader.handle = handle;
+        return reader.entry;
+    }
+
+    Entry retarget(pt_agent_t handle, Entry replacement) {
+        auto previous = registry_.retarget(handle, std::move(replacement));
+        // No registry lock is held here; idle readers must release the old agent too.
+        for (auto& reader : readers_) {
+            Entry displaced;
+            std::lock_guard<std::shared_mutex> lock(reader.mutex);
+            if (reader.handle == handle) {
+                displaced = std::move(reader.entry);
+                reader.handle = nullptr;
+            }
+        }
+        return previous;
+    }
+
+private:
+    // Align the make_shared allocation so reader control blocks do not share a line.
+    struct alignas(64) ReaderAgent : pt_agent_s {
+        explicit ReaderAgent(pinpoint::AgentPtr agent) : pt_agent_s{std::move(agent)} {}
+    };
+    struct alignas(64) Reader {
+        std::shared_mutex mutex;
+        pt_agent_t handle{nullptr};
+        Entry entry;
+    };
+    static constexpr size_t kReaderCount = 32;
+    OwnedHandleRegistry<pt_agent_t, pt_agent_s> registry_;
+    std::atomic<size_t> next_reader_{0};
+    Reader readers_[kReaderCount];
+};
+
 using SpanHandleRegistry = OwnedHandleRegistry<pt_span_t, pt_span_s>;
 
 AgentHandleRegistry& agent_handle_registry() {
@@ -422,7 +481,7 @@ static pt_agent_t sync_global_agent_handle() {
         return agent.get() == noop_agent_sentinel()->ptr.get();
     };
 
-    // Fast paths, lock-free: the cached token still wraps the global agent,
+    // Fast paths avoid the global handle mutex: the token still wraps the agent,
     // or there is no agent and nothing cached (a disabled process calling
     // this per request must not serialize on the mutex).
     {

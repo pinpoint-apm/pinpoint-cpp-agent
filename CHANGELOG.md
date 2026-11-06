@@ -49,6 +49,12 @@
 
 ### Fixed
 
+- **Concurrent C API agent lookups no longer contend on a single handle
+  registry shard and reference count.** A bounded set of reader caches spreads
+  lookups of the shared agent token across threads. Shutdown and replacement
+  invalidate these caches, including those used by idle threads, so old agents
+  are released and retained handles still behave as disabled agents.
+
 - **Restarting an init-failed agent cannot deadlock on a repeated shutdown
   from its teardown log sink.** `Shutdown()` now returns before taking the
   global agent lock when shutdown is already in progress, so the teardown

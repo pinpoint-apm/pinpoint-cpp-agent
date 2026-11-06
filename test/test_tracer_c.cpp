@@ -528,6 +528,15 @@ TEST_F(TracerCApiTest, GlobalAgentHandleIsOneLibraryOwnedHandlePerAgent) {
     EXPECT_EQ(pt_global_agent(), agent_);
 }
 
+TEST_F(TracerCApiTest, UnknownAgentHandleDoesNotResolveToCachedAgent) {
+    int foreign = 0;
+    const auto unknown = reinterpret_cast<pt_agent_t>(&foreign);
+    EXPECT_EQ(pt_agent_is_enabled(agent_), 1);
+    EXPECT_EQ(pt_agent_is_enabled(unknown), 0);
+    EXPECT_EQ(pt_agent_new_span(unknown, "op", "/rpc"), nullptr);
+    EXPECT_EQ(pt_agent_is_enabled(agent_), 1);
+}
+
 // Once the agent leaves the singleton, the C layer stops pinning it, and a
 // copy a caller kept behaves as the disabled agent — as a handle to a
 // shut-down agent always did.
@@ -544,6 +553,66 @@ TEST_F(TracerCApiTest, ShutDownAgentIsReleasedAndKeptHandleActsDisabled) {
     pt_span_end(span);
     pt_span_destroy(span);
     EXPECT_NE(pt_global_agent(), agent_) << "with no global agent, the disabled sentinel";
+}
+
+TEST_F(TracerCApiTest, IdleHandleReadersDoNotPinShutDownAgent) {
+    const auto old_handle = agent_;
+    const std::weak_ptr<pinpoint::AgentImpl> watched = mock_agent_;
+    std::atomic<int> ready{0};
+    std::atomic<bool> resumed{false};
+    std::vector<std::thread> readers;
+    // Exceed the reader shard count to exercise shared slots as well.
+    constexpr int reader_count = 40;
+    for (int i = 0; i < reader_count; ++i) {
+        readers.emplace_back([&] {
+            EXPECT_EQ(pt_global_agent(), old_handle);
+            EXPECT_EQ(pt_agent_is_enabled(old_handle), 1);
+            ready.fetch_add(1);
+            while (!resumed.load()) std::this_thread::yield();
+            EXPECT_EQ(pt_agent_is_enabled(old_handle), 0);
+            auto span = pt_agent_new_span(old_handle, "old", "/old");
+            EXPECT_NE(span, nullptr);
+            EXPECT_EQ(pt_span_is_sampled(span), 0);
+            pt_span_destroy(span);
+            EXPECT_EQ(pt_global_agent(), agent_);
+            EXPECT_EQ(pt_agent_is_enabled(agent_), 1);
+        });
+    }
+    while (ready.load() != reader_count) std::this_thread::yield();
+    pt_agent_shutdown(old_handle);
+    mock_agent_.reset();
+    EXPECT_TRUE(watched.expired()) << "idle reader caches must release the old agent";
+
+    mock_agent_ = make_test_agent(cfg_);
+    pinpoint::set_global_agent(mock_agent_);
+    wait_enabled();
+    agent_ = pt_global_agent();
+    EXPECT_NE(agent_, old_handle);
+    resumed.store(true);
+    for (auto& reader : readers) reader.join();
+}
+
+TEST_F(TracerCApiTest, HandleLookupsRacingShutdownDoNotRetainAgent) {
+    const std::weak_ptr<pinpoint::AgentImpl> watched = mock_agent_;
+    std::atomic<int> ready{0};
+    std::atomic<bool> stopped{false};
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 8; ++i) {
+        readers.emplace_back([&] {
+            EXPECT_EQ(pt_agent_is_enabled(agent_), 1);
+            ready.fetch_add(1);
+            while (!stopped.load()) {
+                (void)pt_agent_is_enabled(agent_);
+            }
+            EXPECT_EQ(pt_agent_is_enabled(agent_), 0);
+        });
+    }
+    while (ready.load() != 8) std::this_thread::yield();
+    pt_agent_shutdown(agent_);
+    stopped.store(true);
+    for (auto& reader : readers) reader.join();
+    mock_agent_.reset();
+    EXPECT_TRUE(watched.expired()) << "a racing lookup must not reinstall the old agent";
 }
 
 // A destroyed handle must never be recycled as the identity of a later live
