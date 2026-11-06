@@ -505,13 +505,15 @@ void verify_agent_untouched_at_exit() {
     const bool still_global =
         std::dynamic_pointer_cast<AgentImpl>(GlobalAgent()).get() == impl.get();
     const int code = (untouched && still_global) ? 0 : 2;
-#ifdef PINPOINT_TEST_TSAN
+#if defined(PINPOINT_TEST_TSAN) && defined(SYS_exit_group)
     // The agent is left running on purpose, so its finished init worker is
     // never joined. TSan's _exit() interceptor reports that as a thread leak
     // and rewrites the status to 66. tsan.supp cannot scope it to this test
     // (libtsan matches thread-leak suppressions against only the top few
     // creation frames, all inside AgentImpl::spawn_worker), so this one child
     // exits through the raw syscall and skips TSan's exit-time checks.
+    // SYS_exit_group is Linux-only: a TSan build on another platform
+    // (AppleClang on macOS) leaves the bypass out and exits through _exit().
     syscall(SYS_exit_group, code);
 #endif
     _exit(code);
