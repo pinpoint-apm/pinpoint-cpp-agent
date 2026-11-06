@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(pinpoint-cpp VERSION 2.2.0)
+project(pinpoint-cpp VERSION 2.3.0)
 
 option(BUILD_TESTING      "Build tests"                ON)
 option(BUILD_EXAMPLES     "Build examples"             ON)
@@ -338,7 +338,9 @@ if(BUILD_SHARED_LIBS)
   target_include_directories(pinpoint_cpp INTERFACE
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<INSTALL_INTERFACE:include/>")
-  set_target_properties(pinpoint_cpp PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
+  # Keep ABI-2 binaries from loading the larger SpanConfigSnapshot layout.
+  set_target_properties(pinpoint_cpp PROPERTIES
+    VERSION ${PROJECT_VERSION} SOVERSION 2.3.0)
   target_link_libraries(pinpoint_cpp PUBLIC ${LINK_LIBS})
   install(TARGETS pinpoint_cpp LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()

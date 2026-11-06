@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Breaking
+
+- **The next release is 2.3.0, with shared-library ABI version 2.3.0.** Adding
+  `cluster_namespace` to the public, by-value `SpanConfigSnapshot` changes
+  its layout. A caller compiled against 2.2.0 allocates a smaller return
+  buffer, so loading the new implementation into that caller corrupts memory.
+  CMake now produces `libpinpoint_cpp.so.2.3.0` (macOS:
+  `libpinpoint_cpp.2.3.0.dylib`), with a distinct loader identity.
+  Rebuild applications, plugins and language bindings against the new headers
+  and library together; static consumers also need a full rebuild. Keep the
+  original ABI-2 library for binaries that have not migrated. Never alias the
+  new library under its old ABI-2 name.
+
 ### Added
 
 - **An unset `AgentName` is auto-generated as `<hostname>-<pid>`.** It used to

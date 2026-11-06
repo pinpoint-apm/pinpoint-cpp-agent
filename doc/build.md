@@ -13,6 +13,22 @@ or a `bazel_dep` in your own project — see the
 
 ---
 
+## Upgrading from 2.2.0 to 2.3.0
+
+The public `SpanConfigSnapshot` layout changed. Rebuild your application and
+all plugins or language bindings that use the C++ API with the new headers
+and library together, including when linking statically. Mixing old object
+files with the new library can overwrite the caller's snapshot return buffer.
+
+CMake tracks the shared-library ABI independently of the release version.
+Release 2.3.0 uses ABI 2.3.0, loading as `libpinpoint_cpp.so.2.3.0` on Linux or
+`libpinpoint_cpp.2.3.0.dylib` on macOS. The Mach-O current and compatibility
+versions are both 2.3.0, distinct from the previous ABI-2 loader identity.
+Keep the original ABI-2 library installed for existing binaries until they
+are rebuilt and relinked. Do not point an ABI-2 filename or symlink at the
+new library. Public C++ layout or virtual-interface changes require another
+ABI version change.
+
 ## Requirements
 
 | Requirement | Version |
