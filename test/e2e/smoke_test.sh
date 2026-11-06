@@ -141,6 +141,38 @@ assert_contains "unsampled downstream reached" '"downstream_status":200'
 assert_contains "s0 forwarded to next hop" '"incoming_sampled":"s0"'
 
 echo ""
+echo "Inbound context, proxy headers, request parameters and UTF-8 repair"
+# Each value is unusable as a trace id for a different reason (no separator,
+# empty or invalid agent id, missing sequence, over-long or non-numeric
+# fields). Every one must start a fresh trace instead of continuing it.
+for malformed in 'no-separator' '^1700000000000^1' 'bad!agent^1700000000000^1' \
+                 'agent-only^1700000000000' 'agent^123456789012345678901^1' \
+                 'agent^1700000000000^123456789012345678901' 'agent^not-a-time^1'; do
+    http_request GET "$DOWNSTREAM_URL/trace" -H "Pinpoint-TraceID: $malformed" \
+        -H 'Pinpoint-SpanID: 11' -H 'Pinpoint-pSpanID: 10'
+    assert_status "malformed trace id '$malformed'" 200
+    assert_contains "malformed trace id '$malformed' starts a new trace" '"trace_id_matches":false'
+done
+# A well-formed trace id cannot be continued without its span id either.
+http_request GET "$DOWNSTREAM_URL/trace" -H 'Pinpoint-TraceID: smoke-agent^1700000000000^7'
+assert_status "trace id without span id" 200
+assert_contains "trace id without span id starts a new trace" '"trace_id_matches":false'
+assert_contains "trace id without span id is sampled" '"sampled":true'
+
+http_request GET "$BASE_URL/simple" \
+    -H 'Pinpoint-ProxyApache: t=1710000001000000 D=250 i=7 b=12' \
+    -H 'Pinpoint-ProxyApp: t=1710000002000 app=frontend' \
+    -H 'Pinpoint-ProxyNginx: not-a-proxy-header'
+assert_status "proxy headers (Apache, App and an unparsable Nginx one)" 200
+http_request GET "$BASE_URL/simple?q=hello+world&page=2&mark=%E2%9C%93"
+assert_status "request parameters recorded from the query string" 200
+# User-Agent is a recorded header, and these bytes are not UTF-8: the agent
+# must repair the value before the collector sees it (run_e2e.sh fails on any
+# span batch the collector rejects for its content).
+http_request GET "$BASE_URL/simple" -H $'User-Agent: smoke-\xff\xfe-agent'
+assert_status "recorded header with invalid UTF-8" 200
+
+echo ""
 echo "gRPC distributed tracing (all RPC shapes)"
 for endpoint in grpc-unary grpc-stream 'grpc-client-stream?count=4' 'grpc-bidi?count=4'; do
     http_request GET "$BASE_URL/$endpoint"
@@ -236,6 +268,14 @@ if [[ -n "$C_API_SCENARIO" ]]; then
             pass "C API lifecycle and feature scenario"
         else
             fail "C API scenario returned an unexpected payload" "$output"
+        fi
+        if [[ "$output" == *'"continued_trace":true'* && \
+              "$output" == *'"yaml_reload_applied":true'* && \
+              "$output" == *'"yaml_reload_refused":true'* && \
+              "$output" == *'"log_sink_detached":true'* ]]; then
+            pass "C API trace continuation, YAML restart, reload and log sink"
+        else
+            fail "C API scenario phase 2 returned an unexpected payload" "$output"
         fi
     else
         fail "C API scenario failed" "$output"

@@ -319,6 +319,15 @@ else
     echo "  FAIL  upstream log has no successful span batch" >&2
     RESULT=1
 fi
+# INVALID_ARGUMENT (3) or INTERNAL (13) means the collector refused a batch's
+# content, e.g. a string field that is not valid UTF-8; a transport failure
+# carries a different code and is not what this checks.
+if grep -qE 'SendSpanBatch failed: (3|13),' "$LOG_DIR/it_test_server.log"; then
+    echo "  FAIL  the collector rejected an upstream span batch's content" >&2
+    RESULT=1
+else
+    echo "  PASS  the collector rejected no upstream span batch for its content"
+fi
 
 if [[ $RESULT -ne 0 ]]; then
     echo ""

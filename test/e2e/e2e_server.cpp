@@ -77,8 +77,15 @@ pinpoint::SpanPtr make_span(const httplib::Request& req) {
     }
     auto cookies = parse_cookies(req);
     HttpHeaderReader cookie_reader(cookies);
+    // The raw query string, as the request carried it: recorded as the
+    // span's request parameters because the suite enables
+    // Http.Server.RecordRequestParam.
+    const auto query_start = req.target.find('?');
+    const std::string_view query = query_start == std::string::npos
+        ? std::string_view()
+        : std::string_view(req.target).substr(query_start + 1);
     pinpoint::helper::TraceHttpServerRequest(
-        span, req.remote_addr, end_point, h_reader, cookie_reader);
+        span, req.remote_addr, end_point, h_reader, cookie_reader, query);
     return span;
 }
 

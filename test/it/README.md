@@ -50,6 +50,16 @@ asserts their collector wire representation:
 - the active-thread-count stream limit and ping-stream socket-id increments on
   reconnect
 - the noop agent produced by `Enable: false`, and C API double-destroy safety
+- the C API end to end: its HTTP server/client helpers with cookie, query and
+  response readers; typed annotations, plain and named errors, SQL bind
+  values, explicit start times, forced URL stats, the logging carrier and
+  async spans; agent options (config file, app type, server metadata, log
+  sink detached at shutdown)
+- `ReloadAgentConfig()` and `pt_reload_agent_config()`: a reloadable setting
+  reaching the next span, a fixed one reported as restart-required, malformed
+  YAML and a config-file source refused
+- span batches split under `Collector.Grpc.MaxSendMessageSize`, and a shutdown
+  that cancels a metadata request the collector never answers
 
 ## Standalone collector process
 

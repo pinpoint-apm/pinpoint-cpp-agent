@@ -72,6 +72,8 @@ Http:
     # OPTIONS is used by nothing else here, so excluding it cannot affect
     # another assertion.
     ExcludeMethod: ["OPTIONS"]
+    # The upstream server passes each request's query string; record it.
+    RecordRequestParam: true
     RecordRequestHeader:
       - "User-Agent"
       - "Content-Type"

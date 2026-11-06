@@ -92,6 +92,12 @@ The suite fails unless all of the following are observed:
 - gRPC unary, server-streaming, client-streaming, and bidirectional-streaming
   calls retain the distributed trace ID;
 - inbound `Pinpoint-Sampled: s0` creates an unsampled downstream span;
+- a malformed inbound `Pinpoint-TraceID` (one per parser rejection) or one
+  without its span id starts a new trace instead of continuing it;
+- proxy headers (`Pinpoint-ProxyApache`, `Pinpoint-ProxyApp` and an
+  unparsable `Pinpoint-ProxyNginx`), query-string request parameters and a
+  recorded header that is not valid UTF-8 are traced without breaking the
+  request;
 - all public annotation value types, logging context, SQL/SQL-UID metadata,
   call-stack exception metadata, and a joined async span are exercised;
 - reduced depth/sequence/chunk limits are crossed without breaking requests;
@@ -99,9 +105,14 @@ The suite fails unless all of the following are observed:
   are observed;
 - shutdown disables the global agent and a subsequent cold agent registers and
   records a trace;
-- the pure-C facade and fork-safe startup scenarios pass;
+- the pure-C facade and fork-safe startup scenarios pass, the C one including
+  a trace continued from its own injected context, a YAML reload refused under
+  the config file, a restart from inline YAML with an applied and a refused
+  reload, and a log sink detached by `pt_agent_shutdown()`;
 - process logs contain successful AgentInfo registration for every server and
-  a successful upstream `SendSpanBatch`.
+  a successful upstream `SendSpanBatch`, and no upstream `SendSpanBatch`
+  failed with `INVALID_ARGUMENT` or `INTERNAL`, which is how the collector
+  refuses a batch's content.
 
 The local response assertions prove propagation and public API behavior. The
 transport-log assertions prove that data reached the configured collector. If

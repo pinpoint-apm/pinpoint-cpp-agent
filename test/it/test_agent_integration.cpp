@@ -20,8 +20,11 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -492,8 +495,11 @@ protected:
         // set both to a few hundred milliseconds.
         int grpc_channel_max_age_ms{0};
         int grpc_stream_max_age_ms{0};
+        // Collector.Grpc.MaxSendMessageSize; 0 leaves the production default.
+        int grpc_max_send_message_size{0};
         std::string_view server_record_request_headers{"[x-request-id]"};
         std::string_view server_exclude_urls{"[/excluded/**]"};
+        bool server_record_request_param{false};
     };
 
     void StartCollector() {
@@ -578,7 +584,11 @@ protected:
             << "  StatPort: " << collector_.stat_port() << "\n"
             << "  Grpc:\n"
             << "    ChannelMaxAgeMs: " << cfg_.grpc_channel_max_age_ms << "\n"
-            << "    StreamMaxAgeMs: " << cfg_.grpc_stream_max_age_ms << "\n"
+            << "    StreamMaxAgeMs: " << cfg_.grpc_stream_max_age_ms << "\n";
+        if (cfg_.grpc_max_send_message_size > 0) {
+            yaml << "    MaxSendMessageSize: " << cfg_.grpc_max_send_message_size << "\n";
+        }
+        yaml
             << "  AgentInfo:\n"
             << "    RefreshIntervalMs: " << cfg_.agent_info_refresh_interval_ms << "\n"
             << "    SendRetryIntervalMs: 50\n"
@@ -615,6 +625,7 @@ protected:
             << "    ExcludeUrl: " << cfg_.server_exclude_urls << "\n"
             << "    ExcludeMethod: [OPTIONS]\n"
             << "    RecordRequestHeader: " << cfg_.server_record_request_headers << "\n"
+            << "    RecordRequestParam: " << (cfg_.server_record_request_param ? "true" : "false") << "\n"
             << "    RecordRequestCookie: [session_id]\n"
             << "    RecordResponseHeader: [x-response-id]\n"
             << "  Client:\n"
@@ -4313,6 +4324,464 @@ TEST_F(AgentIntegrationTest, ShutdownCancelsTimedOutSpanRequest) {
         return has_result(snapshot, CollectorRpc::SendSpanBatch,
                           grpc::StatusCode::DEADLINE_EXCEEDED, false);
     }, 2s));
+}
+
+// A metadata request the collector never answers keeps its permit until the
+// shutdown stops waiting for it and cancels it, within the shutdown bound.
+TEST_F(AgentIntegrationTest, ShutdownCancelsTimedOutMetadataRequest) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    collector_.TimeoutNext(CollectorRpc::ApiMetadata);
+    ASSERT_GT(impl_->cacheApi("it.metadata.timeout", API_TYPE_DEFAULT), 0);
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return has_api_metadata(snapshot, "it.metadata.timeout", API_TYPE_DEFAULT);
+    }, kWaitTimeout));
+
+    const auto started = std::chrono::steady_clock::now();
+    agent_->Shutdown();
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(8));
+    EXPECT_FALSE(agent_->Enable());
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return has_result(snapshot, CollectorRpc::ApiMetadata,
+                          grpc::StatusCode::DEADLINE_EXCEEDED, false);
+    }, 5s)) << "the withheld request must end by cancellation, not stay open";
+}
+
+// With Collector.Grpc.MaxSendMessageSize below one batch, every request the
+// real server decodes fits the limit, every span that fits on its own is
+// delivered, and only the span no request can carry is dropped.
+TEST_F(AgentIntegrationTest, SplitsSpanBatchesToFitMaxSendMessageSize) {
+    constexpr int kLimit = 3000;
+    cfg_.grpc_max_send_message_size = kLimit;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    // First, so that a wrongly sent copy would arrive before the others.
+    auto huge = agent_->NewSpan("split.op", "/split-huge");
+    huge->SetAnnotation(9500, std::string(kLimit + 1000, 'z'));
+    huge->EndSpan();
+    for (int i = 0; i < 4; ++i) {
+        auto span = agent_->NewSpan("split.op", "/split-" + std::to_string(i));
+        span->SetAnnotation(9500, std::string(1100, static_cast<char>('a' + i)));
+        span->EndSpan();
+    }
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        for (int i = 0; i < 4; ++i) {
+            if (!find_span_by_rpc(snapshot, "/split-" + std::to_string(i)).has_value()) {
+                return false;
+            }
+        }
+        return true;
+    }, kWaitTimeout));
+
+    const auto snapshot = collector_.snapshot();
+    EXPECT_FALSE(find_span_by_rpc(snapshot, "/split-huge").has_value())
+        << "a span over the limit on its own is dropped";
+    ASSERT_FALSE(snapshot.span_batches.empty());
+    for (const auto& batch : snapshot.span_batches) {
+        EXPECT_LE(batch.message.ByteSizeLong(), static_cast<size_t>(kLimit));
+    }
+}
+
+// The public reload entry points, ReloadAgentConfig() and its C wrapper, parse
+// YAML into the running agent's config. A reloadable change reaches the next
+// span on the wire, a fixed one is reported as needing a restart while the
+// agent keeps its value, and a malformed document changes nothing.
+TEST_F(AgentIntegrationTest, ReloadsConfigThroughThePublicYamlEntryPoints) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    const auto record = [this](const std::string& rpc, std::string_view query) {
+        auto span = agent_->NewSpan("reload.probe", rpc);
+        MapCarrier headers;
+        helper::TraceHttpServerRequest(span, "198.51.100.1", "reload.example.test", headers, query);
+        span->EndSpan();
+    };
+    record("/reload-before", "q=before");
+    const auto revision_before = agent_->GetConfigSnapshot().revision;
+
+    cfg_.server_record_request_param = true;
+    const auto applied = ReloadAgentConfig(config());
+    ASSERT_EQ(applied.status, ConfigReloadResult::Status::kApplied) << applied.message;
+    EXPECT_TRUE(applied.restart_required.empty());
+    EXPECT_GT(agent_->GetConfigSnapshot().revision, revision_before);
+    record("/reload-after", "q=after");
+
+    // A changed fixed setting: the C wrapper reports it, cut to the buffer.
+    auto renamed = config();
+    const std::string name_line = "ApplicationName: cpp-agent-it\n";
+    renamed.replace(renamed.find(name_line), name_line.size(),
+                    "ApplicationName: cpp-agent-it-renamed\n");
+    char restart_required[8];
+    size_t restart_required_len = 0;
+    EXPECT_EQ(pt_reload_agent_config(renamed.c_str(), restart_required,
+                                     sizeof restart_required, &restart_required_len),
+              PT_RELOAD_APPLIED);
+    EXPECT_EQ(restart_required_len, std::string_view("ApplicationName").size());
+    EXPECT_STREQ(restart_required, "Applica") << "truncated, and always NUL-terminated";
+    EXPECT_EQ(agent_->GetConfigSnapshot().application_name, "cpp-agent-it")
+        << "a fixed setting keeps its value until a restart";
+
+    const auto revision_applied = agent_->GetConfigSnapshot().revision;
+    EXPECT_EQ(ReloadAgentConfig("- not a mapping").status, ConfigReloadResult::Status::kInvalidYaml);
+    EXPECT_EQ(pt_reload_agent_config("Sampling: [unclosed", nullptr, 0, nullptr), PT_RELOAD_INVALID_YAML);
+    EXPECT_EQ(agent_->GetConfigSnapshot().revision, revision_applied)
+        << "a refused reload changes nothing";
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/reload-before").has_value() &&
+               find_span_by_rpc(snapshot, "/reload-after").has_value();
+    }, kWaitTimeout));
+    const auto snapshot = collector_.snapshot();
+    EXPECT_EQ(find_annotation(find_span_by_rpc(snapshot, "/reload-before")->annotation(),
+                              ANNOTATION_HTTP_PARAM), nullptr);
+    const auto after = find_span_by_rpc(snapshot, "/reload-after");
+    const auto* params = find_annotation(after->annotation(), ANNOTATION_HTTP_PARAM);
+    ASSERT_NE(params, nullptr) << "the reloaded RecordRequestParam applies to the next span";
+    EXPECT_EQ(params->value().stringvalue(), "q=after");
+}
+
+// The C HTTP helpers wrap helper::TraceHttp* over the C carriers: request,
+// cookie and response readers, the query string (recorded only with
+// Http.Server.RecordRequestParam) and the client URL (query stripped by
+// default) reach the wire as the C++ helpers put them there.
+TEST_F(AgentIntegrationTest, TracesHttpExchangeThroughCApiHelpers) {
+    cfg_.server_record_request_param = true;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+
+    pt_agent_t agent = pt_global_agent();
+    ASSERT_NE(agent, nullptr);
+    c_api::HeaderMap request_headers{{"x-request-id", "c-http-request"}};
+    c_api::HeaderMap cookies{{"session_id", "c-http-session"}};
+    c_api::HeaderMap response_headers{{"x-response-id", "c-http-response"}};
+    c_api::HeaderMap client_headers{{"x-client-request", "c-client-request"}};
+    c_api::HeaderMap client_cookies{{"client_session", "c-client-session"}};
+    c_api::HeaderMap client_response_headers{{"x-client-response", "c-client-response"}};
+    pt_header_reader_t request_reader{&request_headers, c_api::map_get, c_api::map_for_each};
+    pt_header_reader_t cookie_reader{&cookies, c_api::map_get, c_api::map_for_each};
+    pt_header_reader_t response_reader{&response_headers, c_api::map_get, c_api::map_for_each};
+    pt_header_reader_t client_reader{&client_headers, c_api::map_get, c_api::map_for_each};
+    pt_header_reader_t client_cookie_reader{&client_cookies, c_api::map_get, c_api::map_for_each};
+    pt_header_reader_t client_response_reader{&client_response_headers, c_api::map_get,
+                                              c_api::map_for_each};
+
+    pt_span_t span = pt_agent_new_span(agent, "c.http.server", "/c-http");
+    ASSERT_NE(span, nullptr);
+    ASSERT_NE(pt_span_is_sampled(span), 0);
+    const int64_t span_id = pt_span_get_span_id(span);
+    pt_trace_http_server_request_with_query(span, "203.0.113.9", "c-http.example.test:8080",
+                                            &request_reader, &cookie_reader,
+                                            "q=hello+world&page=2");
+    pt_span_event_t client = pt_span_new_event(span, "c.http.client");
+    ASSERT_NE(client, nullptr);
+    pt_trace_http_client_request_with_cookie(client, "backend.example.test",
+                                             "/orders/7?token=secret", &client_reader,
+                                             &client_cookie_reader);
+    pt_trace_http_client_response(client, 503, &client_response_reader);
+    pt_span_event_end(client);
+    pt_trace_http_server_response(span, "/c-http/{id}", "POST", 201, &response_reader);
+    pt_span_end(span);
+    pt_span_destroy(span);
+
+    // The overloads without cookies or a query record the same base fields.
+    pt_span_t plain = pt_agent_new_span(agent, "c.http.plain", "/c-http-plain");
+    ASSERT_NE(plain, nullptr);
+    const int64_t plain_id = pt_span_get_span_id(plain);
+    pt_trace_http_server_request(plain, "203.0.113.10", "c-http.example.test:8080",
+                                 &request_reader);
+    pt_span_event_t plain_client = pt_span_new_event(plain, "c.http.plain.client");
+    ASSERT_NE(plain_client, nullptr);
+    pt_trace_http_client_request(plain_client, "plain-backend.example.test", "/plain",
+                                 &client_reader);
+    pt_span_event_end(plain_client);
+    pt_trace_http_server_response(plain, "/c-http-plain", "GET", 200, &response_reader);
+    pt_span_end(plain);
+    pt_span_destroy(plain);
+
+    ASSERT_TRUE(collector_.WaitFor([span_id, plain_id](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/c-http").has_value() &&
+               find_span_by_rpc(snapshot, "/c-http-plain").has_value() &&
+               !events_for_span(snapshot, span_id).empty() &&
+               !events_for_span(snapshot, plain_id).empty();
+    }, kWaitTimeout));
+    const auto snapshot = collector_.snapshot();
+
+    const auto wire = find_span_by_rpc(snapshot, "/c-http");
+    ASSERT_TRUE(wire.has_value());
+    EXPECT_EQ(wire->acceptevent().remoteaddr(), "203.0.113.9");
+    EXPECT_EQ(wire->acceptevent().endpoint(), "c-http.example.test:8080");
+    const auto* params = find_annotation(wire->annotation(), ANNOTATION_HTTP_PARAM);
+    ASSERT_NE(params, nullptr);
+    EXPECT_EQ(params->value().stringvalue(), "q=hello world&page=2");
+    const auto* status = find_annotation(wire->annotation(), ANNOTATION_HTTP_STATUS_CODE);
+    ASSERT_NE(status, nullptr);
+    EXPECT_EQ(status->value().intvalue(), 201);
+    EXPECT_TRUE(has_string_pair_annotation(wire->annotation(), ANNOTATION_HTTP_REQUEST_HEADER,
+                                           "x-request-id", "c-http-request"));
+    EXPECT_TRUE(has_string_pair_annotation(wire->annotation(), ANNOTATION_HTTP_COOKIE,
+                                           "session_id", "c-http-session"));
+    EXPECT_TRUE(has_string_pair_annotation(wire->annotation(), ANNOTATION_HTTP_RESPONSE_HEADER,
+                                           "x-response-id", "c-http-response"));
+
+    const auto events = events_for_span(snapshot, span_id);
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].servicetype(), SERVICE_TYPE_CPP_HTTP_CLIENT);
+    EXPECT_EQ(events[0].nextevent().messageevent().endpoint(), "backend.example.test");
+    EXPECT_EQ(events[0].nextevent().messageevent().destinationid(), "backend.example.test");
+    const auto* url = find_annotation(events[0].annotation(), ANNOTATION_HTTP_URL);
+    ASSERT_NE(url, nullptr);
+    EXPECT_EQ(url->value().stringvalue(), "/orders/7") << "the client URL loses its query by default";
+    const auto* client_status = find_annotation(events[0].annotation(), ANNOTATION_HTTP_STATUS_CODE);
+    ASSERT_NE(client_status, nullptr);
+    EXPECT_EQ(client_status->value().intvalue(), 503);
+    EXPECT_TRUE(has_string_pair_annotation(events[0].annotation(), ANNOTATION_HTTP_REQUEST_HEADER,
+                                           "x-client-request", "c-client-request"));
+    EXPECT_TRUE(has_string_pair_annotation(events[0].annotation(), ANNOTATION_HTTP_COOKIE,
+                                           "client_session", "c-client-session"));
+    EXPECT_TRUE(has_string_pair_annotation(events[0].annotation(), ANNOTATION_HTTP_RESPONSE_HEADER,
+                                           "x-client-response", "c-client-response"));
+
+    const auto plain_wire = find_span_by_rpc(snapshot, "/c-http-plain");
+    ASSERT_TRUE(plain_wire.has_value());
+    EXPECT_EQ(plain_wire->acceptevent().remoteaddr(), "203.0.113.10");
+    EXPECT_EQ(find_annotation(plain_wire->annotation(), ANNOTATION_HTTP_PARAM), nullptr);
+    EXPECT_EQ(find_annotation(plain_wire->annotation(), ANNOTATION_HTTP_COOKIE), nullptr);
+    const auto plain_events = events_for_span(snapshot, plain_id);
+    ASSERT_EQ(plain_events.size(), 1U);
+    EXPECT_EQ(plain_events[0].nextevent().messageevent().destinationid(),
+              "plain-backend.example.test");
+}
+
+// The rest of the C span and span-event setters: typed annotations, named and
+// plain errors, explicit start times, operation and service type changes, a
+// SQL query with bind values, the current-event lookup, a forced URL stat,
+// the logging carrier and async work. Each reaches the wire as the C++ API
+// records it.
+TEST_F(AgentIntegrationTest, RecordsSqlAnnotationsErrorsAndAsyncWorkThroughCApi) {
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+    pt_agent_t agent = pt_global_agent();
+    ASSERT_NE(agent, nullptr);
+
+    constexpr int64_t kStartMs = INT64_C(1700000000000);
+    pt_span_t span = pt_agent_new_span(agent, "c.surface", "/c-surface");
+    ASSERT_NE(span, nullptr);
+    const int64_t span_id = pt_span_get_span_id(span);
+    pt_span_set_start_time_ms(span, kStartMs);
+    pt_span_set_end_point(span, "c-surface.example.test:9000");
+    pt_span_set_annotation_int(span, 9300, 42);
+    pt_span_set_annotation_long(span, 9301, INT64_C(1234567890123));
+    pt_span_set_annotation_string(span, 9302, "c-span");
+    pt_span_set_annotation_string_string(span, 9303, "left", "right");
+    pt_span_set_error_named(span, "CSurfaceFailure", "span-level failure");
+
+    pt_span_event_t sql = pt_span_new_event(span, "c.sql.initial");
+    ASSERT_NE(sql, nullptr);
+    EXPECT_EQ(pt_span_get_event(span), sql) << "the open event is the span's current one";
+    pt_span_event_set_operation_name(sql, "c.sql.query");
+    pt_span_event_set_service_type(sql, PT_SERVICE_TYPE_MYSQL_QUERY);
+    pt_span_event_set_start_time_ms(sql, kStartMs + 5);
+    pt_span_event_set_destination(sql, "orders-db");
+    const char* args[] = {"17", "admin"};
+    pt_span_event_set_sql_query(sql, "SELECT name FROM users WHERE id = ? AND role = ?", args, 2);
+    pt_span_event_set_annotation_int(sql, 9400, -1);
+    pt_span_event_set_annotation_long(sql, 9401, -2);
+    pt_span_event_set_annotation_string(sql, 9402, "c-event");
+    pt_span_event_set_annotation_string_string(sql, 9403, "key", "value");
+    pt_span_event_end(sql);
+    pt_span_event_destroy(sql);  // a non-owning view: releasing it is a no-op
+
+    pt_span_event_t plain_error = pt_span_new_event(span, "c.error.plain");
+    pt_span_event_set_error(plain_error, "plain event failure");
+    pt_span_event_end(plain_error);
+    pt_span_event_t named_error = pt_span_new_event(span, "c.error.named");
+    pt_span_event_set_error_named(named_error, "CEventFailure", "named event failure");
+    pt_span_event_end(named_error);
+
+    // An async span starts from the event that is open when it is created.
+    pt_span_event_t spawn = pt_span_new_event(span, "c.async.spawn");
+    pt_span_t async = pt_span_new_async_span(span, "c.async");
+    ASSERT_NE(async, nullptr);
+    pt_span_event_t async_event = pt_span_new_event(async, "c.async.work");
+    pt_span_event_end(async_event);
+    pt_span_end(async);
+    pt_span_destroy(async);
+    pt_span_event_end(spawn);
+
+    c_api::HeaderMap logging;
+    pt_context_writer_t logging_writer{&logging, c_api::map_set};
+    pt_span_set_logging(span, &logging_writer);
+    pt_span_force_url_stat(span, "/c-surface/{id}", "GET", 500);
+    pt_span_end(span);
+    pt_span_destroy(span);
+    EXPECT_NE(logging.find("PtxId"), logging.end());
+    EXPECT_NE(logging.find("PspanId"), logging.end());
+
+    const bool delivered = collector_.WaitFor([span_id](const auto& snapshot) {
+        return find_span_by_rpc(snapshot, "/c-surface").has_value() &&
+               events_for_span(snapshot, span_id).size() >= 3 &&
+               !async_chunks_for(snapshot, span_id).empty() &&
+               !snapshot.sql_uid_metadata.empty();
+    }, kWaitTimeout);
+    if (!delivered) {
+        const auto seen = collector_.snapshot();
+        FAIL() << "span " << find_span_by_rpc(seen, "/c-surface").has_value()
+               << ", events " << events_for_span(seen, span_id).size()
+               << ", async chunks " << async_chunks_for(seen, span_id).size()
+               << ", sql uid metadata " << seen.sql_uid_metadata.size();
+    }
+    ASSERT_TRUE(FlushUrlStatsUntil("GET /c-surface/{id}", 1))
+        << "pt_span_force_url_stat() records the forced pattern";
+    const auto snapshot = collector_.snapshot();
+
+    const auto wire = find_span_by_rpc(snapshot, "/c-surface");
+    ASSERT_TRUE(wire.has_value());
+    EXPECT_EQ(wire->starttime(), kStartMs);
+    EXPECT_EQ(wire->acceptevent().endpoint(), "c-surface.example.test:9000");
+    ASSERT_NE(find_annotation(wire->annotation(), 9300), nullptr);
+    EXPECT_EQ(find_annotation(wire->annotation(), 9300)->value().intvalue(), 42);
+    ASSERT_NE(find_annotation(wire->annotation(), 9301), nullptr);
+    EXPECT_EQ(find_annotation(wire->annotation(), 9301)->value().longvalue(), INT64_C(1234567890123));
+    ASSERT_NE(find_annotation(wire->annotation(), 9302), nullptr);
+    EXPECT_EQ(find_annotation(wire->annotation(), 9302)->value().stringvalue(), "c-span");
+    EXPECT_TRUE(has_string_pair_annotation(wire->annotation(), 9303, "left", "right"));
+    EXPECT_NE(wire->err(), 0);
+    ASSERT_TRUE(wire->has_exceptioninfo());
+    EXPECT_EQ(wire->exceptioninfo().stringvalue().value(), "span-level failure");
+
+    const auto events = events_for_span(snapshot, span_id);
+    const auto sql_wire = std::find_if(events.begin(), events.end(), [](const auto& event) {
+        return event.servicetype() == SERVICE_TYPE_MYSQL_QUERY;
+    });
+    ASSERT_NE(sql_wire, events.end());
+    EXPECT_EQ(sql_wire->nextevent().messageevent().destinationid(), "orders-db");
+    const auto* uid = find_annotation(sql_wire->annotation(), ANNOTATION_SQL_UID);
+    ASSERT_NE(uid, nullptr);
+    // Placeholders leave no literal to normalize out; the C bind arguments
+    // travel as the bind value, joined with ", ".
+    EXPECT_TRUE(uid->value().bytesstringstringvalue().stringvalue1().value().empty());
+    EXPECT_EQ(uid->value().bytesstringstringvalue().stringvalue2().value(), "17, admin");
+    EXPECT_TRUE(std::any_of(snapshot.sql_uid_metadata.begin(), snapshot.sql_uid_metadata.end(),
+        [](const auto& received) {
+            return received.message.sql() == "SELECT name FROM users WHERE id = ? AND role = ?";
+        }));
+    ASSERT_NE(find_annotation(sql_wire->annotation(), 9400), nullptr);
+    EXPECT_EQ(find_annotation(sql_wire->annotation(), 9400)->value().intvalue(), -1);
+    ASSERT_NE(find_annotation(sql_wire->annotation(), 9401), nullptr);
+    EXPECT_EQ(find_annotation(sql_wire->annotation(), 9401)->value().longvalue(), -2);
+    EXPECT_TRUE(has_string_pair_annotation(sql_wire->annotation(), 9403, "key", "value"));
+
+    const auto failed = std::count_if(events.begin(), events.end(), [](const auto& event) {
+        return event.has_exceptioninfo() &&
+               (event.exceptioninfo().stringvalue().value() == "plain event failure" ||
+                event.exceptioninfo().stringvalue().value() == "named event failure");
+    });
+    EXPECT_EQ(failed, 2) << "both event errors reach the wire";
+    EXPECT_FALSE(async_chunks_for(snapshot, span_id).front().spanevent().empty());
+}
+
+// The C options builder end to end: an agent configured from a file reports
+// the app type and server metadata set through the builder in its AgentInfo,
+// and refuses a YAML reload because the file outranks YAML.
+TEST_F(AgentIntegrationTest, ConfiguresAgentFromFileThroughCApiOptions) {
+    ASSERT_NO_FATAL_FAILURE(StartCollector());
+    const auto path = std::filesystem::temp_directory_path() /
+        ("pinpoint_it_c_options_" + std::to_string(collector_.agent_port()) + ".yaml");
+    {
+        std::ofstream file(path);
+        file << config();
+    }
+
+    pt_agent_options_t opts = pt_agent_options_new();
+    ASSERT_NE(opts, nullptr);
+    pt_agent_options_set_env_prefix(opts, "PINPOINT_CPP_AGENT_IT_ISOLATED");
+    pt_agent_options_set_config_file(opts, path.c_str());
+    pt_agent_options_set_app_type(opts, kApplicationType + 1);
+    const char* args[] = {"--c-options", "--from-file"};
+    const char* libs[] = {"libc-options.so"};
+    pt_agent_options_set_server_metadata(opts, "c-options server", args, 2, libs, 1);
+    ASSERT_NE(pt_start_agent(opts), 0);
+    pt_agent_options_free(opts);
+    agent_ = GlobalAgent();
+
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return !snapshot.agent_infos.empty();
+    }, kWaitTimeout));
+    const auto info = collector_.snapshot().agent_infos.front().message;
+    EXPECT_EQ(info.servicetype(), kApplicationType + 1);
+    EXPECT_EQ(info.servermetadata().serverinfo(), "c-options server");
+    ASSERT_EQ(info.servermetadata().vmarg_size(), 2);
+    EXPECT_EQ(info.servermetadata().vmarg(0), "--c-options");
+    EXPECT_EQ(info.servermetadata().vmarg(1), "--from-file");
+    const auto libraries = std::find_if(
+        info.servermetadata().serviceinfo().begin(), info.servermetadata().serviceinfo().end(),
+        [](const auto& service) { return service.servicename() == "Libraries"; });
+    ASSERT_NE(libraries, info.servermetadata().serviceinfo().end());
+    ASSERT_EQ(libraries->servicelib_size(), 1);
+    EXPECT_EQ(libraries->servicelib(0), "libc-options.so");
+
+    char restart_required[32] = "unchanged";
+    size_t restart_required_len = 99;
+    EXPECT_EQ(pt_reload_agent_config(config().c_str(), restart_required,
+                                     sizeof restart_required, &restart_required_len),
+              PT_RELOAD_CONFIG_FILE_ACTIVE);
+    EXPECT_STREQ(restart_required, "") << "outputs are reset on every path";
+    EXPECT_EQ(restart_required_len, 0U);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+struct CLogSinkLines {
+    std::mutex mutex;
+    std::vector<std::string> lines;
+};
+
+extern "C" {
+static void collect_c_log_line(void* userdata, const char* level, const char* message) {
+    auto* sink = static_cast<CLogSinkLines*>(userdata);
+    std::lock_guard<std::mutex> lock(sink->mutex);
+    sink->lines.push_back(std::string(level) + " " + message);
+}
+}
+
+// A C log sink gets the agent's lines from pt_start_agent() on, including the
+// config warnings parsed before the agent exists, and pt_agent_shutdown()
+// detaches it: a line logged afterwards no longer reaches it.
+TEST_F(AgentIntegrationTest, RoutesAgentLogsToACSinkUntilShutdown) {
+    ASSERT_NO_FATAL_FAILURE(StartCollector());
+    CLogSinkLines sink;
+
+    pt_agent_options_t opts = pt_agent_options_new();
+    ASSERT_NE(opts, nullptr);
+    pt_agent_options_set_env_prefix(opts, "PINPOINT_CPP_AGENT_IT_ISOLATED");
+    const auto yaml = config() + "ItUnknownKey: 1\n";
+    pt_agent_options_set_config_yaml(opts, yaml.c_str());
+    pt_agent_options_set_log_sink(opts, collect_c_log_line, &sink);
+    ASSERT_NE(pt_start_agent(opts), 0);
+    pt_agent_options_free(opts);
+    agent_ = GlobalAgent();
+    ASSERT_TRUE(wait_until([this] { return agent_->Enable(); }));
+
+    {
+        std::lock_guard<std::mutex> lock(sink.mutex);
+        EXPECT_TRUE(std::any_of(sink.lines.begin(), sink.lines.end(), [](const auto& line) {
+            return line.rfind("warning ", 0) == 0 &&
+                   line.find("unknown config key 'ItUnknownKey'") != std::string::npos;
+        })) << "the config warning goes to the C sink";
+    }
+
+    pt_agent_t handle = pt_global_agent();
+    pt_agent_shutdown(handle);
+    EXPECT_EQ(pt_agent_is_enabled(handle), 0);
+    size_t lines_at_shutdown = 0;
+    {
+        std::lock_guard<std::mutex> lock(sink.mutex);
+        lines_at_shutdown = sink.lines.size();
+    }
+    // The refused reload logs a warning; with the agent gone it must not
+    // reach the sink the host may already have freed.
+    EXPECT_EQ(pt_reload_agent_config("Sampling: {}", nullptr, 0, nullptr), PT_RELOAD_NO_AGENT);
+    std::lock_guard<std::mutex> lock(sink.mutex);
+    EXPECT_EQ(sink.lines.size(), lines_at_shutdown) << "pt_agent_shutdown() detaches the sink";
 }
 
 }  // namespace
