@@ -685,6 +685,62 @@ TEST_F(TracerCApiTest, GlobalAgentHandleTracksSwapsUnderConcurrentLookups) {
     EXPECT_TRUE(watched.expired()) << "a swapped-out agent must not stay pinned by the C layer";
 }
 
+// A handle kept across a restart names the disabled agent for good. Looking it
+// up must not evict the live handle's reader entry; otherwise a thread mixing
+// the two allocates and refills that entry on every call.
+TEST_F(TracerCApiTest, KeptHandleLookupDoesNotEvictLiveReaderEntry) {
+    // Never started, so no worker thread moves its reference count.
+    auto clients = pinpoint::make_testable_grpc_clients(cfg_);
+    auto cold = std::make_shared<pinpoint::AgentImpl>(
+        cfg_, std::move(clients.agent), std::move(clients.metadata),
+        std::move(clients.span), std::move(clients.stats));
+    const auto kept = agent_;
+    pinpoint::set_global_agent(cold);
+    const auto live = pt_global_agent();
+    ASSERT_NE(live, kept);
+
+    (void)pt_agent_is_enabled(live);  // this thread's reader entry now holds `cold`
+    const auto refs = cold.use_count();
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_EQ(pt_agent_is_enabled(kept), 0);
+        EXPECT_EQ(pt_agent_is_enabled(live), 0) << "a never-started agent is not enabled";
+    }
+    EXPECT_EQ(pt_agent_is_enabled(kept), 0);
+    EXPECT_EQ(cold.use_count(), refs)
+        << "looking up the kept handle must not displace the live reader entry";
+
+    pinpoint::set_global_agent(mock_agent_);
+    agent_ = pt_global_agent();
+}
+
+// More threads than reader slots, each alternating a kept handle with the live
+// one: slots shared between threads must keep answering both correctly.
+TEST_F(TracerCApiTest, KeptAndLiveHandlesMixAcrossSharedReaderSlots) {
+    const auto kept = agent_;
+    auto replacement = make_test_agent(cfg_);
+    pinpoint::set_global_agent(replacement);
+    const auto live = pt_global_agent();
+    ASSERT_NE(live, kept);
+    ASSERT_TRUE(pinpoint::wait_for_condition([&] { return replacement->Enable(); },
+                                             std::chrono::seconds(3)));
+
+    constexpr int thread_count = 40;  // more than the 32 reader slots
+    std::vector<std::thread> threads;
+    for (int t = 0; t < thread_count; ++t) {
+        threads.emplace_back([&, t] {
+            for (int i = 0; i < 500; ++i) {
+                const bool use_kept = ((i + t) & 1) != 0;
+                EXPECT_EQ(pt_agent_is_enabled(use_kept ? kept : live), use_kept ? 0 : 1);
+            }
+        });
+    }
+    for (auto& thread : threads) thread.join();
+
+    replacement->Shutdown();
+    pinpoint::set_global_agent(mock_agent_);
+    agent_ = pt_global_agent();
+}
+
 // A destroyed handle must never be recycled as the identity of a later live
 // handle. Otherwise a stale second destroy is indistinguishable from destroying
 // the replacement and recreates the heap-corruption bug the registry prevents.

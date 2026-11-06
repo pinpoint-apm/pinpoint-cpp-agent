@@ -261,6 +261,7 @@ public:
     }
 
     Entry find(pt_agent_t handle) {
+        if (handle == nullptr) return {};
         // Distribute readers of the same token, including their refcount traffic.
         static thread_local const size_t index =
             next_reader_.fetch_add(1, std::memory_order_relaxed) % kReaderCount;
@@ -268,13 +269,24 @@ public:
         {
             std::shared_lock<std::shared_mutex> lock(reader.mutex);
             if (reader.handle == handle) return reader.entry;
+            if (reader.disabled == handle) return disabled_entry();
         }
         Entry displaced;
         std::lock_guard<std::shared_mutex> lock(reader.mutex);
         if (reader.handle == handle) return reader.entry;
+        if (reader.disabled == handle) return disabled_entry();
         // Hold the reader lock through lookup/install so retarget cannot miss a stale fill.
         const auto owned = registry_.find(handle);
         if (!owned) return {};
+        if (owned->ptr.get() == noop_agent_sentinel()->ptr.get()) {
+            // Retargeted at the disabled agent, which is final for a token:
+            // only a live agent ever gets one minted. Remember it beside the
+            // live entry rather than evicting that entry, so a thread mixing a
+            // handle kept across a restart with the current one does not
+            // allocate and refill on every call.
+            reader.disabled = handle;
+            return disabled_entry();
+        }
         auto local = std::make_shared<ReaderAgent>(owned->ptr);
         displaced = std::move(reader.entry);
         reader.entry = std::move(local);
@@ -297,6 +309,12 @@ public:
     }
 
 private:
+    // The disabled agent as an Entry that owns nothing: an aliasing copy of
+    // the immortal sentinel, so handing it out touches no control block.
+    static Entry disabled_entry() {
+        return Entry(Entry(), noop_agent_sentinel());
+    }
+
     // Align the make_shared allocation so reader control blocks do not share a line.
     struct alignas(64) ReaderAgent : pt_agent_s {
         explicit ReaderAgent(pinpoint::AgentPtr agent) : pt_agent_s{std::move(agent)} {}
@@ -305,6 +323,9 @@ private:
         std::shared_mutex mutex;
         pt_agent_t handle{nullptr};
         Entry entry;
+        // One token known to name the disabled agent. retarget() never needs
+        // to clear it: tokens are not reused and a disabled one stays so.
+        pt_agent_t disabled{nullptr};
     };
     static constexpr size_t kReaderCount = 32;
     OwnedHandleRegistry<pt_agent_t, pt_agent_s> registry_;

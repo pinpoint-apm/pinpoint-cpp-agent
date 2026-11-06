@@ -56,7 +56,9 @@
   count, until the global agent changes. This holds when no agent is running
   too. Shutdown and replacement invalidate these caches, including those used
   by idle threads, so old agents are released and retained handles still
-  behave as disabled agents.
+  behave as disabled agents. A retained handle is remembered as disabled
+  beside the live one, so a thread that mixes the two neither allocates nor
+  refills the cache on each call.
 
 - **Restarting an init-failed agent cannot deadlock on a repeated shutdown
   from its teardown log sink.** `Shutdown()` now returns before taking the
