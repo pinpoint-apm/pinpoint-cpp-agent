@@ -33,6 +33,7 @@
 #include "pinpoint/tracer_c.h"
 #include "pinpoint/tracer.h"
 
+#include "global_agent.h"
 #include "logging.h"
 #include "noop.h"
 #include "span.h"
@@ -452,8 +453,13 @@ namespace {
 struct GlobalAgentHandle {
     std::mutex mutex;
     // The current agent's token, or null. Written under `mutex`; read without
-    // it on the fast path, which confirms the token against the registry.
+    // it on the fast path while `generation` still matches.
     std::atomic<pt_agent_t> handle{nullptr};
+    // The pinpoint::global_agent_generation() that `handle` was confirmed
+    // for. Stored after `handle`, so a reader that sees a matching count also
+    // sees that token or a newer one. It starts at a count no store reaches,
+    // so the first call takes the slow path.
+    std::atomic<uint64_t> generation{std::numeric_limits<uint64_t>::max()};
 };
 
 GlobalAgentHandle& global_agent_handle() {
@@ -481,16 +487,16 @@ static pt_agent_t sync_global_agent_handle() {
         return agent.get() == noop_agent_sentinel()->ptr.get();
     };
 
-    // Fast paths avoid the global handle mutex: the token still wraps the agent,
-    // or there is no agent and nothing cached (a disabled process calling
-    // this per request must not serialize on the mutex).
-    {
-        const auto agent = pinpoint::GlobalAgent();
-        if (!agent) return nullptr;
+    // Fast path, taken on every call until the global agent changes: no store
+    // into the holder has completed since `handle` was confirmed, so it still
+    // names the global agent. It uses plain loads only. An owning
+    // GlobalAgent() here would take a shared lock and a refcount RMW on lines
+    // that every request thread shares, which serialized even a disabled
+    // process calling this per request.
+    const auto generation = pinpoint::global_agent_generation();
+    if (cache.generation.load(std::memory_order_acquire) == generation) {
         const auto cached = cache.handle.load(std::memory_order_acquire);
-        if (is_none(agent) ? cached == nullptr : handle_wraps(cached, agent)) {
-            return cached != nullptr ? cached : noop_agent_sentinel();
-        }
+        return cached != nullptr ? cached : noop_agent_sentinel();
     }
 
     // Built before the lock: the stale token's new target. Declared before
@@ -501,18 +507,23 @@ static pt_agent_t sync_global_agent_handle() {
     std::lock_guard<std::mutex> lock(cache.mutex);
     // Re-read under the lock: global agents only ever move forward, so the
     // serialized loads here never mint a token for an agent older than the
-    // one already cached — which would disable the live agent's token.
+    // one already cached — which would disable the live agent's token. The
+    // count is read first: the agent loaded after it is at least that new,
+    // so the pair recorded below never vouches for an older agent.
+    const auto current = pinpoint::global_agent_generation();
     auto agent = pinpoint::GlobalAgent();
     if (!agent) return nullptr;
     const bool none = is_none(agent);
     const auto cached = cache.handle.load(std::memory_order_relaxed);
     if (none ? cached == nullptr : handle_wraps(cached, agent)) {
+        cache.generation.store(current, std::memory_order_release);
         return cached != nullptr ? cached : noop_agent_sentinel();
     }
     const pt_agent_t result = none
         ? nullptr
         : agent_handle_registry().insert(std::make_shared<pt_agent_s>(pt_agent_s{std::move(agent)}));
     cache.handle.store(result, std::memory_order_release);
+    cache.generation.store(current, std::memory_order_release);
     if (cached != nullptr) {
         stale = agent_handle_registry().retarget(cached, std::move(disabled));
     }

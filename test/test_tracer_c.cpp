@@ -615,6 +615,76 @@ TEST_F(TracerCApiTest, HandleLookupsRacingShutdownDoNotRetainAgent) {
     EXPECT_TRUE(watched.expired()) << "a racing lookup must not reinstall the old agent";
 }
 
+// pt_global_agent() serves its cached token until a store into the global
+// holder completes. A change made through the C++ API alone, with no C call in
+// between, must still show on the very next call, in both directions.
+TEST_F(TracerCApiTest, GlobalAgentHandleFollowsCppSideReplacement) {
+    const auto first = agent_;
+    auto replacement = make_test_agent(cfg_);
+    pinpoint::set_global_agent(replacement);
+    const auto second = pt_global_agent();
+    EXPECT_NE(second, first) << "a new global agent must get its own handle";
+    EXPECT_EQ(pt_global_agent(), second);
+    EXPECT_EQ(pt_agent_is_enabled(first), 0) << "the replaced agent's handle must act disabled";
+
+    pinpoint::reset_global_agent();
+    const auto none = pt_global_agent();
+    EXPECT_NE(none, second);
+    EXPECT_EQ(pt_global_agent(), none);
+    EXPECT_EQ(pt_agent_is_enabled(none), 0);
+    EXPECT_EQ(pt_agent_is_enabled(second), 0);
+
+    pinpoint::set_global_agent(mock_agent_);
+    agent_ = pt_global_agent();
+    EXPECT_NE(agent_, first) << "a retargeted handle must not be handed out again";
+    EXPECT_EQ(pt_agent_is_enabled(agent_), 1);
+    replacement->Shutdown();
+}
+
+// Readers stay on the fast path while the C++ side keeps swapping the global
+// agent. Once the last swap has completed, every thread must get the final
+// agent's handle, and a swapped-out agent must not stay pinned by the C layer.
+TEST_F(TracerCApiTest, GlobalAgentHandleTracksSwapsUnderConcurrentLookups) {
+    auto other = make_test_agent(cfg_);
+    const std::weak_ptr<pinpoint::AgentImpl> watched = other;
+    constexpr int reader_count = 8;
+    std::atomic<int> ready{0};
+    std::atomic<bool> stopped{false};
+    std::vector<pt_agent_t> after_stop(reader_count, nullptr);
+    std::vector<std::thread> readers;
+    for (int i = 0; i < reader_count; ++i) {
+        readers.emplace_back([&, i] {
+            ready.fetch_add(1);
+            while (!stopped.load()) {
+                const auto handle = pt_global_agent();
+                EXPECT_NE(handle, nullptr);
+                (void)pt_agent_is_enabled(handle);
+            }
+            after_stop[i] = pt_global_agent();
+        });
+    }
+    while (ready.load() != reader_count) std::this_thread::yield();
+    for (int round = 0; round < 300; ++round) {
+        switch (round % 3) {
+            case 0: pinpoint::set_global_agent(other); break;
+            case 1: pinpoint::reset_global_agent(); break;
+            default: pinpoint::set_global_agent(mock_agent_); break;
+        }
+    }
+    pinpoint::set_global_agent(mock_agent_);
+    stopped.store(true);
+    for (auto& reader : readers) reader.join();
+
+    agent_ = pt_global_agent();
+    EXPECT_EQ(pt_agent_is_enabled(agent_), 1);
+    for (const auto handle : after_stop) {
+        EXPECT_EQ(handle, agent_) << "no thread may keep a handle from before the last swap";
+    }
+    other->Shutdown();
+    other.reset();
+    EXPECT_TRUE(watched.expired()) << "a swapped-out agent must not stay pinned by the C layer";
+}
+
 // A destroyed handle must never be recycled as the identity of a later live
 // handle. Otherwise a stale second destroy is indistinguishable from destroying
 // the replacement and recreates the heap-corruption bug the registry prevents.

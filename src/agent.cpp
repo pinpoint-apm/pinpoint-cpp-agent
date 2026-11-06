@@ -37,6 +37,7 @@
 #include "logging.h"
 #include "noop.h"
 #include "agent.h"
+#include "global_agent.h"
 #include "sql.h"
 #include "utility.h"
 
@@ -1944,6 +1945,10 @@ namespace pinpoint {
             return noopAgent();
         }
         return agent;
+    }
+
+    uint64_t global_agent_generation() {
+        return global_agent().generation();
     }
 
     // Public entry point: every failure is a result, never an exception in the

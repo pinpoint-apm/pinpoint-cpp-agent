@@ -208,6 +208,20 @@ namespace pinpoint {
             generation_.fetch_add(1, std::memory_order_release);
         }
 
+        /**
+         * @brief Number of completed store() calls.
+         *
+         * store() publishes the new value before it bumps this count, so a
+         * load() that follows this read returns a value at least as new as
+         * the count. Reading the same count again later means no store() has
+         * completed in between, so that loaded value is still current; only a
+         * store() still in flight may already show through load(). One plain
+         * atomic load: no lock, and no refcount on the value.
+         */
+        uint64_t generation() const noexcept {
+            return generation_.load(std::memory_order_acquire);
+        }
+
     private:
         // One of these is allocated per reader thread and observed generation.
         // Its snapshot is localized (see localize_shared): the sole reference
