@@ -77,6 +77,22 @@ bool clear_allocation_failure() noexcept {
     return was_consumed;
 }
 
+// False when this file's operator new is not the one in effect: valgrind's
+// memcheck, for one, redirects operator new to its own allocator, so an armed
+// failure never fires. A direct call, because a new-expression may be elided.
+bool allocation_failure_injection_works() {
+    arm_allocation_failure();
+    void* probe = nullptr;
+    try {
+        probe = ::operator new(1);
+    } catch (const std::bad_alloc&) {
+        return true;
+    }
+    ::operator delete(probe);
+    clear_allocation_failure();
+    return false;
+}
+
 }  // namespace
 
 void* operator new(std::size_t size) {
@@ -2058,6 +2074,53 @@ TEST_F(GrpcMockTest, GrpcMetadataEvictsSqlUidCacheAfterRetryExhaustion) {
     EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::SQL_UID), 4u);
 }
 
+// Exception metadata has no agent cache entry, so dropping it releases
+// nothing: release_failed_cache() must leave every cache alone for it, where
+// each other payload type evicts its own entry (see the tests above).
+TEST_F(GrpcMockTest, GrpcMetadataDropsExhaustedExceptionMetaWithoutEvictingAnyCache) {
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+    metadata.setRetryDelay(std::chrono::milliseconds(50));
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::ERROR_STATUS);
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+
+    std::vector<std::unique_ptr<Exception>> exceptions;
+    auto cs = std::make_unique<CallStack>("RuntimeError");
+    cs->push("app", "handle", "handler.cpp", 7);
+    exceptions.push_back(std::make_unique<Exception>(std::move(cs)));
+    metadata.enqueueMeta(std::make_unique<MetaData>(
+        ExceptionMeta(TraceId{"test-agent", 12345, 1}, 999, "/exhaust", std::move(exceptions))));
+
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
+
+    // Initial send + exactly 3 scheduled retries; the fourth failure exhausts it.
+    ASSERT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::EXCEPTION, 4,
+                                          std::chrono::seconds(10)));
+
+    // The fake replies inline during the launch, and the worker drains
+    // completions before it launches anything else, so once this item is sent
+    // the fourth failure has been through retry exhaustion and its release.
+    fake->setReplyMode(FakeMetadataStub::ReplyMode::OK);
+    metadata.enqueueMeta(std::make_unique<MetaData>(ApiMeta(1, 100, "api.after.exception.drop")));
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API, 1, std::chrono::seconds(5)));
+    EXPECT_FALSE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::EXCEPTION, 5,
+                                           std::chrono::milliseconds(300)))
+        << "an exhausted item must leave the retry schedule for good";
+
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::EXCEPTION), 4u);
+    EXPECT_EQ(mock_agent_service_->removed_api_count_.load(), 0);
+    EXPECT_EQ(mock_agent_service_->removed_error_count_.load(), 0);
+    EXPECT_EQ(mock_agent_service_->removed_sql_count_.load(), 0);
+    EXPECT_EQ(mock_agent_service_->removed_sql_uid_count_.load(), 0);
+}
+
 TEST_F(GrpcMockTest, GrpcMetadataAbbreviatesSqlOverMetadataCapOnTheWire) {
     TestableGrpcMetadata metadata(mock_agent_service_.get());
 
@@ -3593,6 +3656,54 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
     EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), 2u);
     EXPECT_EQ(mock_agent_service_->removed_api_count_, 1)
         << "the two delivered items must keep their cache entries";
+}
+
+// enqueueMeta() releases the cache entry of any item it could not queue, not
+// only on overflow: if the queue insertion throws (an allocation failure), the
+// id would otherwise stay marked published and never be re-sent. The deque
+// allocates only when it needs a new block, so the failure is armed for each
+// enqueue until one insertion actually allocates.
+TEST_F(GrpcMockTest, GrpcMetadataReleasesCacheWhenQueueInsertionThrows) {
+    if (!allocation_failure_injection_works()) {
+        GTEST_SKIP() << "this file's operator new is not in effect (e.g. under valgrind)";
+    }
+    TestableGrpcMetadata metadata(mock_agent_service_.get());
+
+    auto fake_meta_stub = std::make_unique<FakeMetadataStub>();
+    auto* fake = fake_meta_stub.get();
+    metadata.setMockMetaStub(std::move(fake_meta_stub));
+
+    const int queue_limit = mock_agent_service_->getConfig()->collector.grpc.channel.sender_queue_size;
+    int queued = 0;
+    bool insertion_threw = false;
+    for (int id = 1; id <= queue_limit && !insertion_threw; ++id) {
+        // Built before arming, so only enqueueMeta's own allocations can fail.
+        auto meta = std::make_unique<MetaData>(ApiMeta(id, 100, "enqueue.insertion.throws"));
+        arm_allocation_failure();
+        metadata.enqueueMeta(std::move(meta));
+        insertion_threw = clear_allocation_failure();
+        if (!insertion_threw) {
+            ++queued;
+        }
+    }
+    ASSERT_TRUE(insertion_threw) << "no queue insertion allocated within the queue limit";
+    EXPECT_EQ(mock_agent_service_->removed_api_count_.load(), 1)
+        << "the item whose insertion threw must release its cache entry";
+
+    ScopedWorker meta_worker([&metadata] { metadata.stopMetaWorker(); },
+                     [&metadata] { metadata.sendMetaWorker(); });
+
+    EXPECT_TRUE(fake->waitForRequestCount(FakeMetadataStub::MetaRpc::API,
+                                          static_cast<size_t>(queued), std::chrono::seconds(5)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    mock_agent_service_->setExiting(true);
+    metadata.stopMetaWorker();
+    if (meta_worker.joinable()) meta_worker.join();
+
+    EXPECT_EQ(fake->requestCount(FakeMetadataStub::MetaRpc::API), static_cast<size_t>(queued))
+        << "the item that was never queued must not be sent";
+    EXPECT_EQ(mock_agent_service_->removed_api_count_.load(), 1)
+        << "the queued items must keep their cache entries";
 }
 
 TEST_F(GrpcMockTest, GrpcMetadataRetryBacklogDoesNotStarveNewMetaQueue) {
