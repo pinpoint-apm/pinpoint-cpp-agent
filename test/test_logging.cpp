@@ -16,12 +16,18 @@
 
 #include "../src/logging.h"
 #include <gtest/gtest.h>
+#include <poll.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <regex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -524,6 +530,175 @@ TEST_F(LoggingTest, StdoutLoggerDropsLogsAfterShutdown) {
     const auto captured = testing::internal::GetCapturedStdout();
 
     EXPECT_TRUE(captured.empty()) << "leaked to the host's stdout: " << captured;
+}
+
+// ========== stdout through a pipe ==========
+//
+// In a container stdout is a pipe, which C stdio buffers fully, and std::cout
+// writes through C stdio. These tests fork children whose stdout is a pipe and
+// read what reaches it, as a container runtime does.
+
+namespace {
+    // In a forked child: makes `fd` the process's stdout, fully buffered as
+    // C stdio makes a pipe, and puts the logger in stdout mode. The parent
+    // flushed C stdio before forking, so the buffer setvbuf() changes is empty.
+    void child_stdout_to(int fd) {
+        dup2(fd, STDOUT_FILENO);
+        close(fd);
+        setvbuf(stdout, nullptr, _IOFBF, 4096);
+        Logger::getInstance().setFileLogger("", 0);
+    }
+
+    // Reads `fd` until `needle` arrives or `timeout` passes; false on timeout
+    // or EOF without it.
+    bool read_until(int fd, std::string& out, const std::string& needle,
+                    std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (out.find(needle) == std::string::npos) {
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (left.count() <= 0) {
+                return false;
+            }
+            pollfd pfd{fd, POLLIN, 0};
+            if (poll(&pfd, 1, static_cast<int>(left.count())) <= 0) {
+                continue;
+            }
+            char chunk[4096];
+            const ssize_t n = read(fd, chunk, sizeof(chunk));
+            if (n <= 0) {
+                return false;
+            }
+            out.append(chunk, static_cast<size_t>(n));
+        }
+        return true;
+    }
+
+    void read_to_eof(int fd, std::string& out) {
+        char chunk[4096];
+        ssize_t n;
+        while ((n = read(fd, chunk, sizeof(chunk))) > 0) {
+            out.append(chunk, static_cast<size_t>(n));
+        }
+    }
+
+    void flush_stdio_before_fork() {
+        std::cout.flush();
+        std::fflush(stdout);
+    }
+}
+
+// A line must be readable from the pipe as soon as it is logged, not when
+// 4 KiB of others have piled up, and must survive _exit(), which forked
+// workers leave through and which flushes nothing.
+TEST_F(LoggingTest, StdoutLineReachesAPipeBeforeTheProcessExits) {
+    int out[2];
+    int release[2];
+    ASSERT_EQ(pipe(out), 0);
+    ASSERT_EQ(pipe(release), 0);
+
+    flush_stdio_before_fork();
+    const pid_t pid = fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0) {
+        close(out[0]);
+        close(release[1]);
+        child_stdout_to(out[1]);
+        Logger::getInstance().logInfo("test.cpp", 1, "line through a pipe");
+        // Stay alive until the parent has looked; EOF releases the child.
+        char c;
+        (void)read(release[0], &c, 1);
+        _exit(0);
+    }
+    close(out[1]);
+    close(release[0]);
+
+    std::string got;
+    const bool while_running =
+        read_until(out[0], got, "line through a pipe\n", std::chrono::seconds(5));
+    close(release[1]);
+    read_to_eof(out[0], got);
+    close(out[0]);
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0);
+
+    EXPECT_TRUE(while_running)
+        << "the line did not reach the pipe while the process ran; read: " << got;
+    EXPECT_NE(got.find("line through a pipe\n"), std::string::npos)
+        << "the line was lost at _exit(); read: " << got;
+}
+
+// Pre-fork workers share one stdout pipe. Each line must arrive whole -- one
+// write, never cut where a sibling's write can land inside it -- and none may
+// be lost at _exit().
+TEST_F(LoggingTest, StdoutLinesOfProcessesSharingAPipeStayWhole) {
+    constexpr int kChildren = 4;
+    constexpr int kLines = 500;
+    const std::string padding(40, 'x');
+
+    int out[2];
+    int go[2];
+    ASSERT_EQ(pipe(out), 0);
+    ASSERT_EQ(pipe(go), 0);
+
+    flush_stdio_before_fork();
+    std::vector<pid_t> pids;
+    for (int i = 0; i < kChildren; ++i) {
+        const pid_t pid = fork();
+        ASSERT_GE(pid, 0);
+        if (pid == 0) {
+            close(out[0]);
+            close(go[1]);
+            child_stdout_to(out[1]);
+            // Start together, so the children's writes overlap.
+            char c;
+            (void)read(go[0], &c, 1);
+            for (int j = 0; j < kLines; ++j) {
+                Logger::getInstance().logInfo("test.cpp", 1, "child {} line {} {}", i, j, padding);
+            }
+            _exit(0);
+        }
+        pids.push_back(pid);
+    }
+    close(out[1]);
+    close(go[0]);
+    close(go[1]);
+
+    std::string got;
+    read_to_eof(out[0], got);
+    close(out[0]);
+    for (const pid_t pid : pids) {
+        int status = 0;
+        ASSERT_EQ(waitpid(pid, &status, 0), pid);
+        ASSERT_TRUE(WIFEXITED(status));
+        EXPECT_EQ(WEXITSTATUS(status), 0);
+    }
+
+    const std::regex whole_line(
+        R"(\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}\]\[info\]\[pinpoint\]\[test\.cpp:1\] )"
+        R"(child (\d+) line (\d+) x{40})");
+    std::vector<std::set<int>> seen(kChildren);
+    std::vector<std::string> broken;
+    size_t start = 0;
+    for (size_t end; (end = got.find('\n', start)) != std::string::npos; start = end + 1) {
+        const std::string line = got.substr(start, end - start);
+        std::smatch m;
+        if (std::regex_match(line, m, whole_line) && std::stoi(m[1]) < kChildren) {
+            seen[std::stoi(m[1])].insert(std::stoi(m[2]));
+        } else if (broken.size() < 5) {
+            broken.push_back(line);
+        }
+    }
+    EXPECT_EQ(start, got.size()) << "output ends mid-line: " << got.substr(start);
+    for (const auto& line : broken) {
+        ADD_FAILURE() << "line cut or mixed with another process's: " << line;
+    }
+    for (int i = 0; i < kChildren; ++i) {
+        EXPECT_EQ(seen[i].size(), static_cast<size_t>(kLines))
+            << "child " << i << " lost lines";
+    }
 }
 
 // Rotation renames the log away and reopens the path. When that reopen fails

@@ -75,6 +75,13 @@ Log:
 
 `%pid%` expands to the process id.
 
+Workers that share stdout (an empty `Log.FilePath`, the default) get the same
+per-line flush. Each line leaves in one write as soon as it is logged, so on a
+pipe, as docker and kubernetes give a container, lines are not held back and
+siblings cannot cut each other's lines: a pipe write of at most `PIPE_BUF`
+bytes (4096 on Linux) is atomic. A worker that leaves through `_exit()` loses
+none of them.
+
 ## Configuration reloads
 
 With `EnableConfigFileWatcher: true` (default: false), each worker installs

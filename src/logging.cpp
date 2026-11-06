@@ -267,6 +267,15 @@ namespace pinpoint {
             rotateFileIfNeededLocked();
         } else if (!closed_ && !file_broken_) {
             std::cout.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+            // Same per-line flush as the file, for the same reasons. std::cout
+            // forwards to C stdio's stdout, which is fully buffered on a pipe --
+            // what docker and kubernetes give a container. Unflushed, a line
+            // waited for 4 KiB of others, went out in a write cut mid-line that
+            // a sibling process on the same pipe could land inside, and was lost
+            // when the process left through _exit(), as forked workers do.
+            // Flushed here, each message leaves in one write as it is logged; a
+            // pipe write of at most PIPE_BUF bytes cannot be interleaved.
+            std::cout.flush();
         }
         // Otherwise the line is dropped. With no file left to write to, a
         // closed or broken logger must not start pouring the agent's

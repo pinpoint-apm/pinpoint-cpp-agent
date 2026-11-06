@@ -49,6 +49,16 @@
 
 ### Fixed
 
+- **The stdout log is flushed after each line, as the file log already was.**
+  With no `Log.FilePath`, lines went to `std::cout` unflushed, and C stdio
+  buffers stdout fully when it is a pipe, as it is under docker and
+  kubernetes. Lines waited for 4 KiB of others, so a registered agent showed
+  no `success to register the agent` until the container stopped. They also
+  went out in 4096-byte writes cut mid-line, which pre-fork workers sharing
+  the pipe landed inside, and a worker leaving through `_exit()` lost whatever
+  was still buffered. Each line now leaves in one write as it is logged. Hosts
+  that set `unitbuf` on `std::cout` to work around this no longer need it.
+
 - **Concurrent C API agent lookups no longer contend on a single handle
   registry shard and reference count.** A bounded set of reader caches spreads
   lookups of the shared agent token across threads. `pt_global_agent()` returns
