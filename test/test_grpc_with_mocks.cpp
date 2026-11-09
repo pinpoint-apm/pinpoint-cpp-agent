@@ -27,6 +27,7 @@
 #include <fstream>
 #include <functional>
 #include <future>
+#include <iterator>
 #include <mutex>
 #include <memory>
 #include <optional>
@@ -66,6 +67,10 @@ using ::testing::InvokeWithoutArgs;
 namespace {
 
 thread_local bool fail_next_allocation = false;
+// The countdown form: how many allocations on this thread succeed before the
+// one that fails, for a sweep over every allocation of a code path. -1 is
+// disarmed, -2 means it fired.
+thread_local long allocations_until_failure = -1;
 
 void arm_allocation_failure() noexcept {
     fail_next_allocation = true;
@@ -77,6 +82,32 @@ bool clear_allocation_failure() noexcept {
     const bool was_consumed = !fail_next_allocation;
     fail_next_allocation = false;
     return was_consumed;
+}
+
+// Fails the allocation `skip` allocations from now (0: the next one).
+void arm_allocation_failure_after(long skip) noexcept {
+    allocations_until_failure = skip;
+}
+
+// Disarms and reports whether the armed failure fired, i.e. whether the
+// guarded window made more than `skip` allocations.
+bool clear_allocation_failure_after() noexcept {
+    const bool fired = allocations_until_failure == -2;
+    allocations_until_failure = -1;
+    return fired;
+}
+
+// Whether this allocation is the one armed to fail; consumes the arming.
+bool take_injected_allocation_failure() noexcept {
+    if (fail_next_allocation) {
+        fail_next_allocation = false;
+        return true;
+    }
+    if (allocations_until_failure >= 0 && allocations_until_failure-- == 0) {
+        allocations_until_failure = -2;
+        return true;
+    }
+    return false;
 }
 
 #if defined(__SANITIZE_THREAD__)
@@ -116,8 +147,7 @@ bool allocation_failure_injection_works() {
 }  // namespace
 
 void* operator new(std::size_t size) {
-    if (fail_next_allocation) {
-        fail_next_allocation = false;
+    if (take_injected_allocation_failure()) {
         throw std::bad_alloc();
     }
     if (void* memory = std::malloc(size != 0 ? size : 1)) {
@@ -127,8 +157,7 @@ void* operator new(std::size_t size) {
 }
 
 void* operator new[](std::size_t size) {
-    if (fail_next_allocation) {
-        fail_next_allocation = false;
+    if (take_injected_allocation_failure()) {
         throw std::bad_alloc();
     }
     if (void* memory = std::malloc(size != 0 ? size : 1)) {
@@ -5245,6 +5274,119 @@ TEST_F(GrpcMockTest, GrpcStatsShutdownFlushContinuesASplitUrlStatSendTest) {
     })) << "the rest of the completed tick goes out before the tick in progress";
     EXPECT_EQ(stats_client.shutdownDroppedUrlStatsForTest(), 0u);
     EXPECT_EQ(stats_client.oversizeDroppedUrlStatsForTest(), 0u);
+}
+
+// The limit is compared with what the message really serializes to: an entry
+// whose message is exactly Collector.Grpc.MaxSendMessageSize is sent, and only
+// one a byte over it is dropped. (proto3 leaves bucketVersion 0 out, and the
+// length prefix takes only the bytes the size needs.) Defined after
+// GrpcStatsSplitsAnOversizeUrlStatSendTest on purpose: both drop an entry, and
+// that test asserts the line from the same 60-second throttled warning.
+TEST_F(GrpcMockTest, GrpcStatsSendsAUrlStatEntryWhoseMessageIsExactlyTheLimitTest) {
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    const auto config = mock_agent_service_->getConfig();
+    auto& max_size = mock_agent_service_->mutableConfig()->collector.grpc.channel.max_send_message_size;
+    const auto uri = "/api/exact-" + std::string(900, 'e');
+    // The shutdown flush takes the tick in progress, so no run needs a cutter.
+    // Each run in a newer tick; its timestamp keeps the same wire size.
+    int64_t end_second = 1000;
+
+    max_size = -1;
+    size_t exact = 0;
+    {
+        TestableGrpcStats stats_client(mock_agent_service_.get());
+        add_url_stat(url_stats, *config, uri, end_second);
+        ASSERT_EQ(stats_client.buildShutdownFlushForTest(), STREAM_WRITE);
+        exact = stats_client.pendingMessageForTest()->ByteSizeLong();
+    }
+
+    max_size = static_cast<int>(exact);
+    {
+        TestableGrpcStats stats_client(mock_agent_service_.get());
+        add_url_stat(url_stats, *config, uri, end_second += 30);
+        ASSERT_EQ(stats_client.buildShutdownFlushForTest(), STREAM_WRITE)
+            << "a message exactly at the limit is sent";
+        EXPECT_EQ(stats_client.pendingMessageForTest()->ByteSizeLong(), exact);
+        EXPECT_EQ(stats_client.oversizeDroppedUrlStatsForTest(), 0u);
+    }
+
+    max_size = static_cast<int>(exact) - 1;
+    {
+        TestableGrpcStats stats_client(mock_agent_service_.get());
+        add_url_stat(url_stats, *config, uri, end_second += 30);
+        EXPECT_EQ(stats_client.buildShutdownFlushForTest(), STREAM_CONTINUE)
+            << "a message a byte over the limit cannot be sent";
+        EXPECT_EQ(stats_client.oversizeDroppedUrlStatsForTest(), 1u);
+    }
+}
+
+// A message build that runs out of memory at any of its allocations, the last
+// one included, loses no entry: the backlog moves on only once the message is
+// complete, so the next write sends what the failed one would have carried.
+// Swept over every allocation of the second message's build, and over a few
+// entry counts so the build ends at different points of the arena's blocks.
+TEST_F(GrpcMockTest, GrpcStatsUrlStatSplitLosesNothingToAnAllocationFailureTest) {
+    if (!allocation_failure_injection_works()) {
+        GTEST_SKIP() << "this file's operator new is not in effect for the agent library (e.g. under valgrind or TSan)";
+    }
+    mock_agent_service_->mutableConfig()->collector.grpc.channel.max_send_message_size = 5000;
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    const auto config = mock_agent_service_->getConfig();
+    const std::string tail(120, 'p');
+
+    int64_t end_second = 1000;
+    for (int entries = 40; entries <= 70 && !HasFailure(); ++entries) {
+        for (long skip = 0; !HasFailure(); ++skip) {
+            ASSERT_LT(skip, 10000) << "the sweep must end";
+            TestableGrpcStats stats_client(mock_agent_service_.get());
+            // A tick of its own per run, newer than the last run's; its cutter
+            // closes it for the periodic send.
+            end_second += 60;
+            const auto prefix = "/api/alloc-" + std::to_string(entries) + "-" + std::to_string(skip) + "-";
+            std::set<std::string> expected;
+            for (int i = 0; i < entries; ++i) {
+                const auto uri = prefix + std::to_string(i) + "-" + tail;
+                add_url_stat(url_stats, *config, uri, end_second);
+                expected.insert(uri);
+            }
+            add_url_stat(url_stats, *config, "/api/cutter", end_second + 30);
+
+            std::multiset<std::string> delivered;
+            const auto collect = [&](const v1::PStatMessage* msg) {
+                for (const auto& each : msg->agenturistat().eachuristat()) {
+                    if (each.uri().rfind(prefix, 0) == 0) {
+                        delivered.insert(each.uri());
+                    }
+                }
+            };
+            stats_client.enqueueStats(URL_STATS);
+            ASSERT_EQ(stats_client.nextWriteForTest(), STREAM_WRITE);
+            collect(stats_client.pendingMessageForTest());
+            ASSERT_LT(delivered.size(), expected.size()) << "the send must need a second message";
+
+            arm_allocation_failure_after(skip);
+            const auto status = stats_client.nextWriteForTest();
+            const bool fired = clear_allocation_failure_after();
+            if (status == STREAM_WRITE) {
+                collect(stats_client.pendingMessageForTest());
+            }
+            while (stats_client.nextWriteForTest() == STREAM_WRITE) {
+                collect(stats_client.pendingMessageForTest());
+            }
+
+            std::vector<std::string> lost;
+            std::set_difference(expected.begin(), expected.end(), delivered.begin(), delivered.end(),
+                                std::back_inserter(lost));
+            EXPECT_TRUE(lost.empty()) << lost.size() << " of " << entries << " entries lost when allocation "
+                                      << skip << " of the second message failed, e.g. "
+                                      << (lost.empty() ? std::string() : lost.front());
+            EXPECT_EQ(delivered.size(), expected.size()) << "each entry is sent exactly once";
+            if (!fired) {
+                // The build made fewer than `skip` allocations: all were covered.
+                break;
+            }
+        }
+    }
 }
 
 } // namespace pinpoint

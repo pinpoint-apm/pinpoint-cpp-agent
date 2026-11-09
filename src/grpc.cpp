@@ -3481,24 +3481,29 @@ namespace pinpoint {
         // one past its own inbound limit. -1 is unlimited.
         const auto max_size = config_->collector.grpc.channel.max_send_message_size;
         const bool limited = max_size >= 0;
-        // What a PStatMessage puts around its entries, at most: the
-        // agentUriStat tag, a length prefix (5 bytes hold any size) and the
-        // bucketVersion field.
-        constexpr size_t kMaxLengthPrefix = 5;
-        const size_t overhead =
-            WireFormatLite::TagSize(v1::PStatMessage::kAgentUriStatFieldNumber, WireFormatLite::TYPE_MESSAGE) +
-            kMaxLengthPrefix +
-            WireFormatLite::TagSize(v1::PAgentUriStat::kBucketVersionFieldNumber, WireFormatLite::TYPE_INT32) +
-            WireFormatLite::Int32Size(URL_STATS_BUCKET_VERSION);
-        const size_t budget =
-            limited && static_cast<size_t>(max_size) > overhead ? static_cast<size_t>(max_size) - overhead : 0;
+        // Exactly what the message serializes to when its entries frame to
+        // `entries` bytes, so an entry is dropped only when no message could
+        // carry it: the agentUriStat tag and length prefix around a
+        // PAgentUriStat of those entries and its bucketVersion, which proto3
+        // leaves out when it is 0.
+        const size_t bucket_version_size = URL_STATS_BUCKET_VERSION != 0
+            ? WireFormatLite::TagSize(v1::PAgentUriStat::kBucketVersionFieldNumber, WireFormatLite::TYPE_INT32) +
+                  WireFormatLite::Int32Size(URL_STATS_BUCKET_VERSION)
+            : 0;
+        const auto message_size = [bucket_version_size](const size_t entries) {
+            return WireFormatLite::TagSize(v1::PStatMessage::kAgentUriStatFieldNumber, WireFormatLite::TYPE_MESSAGE) +
+                   WireFormatLite::LengthDelimitedSize(bucket_version_size + entries);
+        };
+        const auto fits = [&](const size_t entries) {
+            return !limited || message_size(entries) <= static_cast<size_t>(max_size);
+        };
 
         auto* uri_stat = google::protobuf::Arena::Create<v1::PAgentUriStat>(&arena_);
         uri_stat->set_bucketversion(URL_STATS_BUCKET_VERSION);
 
-        // Read through a local position, committed once the message is
-        // complete: a throw part-way leaves the backlog as it was, so the
-        // entries the lost message held are still sent by the next one.
+        // Read through a local position, committed only once the message is
+        // complete: a throw anywhere before that leaves the backlog as it was,
+        // so the entries the lost message held are sent by the next one.
         size_t index = 0;
         auto cursor = url_stat_cursor_;
         size_t size = 0;
@@ -3519,16 +3524,16 @@ namespace pinpoint {
             const size_t framed =
                 WireFormatLite::TagSize(v1::PAgentUriStat::kEachUriStatFieldNumber, WireFormatLite::TYPE_MESSAGE) +
                 WireFormatLite::LengthDelimitedSize(entry->ByteSizeLong());
-            if (limited && framed > budget) {
+            if (!fits(framed)) {
                 // No message could carry it. Left on the arena, freed with it.
                 ++dropped;
-                LOG_WARN_THROTTLED("url stat entry dropped: {} bytes serialized exceeds "
+                LOG_WARN_THROTTLED("url stat entry dropped: its {}-byte message exceeds "
                                    "Collector.Grpc.MaxSendMessageSize {}, which no message can carry: {:?}",
-                                   framed, max_size, log_excerpt(key.url_));
+                                   message_size(framed), max_size, log_excerpt(key.url_));
                 ++cursor;
                 continue;
             }
-            if (limited && size + framed > budget) {
+            if (!fits(size + framed)) {
                 // Starts the next message; built again there.
                 break;
             }
@@ -3537,21 +3542,27 @@ namespace pinpoint {
             ++cursor;
         }
 
-        // The cursor first: once the backlog is used up it points into a
-        // snapshot the erase destroys, and is not read again until the next
-        // push resets it.
+        // The last allocation, so before the commit below.
+        v1::PStatMessage* msg = nullptr;
+        if (uri_stat->eachuristat_size() > 0) {
+            msg = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
+            msg->unsafe_arena_set_allocated_agenturistat(uri_stat);
+        }
+
+        // The commit; nothing from here on throws. The cursor first: once the
+        // backlog is used up it points into a snapshot the erase destroys, and
+        // is not read again until the next push resets it.
         url_stat_cursor_ = cursor;
         url_stat_backlog_.erase(url_stat_backlog_.begin(),
                                 url_stat_backlog_.begin() + static_cast<std::ptrdiff_t>(index));
         oversize_dropped_url_stats_.fetch_add(dropped, std::memory_order_relaxed);
 
-        if (uri_stat->eachuristat_size() == 0) {
+        if (msg == nullptr) {
             // Every entry left was dropped: nothing to write.
             release_written_message_locked();
             return STREAM_CONTINUE;
         }
-        msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
-        msg_->unsafe_arena_set_allocated_agenturistat(uri_stat);
+        msg_ = msg;
         return STREAM_WRITE;
     }
 
