@@ -2836,10 +2836,19 @@ TEST_F(StartAgentTest, ReplacingInitFailedAgentAllowsShutdownFromTeardownLogSink
     }, ::testing::ExitedWithCode(0), "");
 }
 
-TEST_F(StartAgentTest, RetainedInitFailedAgentDoesNotCloseReplacementLogSink) {
-    auto old_agent = make_init_failed_agent(make_test_config_for_create_agent());
-    ASSERT_TRUE(old_agent->initFailed());
-    set_global_agent(old_agent);
+// What the logger generation guards: an agent's Shutdown() still tearing down
+// when StartAgent() installs a successor with its own sink. The old agent's
+// last teardown step, do_shutdown's Logger::shutdown(0, logger_generation),
+// must leave the successor's sink alone; revision 0 makes the generation the
+// only check there. The old agent here is one the singleton no longer holds,
+// as its own Shutdown() leaves it, and its whole teardown runs after the
+// successor started, the latest that last step can come. An init-failed agent
+// cannot stand in for it: StartAgent() shuts that one down before installing
+// the new sink, so its later Shutdown() returns at once and never gets there.
+TEST_F(StartAgentTest, RetainedAgentShutDownAfterReplacementKeepsNewLogSink) {
+    auto old_agent = make_test_agent(make_test_config_for_create_agent());
+    wait_agent_enabled(old_agent);
+    ASSERT_FALSE(old_agent->isExiting());
 
     std::atomic<int> marker_calls{0};
     options_.log_sink = [&](const char*, const char* message) {
@@ -2850,11 +2859,13 @@ TEST_F(StartAgentTest, RetainedInitFailedAgentDoesNotCloseReplacementLogSink) {
     set_config_string(kBaseConfigYaml);
     ASSERT_TRUE(StartAgent());
     auto replacement = GlobalAgent();
+    ASSERT_NE(replacement.get(), old_agent.get());
     LOG_WARN("replacement-marker-before");
     old_agent->Shutdown();
+    ASSERT_TRUE(old_agent->isExiting()) << "the old agent's teardown must have run";
     LOG_WARN("replacement-marker-after");
     EXPECT_EQ(GlobalAgent(), replacement);
-    EXPECT_EQ(marker_calls.load(), 2);
+    EXPECT_EQ(marker_calls.load(), 2) << "the old agent's teardown must not close its successor's sink";
 
     const auto reloaded = ReloadAgentConfig(
         std::string(kBaseConfigYaml) + "\nLog:\n  FilePath: " + log_file_.string() + "\n");
