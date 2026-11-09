@@ -35,7 +35,9 @@ namespace pinpoint {
     public:
         /// @param api_type The API type @p operation is interned as, and that
         ///        a later SetOperationName() keeps: API_TYPE_INVOCATION for
-        ///        an async span's event, API_TYPE_DEFAULT otherwise.
+        ///        an async span's event, API_TYPE_DEFAULT otherwise. An
+        ///        INVOCATION event interns @p operation even when it is
+        ///        empty; any other event only a non-empty one.
         SpanEventImpl(SpanImpl* span, std::string_view operation,
                       int32_t api_type = API_TYPE_DEFAULT);
         ~SpanEventImpl() override {}

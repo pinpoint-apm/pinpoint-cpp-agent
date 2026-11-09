@@ -141,7 +141,12 @@ namespace pinpoint {
         assert(data_ != nullptr);
         assert(agent_ != nullptr);
 
-        if (!operation.empty()) {
+        // An async span's event interns even an empty operation: its
+        // INVOCATION api type is what marks the async boundary, and with
+        // neither an id nor a name the collector has no api for the event
+        // (Pinpoint Web shows "API-DynamicID not found"). Any other event
+        // with no name has nothing to intern, and sends neither.
+        if (!operation.empty() || api_type_ == API_TYPE_INVOCATION) {
             setApi(operation);
         }
     }

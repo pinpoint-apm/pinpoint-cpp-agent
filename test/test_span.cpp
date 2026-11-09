@@ -2839,6 +2839,40 @@ TEST_F(SpanTest, AsyncEventFallsBackToNameWhenApiIdUnavailableTest) {
     parent.EndSpan();
 }
 
+// An async span created without an operation (NewAsyncSpan(""), or a NULL one
+// through pt_span_new_async_span()) still sends its event's INVOCATION api:
+// with neither an id nor a name the collector has no api for the event, and
+// Pinpoint Web shows "API-DynamicID not found" in the call tree.
+TEST_F(SpanTest, UnnamedAsyncEventKeepsInvocationApiTest) {
+    SpanImpl parent(mock_agent_service_.get(), "parent-op", "parent-rpc");
+    seed_test_trace_id(parent, *mock_agent_service_);
+    auto prepare = parent.NewSpanEvent("prepare-async");
+
+    // The native overload and the binding one build the event the same way.
+    for (const auto& async_span : {parent.NewAsyncSpan(""), parent.NewAsyncSpan("", 7, 1)}) {
+        ASSERT_NE(async_span, nullptr);
+        const auto recorded = mock_agent_service_->getRecordedSpansCount();
+        async_span->EndSpan();
+        ASSERT_EQ(mock_agent_service_->getRecordedSpansCount(), recorded + 1);
+
+        google::protobuf::Arena arena;
+        auto* chunk = build_grpc_span_chunk(
+            std::move(mock_agent_service_->recorded_spans_.back()), &arena);
+        ASSERT_NE(chunk, nullptr);
+        ASSERT_EQ(chunk->spanevent_size(), 1);
+        const auto& event = chunk->spanevent(0);
+        EXPECT_GT(event.apiid(), 0);
+        EXPECT_EQ(event.apiid(), mock_agent_service_->getCachedApiId(""));
+        for (const auto& annotation : event.annotation()) {
+            EXPECT_NE(annotation.key(), ANNOTATION_API) << "an event its api id identifies sends no name";
+        }
+    }
+    EXPECT_EQ(mock_agent_service_->getCachedApiType(""), API_TYPE_INVOCATION);
+
+    prepare->EndEvent();
+    parent.EndSpan();
+}
+
 TEST_F(SpanTest, OverflowedSpanEventSetErrorMarksSpanAndUrlStatFailedTest) {
     auto config = std::make_shared<Config>();
     config->span.max_event_depth = 1;
