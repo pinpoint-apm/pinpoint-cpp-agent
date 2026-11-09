@@ -99,7 +99,7 @@ namespace pinpoint {
         /// Interval between WARN lines while a worker waits, with no upper
         /// bound, for a stream's OnDone (see GrpcClient::await_stream_done).
         std::chrono::milliseconds stream_wait_warn_interval{3000};
-        /// Interval between INFO lines while boot registration retries, with
+        /// Interval between WARN lines while boot registration retries, with
         /// no upper bound, for the collector to accept the first AgentInfo
         /// (see GrpcAgent::registerAgentWithRetry). Tracing stays off for the
         /// whole wait, so the log must say why nothing is being recorded.

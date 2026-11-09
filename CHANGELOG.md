@@ -47,6 +47,57 @@
   compressed. Documented in
   [Configuration Guide § gRPC Transport](doc/config.md#grpc-transport-configuration).
 
+### Changed
+
+- **Log lines that operators match on were renamed, re-leveled or
+  throttled.** Each line's level now matches what it reports, and a line that
+  repeats per request or per interval is throttled: the first occurrence logs
+  at once, then at most one line per minute per call site, ending in
+  `[N occurrences since last report]`. Check readiness probes, alerts and log
+  parsers that match these:
+  - **Registration.** `success to register the agent` is gone; `AgentInfo
+    sent` (INFO) is the one success line, at boot and on every AgentInfo
+    refresh. `failed to register the agent: <code>, <message>` is WARN, was
+    ERROR, and `failed to register the agent: collector rejected it
+    (PResult.success=false), <message>` is ERROR, was WARN; the two share one
+    throttle and end in `(N failed attempt(s) since the last report)`. The
+    per-attempt `failed to send AgentInfo` WARN is gone. `still waiting for
+    agent registration after ...` is WARN, was INFO.
+  - **Streams.** `failed to send ping: <code>, <message>` and `failed to send
+    stats: <code>, <message>` are WARN, were ERROR, and no longer appear for a
+    stream the agent recycled itself after a write timeout, whose CANCELLED is
+    its own. `failed to send stats: exception = ...` is now `failed to build
+    stats message: exception = ...`.
+  - **Span batches.** `SendSpanBatch skipped: no available permits within
+    <n>ms` (INFO) is now `SendSpanBatch dropped <n> span(s): no available
+    permit within <n>ms` (WARN, throttled). `SendSpanBatch failed
+    synchronously: ...` (INFO) is now `failed to build span batch, <n> span(s)
+    dropped: ...` (ERROR). `SendSpanBatch partial success: ...` is throttled,
+    and `SendSpanBatch warning: ...` is WARN, was INFO, and throttled.
+  - **Shutdown.** `drop <n> remaining spans on shutdown: channel not ready`
+    and `drop <n> url stat entries on shutdown: ...` are WARN, were INFO.
+  - **Startup.** A config that cannot start the agent logs `agent not
+    started: <reason>`, and the reasons, also returned as
+    `ConfigReloadResult::message` by a reload that replaces the config, name
+    the keys: `Collector.Host is required`, `ApplicationName is required` and
+    `agent identity resolution failed (invalid ApplicationName or
+    ServiceName)`, were `address of collector is required`, `application name
+    is required` and `agent identity resolution failed`. `Failed to resolve
+    ApplicationName (...)` and `Failed to resolve ServiceName (...)` are now
+    `invalid ApplicationName "<value>": <reason>` and `invalid ServiceName
+    "<value>" (required for uid.version=v4): <reason>`.
+  - **Others.** `global agent is shut down; replacing it with a new agent` is
+    INFO, was WARN: it is the documented restart. `metadata id sequence
+    overflowed int32; ...` is ERROR, was WARN. `span accessed from another
+    thread: ...` no longer carries the two thread hashes and is throttled.
+    `worker exited by exception: ...` names its worker (`<name> worker exited
+    by exception: ...`). The OS failures of stat collection (`/proc/stat`,
+    `host_statistics`, `task_info`, `task_threads`) name the error and are
+    throttled, as is `destroying an unknown or already-destroyed handle:
+    ignored`. Values taken from inbound headers (`parsing Txid: ...`,
+    `unparseable ... header = ...`) and the rejected identity values above
+    are quoted, with control characters escaped, and cut to 64 bytes.
+
 ### Fixed
 
 - **The stdout log is flushed after each line, as the file log already was.**

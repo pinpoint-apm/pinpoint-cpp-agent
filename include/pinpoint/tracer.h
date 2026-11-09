@@ -642,7 +642,7 @@ namespace pinpoint {
         /// The final flush sends only over a span channel that is already
         /// connected, so it stays inside the deadline below: a process that
         /// ends before its first span batch was ever sent (the channel is
-        /// still idle) drops that tail with an INFO log line
+        /// still idle) drops that tail with a WARN log line
         /// ("drop N remaining spans on shutdown: channel not ready").
         ///
         /// Bounded: Shutdown() returns within a 3-second deadline even if a
@@ -804,7 +804,7 @@ namespace pinpoint {
      * NewSpan() returns noop spans and no agent, URL or system statistics are
      * collected, so a collector whose agent port (9991) alone is unreachable
      * yields zero spans even though the span and stat ports are open. The
-     * registration is retried indefinitely, and the agent logs an INFO line
+     * registration is retried indefinitely, and the agent logs a WARN line
      * every 30 seconds while it waits, naming this consequence.
      *
      * @return true when the agent was launched and installed as the global
