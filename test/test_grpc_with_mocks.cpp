@@ -5152,7 +5152,6 @@ TEST_F(GrpcMockTest, GrpcStatsSplitsAnOversizeUrlStatSendTest) {
     auto& url_stats = mock_agent_service_->getUrlStats();
     const auto config = mock_agent_service_->getConfig();
 
-    LogCapture log;
     const std::string tail(120, 'p');
     std::set<std::string> expected;
     for (int i = 0; i < 10; ++i) {
@@ -5184,11 +5183,39 @@ TEST_F(GrpcMockTest, GrpcStatsSplitsAnOversizeUrlStatSendTest) {
     EXPECT_EQ(stats_client.oversizeDroppedUrlStatsForTest(), 1u)
         << "the one entry no message can carry is dropped and counted";
     EXPECT_TRUE(stats_client.queuedStatsForTest().empty());
+}
 
-    const auto text = log.text();
-    EXPECT_EQ(LogCapture::count(text, "url stat entry dropped: "), 1u) << text;
-    EXPECT_NE(text.find("exceeds Collector.Grpc.MaxSendMessageSize 1000"), std::string::npos) << text;
-    EXPECT_NE(text.find("/api/huge-hhh"), std::string::npos) << "the warning names the entry: " << text;
+TEST_F(GrpcMockTest, GrpcStatsLogsOversizeUrlStatDropsOncePerIntervalTest) {
+    // Re-exec so the process-wide log throttle starts fresh even after
+    // another test used this log site, or under --gtest_shuffle/--gtest_repeat.
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    const auto check_log = [this] {
+        mock_agent_service_->mutableConfig()->collector.grpc.channel.max_send_message_size = 1000;
+        TestableGrpcStats stats_client(mock_agent_service_.get());
+        auto& url_stats = mock_agent_service_->getUrlStats();
+        const auto config = mock_agent_service_->getConfig();
+
+        LogCapture log;
+        const std::string uri = "/api/huge-" + std::string(1000, 'h');
+        // Two completed ticks drop the same URL twice at the same log site.
+        add_url_stat(url_stats, *config, uri, 1000);
+        add_url_stat(url_stats, *config, uri, 1030);
+        add_url_stat(url_stats, *config, "/api/cutter", 1060);
+
+        stats_client.enqueueStats(URL_STATS);
+        ASSERT_EQ(stats_client.nextWriteForTest(), STREAM_CONTINUE);
+        EXPECT_EQ(stats_client.oversizeDroppedUrlStatsForTest(), 2u);
+
+        const auto text = log.text();
+        EXPECT_EQ(LogCapture::count(text, "url stat entry dropped: "), 1u) << text;
+        EXPECT_NE(text.find("exceeds Collector.Grpc.MaxSendMessageSize 1000"), std::string::npos) << text;
+        EXPECT_NE(text.find("/api/huge-hhh"), std::string::npos) << "the warning names the entry: " << text;
+    };
+    ASSERT_EXIT({
+        check_log();
+        // Propagate fatal and nonfatal assertions after local cleanup.
+        std::_Exit(HasFailure() ? 1 : 0);
+    }, ::testing::ExitedWithCode(0), "");
 }
 
 // -1 is unlimited, as for span batches: nothing is measured, and the send
@@ -5279,9 +5306,7 @@ TEST_F(GrpcMockTest, GrpcStatsShutdownFlushContinuesASplitUrlStatSendTest) {
 // The limit is compared with what the message really serializes to: an entry
 // whose message is exactly Collector.Grpc.MaxSendMessageSize is sent, and only
 // one a byte over it is dropped. (proto3 leaves bucketVersion 0 out, and the
-// length prefix takes only the bytes the size needs.) Defined after
-// GrpcStatsSplitsAnOversizeUrlStatSendTest on purpose: both drop an entry, and
-// that test asserts the line from the same 60-second throttled warning.
+// length prefix takes only the bytes the size needs.)
 TEST_F(GrpcMockTest, GrpcStatsSendsAUrlStatEntryWhoseMessageIsExactlyTheLimitTest) {
     auto& url_stats = mock_agent_service_->getUrlStats();
     const auto config = mock_agent_service_->getConfig();
