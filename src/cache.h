@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -779,8 +780,17 @@ namespace pinpoint {
          */
         CacheResult get(LookupKey key) {
             // Do not recycle metadata ids after the int32 sequence is exhausted.
-            auto result = cache_.get(key, [this]() {
-                return wrapped_.load(std::memory_order_relaxed) ? 0 : ++id_sequence_;
+            auto result = cache_.get(key, [this]() -> int32_t {
+                if (wrapped_.load(std::memory_order_relaxed)) {
+                    return 0;
+                }
+                // Not ++id_sequence_: libc++ computes its result as
+                // fetch_add(1) + 1 in plain int arithmetic, which overflows
+                // (UB) at INT32_MAX. fetch_add itself wraps by definition, so
+                // a racing miss past the wrap sees a negative prev and mints
+                // prev + 1 <= 0, which the check below refuses as well.
+                const int32_t prev = id_sequence_.fetch_add(1);
+                return prev == std::numeric_limits<int32_t>::max() ? 0 : prev + 1;
             });
             if (result.value <= 0) {
                 // The generator ran unlocked, so the refused id was inserted

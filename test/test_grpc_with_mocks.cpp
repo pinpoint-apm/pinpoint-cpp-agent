@@ -77,10 +77,27 @@ bool clear_allocation_failure() noexcept {
     return was_consumed;
 }
 
+#if defined(__SANITIZE_THREAD__)
+#define PINPOINT_TEST_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define PINPOINT_TEST_TSAN 1
+#endif
+#endif
+
 // False when this file's operator new is not the one in effect: valgrind's
 // memcheck, for one, redirects operator new to its own allocator, so an armed
 // failure never fires. A direct call, because a new-expression may be elided.
+//
+// Under TSan the probe below would pass yet prove nothing: the TSan runtime
+// interposes operator new, so the agent library's own allocations (the code
+// under test) go to TSan's allocator while this file's calls still reach the
+// replacement here. Report it as not in effect rather than let a test that
+// needs a library allocation to fail run blind.
 bool allocation_failure_injection_works() {
+#if defined(PINPOINT_TEST_TSAN)
+    return false;
+#else
     arm_allocation_failure();
     void* probe = nullptr;
     try {
@@ -91,6 +108,7 @@ bool allocation_failure_injection_works() {
     ::operator delete(probe);
     clear_allocation_failure();
     return false;
+#endif
 }
 
 }  // namespace
@@ -3818,7 +3836,7 @@ TEST_F(GrpcMockTest, GrpcMetadataQueueOverflowDropsNewMeta) {
 // enqueue until one insertion actually allocates.
 TEST_F(GrpcMockTest, GrpcMetadataReleasesCacheWhenQueueInsertionThrows) {
     if (!allocation_failure_injection_works()) {
-        GTEST_SKIP() << "this file's operator new is not in effect (e.g. under valgrind)";
+        GTEST_SKIP() << "this file's operator new is not in effect for the agent library (e.g. under valgrind or TSan)";
     }
     TestableGrpcMetadata metadata(mock_agent_service_.get());
 
@@ -4197,6 +4215,11 @@ TEST_F(GrpcMockTest, GrpcMetadataCompletionSurvivesAllocationPressureWithoutLosi
     // before arming, so its own allocations run unrestricted.
     grpc::Status failed_status(grpc::StatusCode::UNAVAILABLE, std::string(192, 'x'));
 
+    // Where allocation_failure_injection_works() is false (valgrind, TSan),
+    // the agent library's allocations bypass the armed failure, so the
+    // no-allocation check below passes without looking. The test still runs
+    // there for the lost-wakeup check after it, which TSan is best placed to
+    // exercise.
     arm_allocation_failure();
     bool released = false;
     bool threw = false;
