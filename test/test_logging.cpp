@@ -231,6 +231,22 @@ TEST_F(LoggingTest, SetLogLevelAcceptsWarnAlias) {
     EXPECT_EQ(content.find("unknown log level"), std::string::npos);
 }
 
+// A value from a shell or a template can carry a stray space or tab; it must
+// not read as an unknown level that leaves the current one in place.
+TEST_F(LoggingTest, SetLogLevelIgnoresSurroundingWhitespace) {
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().setLogLevel(" Debug\t");
+
+    Logger::getInstance().logDebug("test.cpp", 1, "debug after a padded level");
+    Logger::getInstance().shutdown();
+
+    auto content = read_file(log_file_.string());
+    EXPECT_NE(content.find("debug after a padded level"), std::string::npos)
+        << "the padded level is applied";
+    EXPECT_EQ(content.find("unknown log level"), std::string::npos);
+}
+
 TEST_F(LoggingTest, SetLogLevelAcceptsWarnAliasCaseInsensitively) {
     Logger::getInstance().setLogLevel("info");
     Logger::getInstance().setFileLogger(log_file_.string(), 10);
@@ -1141,9 +1157,8 @@ TEST_F(LoggingTest, UnsupportedLogLevelKeepsTheCurrentLevel) {
     ASSERT_TRUE(logger.errorEnabled());
     ASSERT_FALSE(logger.warnEnabled()) << "error suppresses warn";
 
-    // Matching is case-insensitive but NOT trimmed, so "WARN " is unsupported
-    // where "WARN" would be a level change.
-    for (const char* unsupported : {"warnign", "trace", "fatal", "", "WARN ", "2"}) {
+    // A blank value (whitespace only, once trimmed) is as unsupported as a typo.
+    for (const char* unsupported : {"warnign", "trace", "fatal", "", " \t", "2"}) {
         logger.setLogLevel(unsupported);
         EXPECT_TRUE(logger.errorEnabled());
         EXPECT_FALSE(logger.warnEnabled())
@@ -1159,6 +1174,14 @@ TEST_F(LoggingTest, UnsupportedLogLevelKeepsTheCurrentLevel) {
     ASSERT_FALSE(logger.warnEnabled());
     logger.setLogLevel("warning");
     EXPECT_TRUE(logger.warnEnabled()) << "'warning' is accepted";
+    EXPECT_FALSE(logger.infoEnabled());
+
+    // Matching is case-insensitive and trimmed, so "WARN " is a level change
+    // too, not an unsupported value.
+    logger.setLogLevel("error");
+    ASSERT_FALSE(logger.warnEnabled());
+    logger.setLogLevel("WARN ");
+    EXPECT_TRUE(logger.warnEnabled()) << "'WARN ' is accepted";
     EXPECT_FALSE(logger.infoEnabled());
 
     logger.setLogLevel("info");  // back to the agent default for the rest of the suite

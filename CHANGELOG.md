@@ -186,6 +186,15 @@
   An async span's event whose operation could not be interned now falls back
   to sending the name, as every other event does, instead of sending none.
 
+- **`Log.Level` and `Sampling.Type` ignore surrounding whitespace.** A value
+  carrying a stray space or tab from a shell or a template, such as
+  `PINPOINT_CPP_SAMPLING_TYPE="PERCENT "` or a quoted YAML `" debug"`, read as
+  unknown: sampling fell back to `COUNTER` and the log level stayed where it
+  was, each with a warning. Both are now trimmed before they are matched, as
+  `UidVersion` already was and `Collector.Grpc.Compression` is. Documented in
+  [Configuration Guide § Logging Configuration](doc/config.md#logging-configuration)
+  and [§ Sampling Configuration](doc/config.md#sampling-configuration).
+
 ## 2.2.0 (2026-10-23)
 
 ### Breaking

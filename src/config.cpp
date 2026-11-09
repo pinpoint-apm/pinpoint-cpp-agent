@@ -1078,8 +1078,11 @@ namespace pinpoint {
                  defaults::STAT_INTERVAL_MS, "stat collect interval");
 
         // COUNTING is accepted as an alias and canonicalised here — the rest of the
-        // agent only ever compares against COUNTER/PERCENT. An unrecognised
-        // value falls back to the default.
+        // agent only ever compares against COUNTER/PERCENT. Trimmed first, like
+        // UidVersion and Collector.Grpc.Compression, so a stray space from a
+        // shell or a template cannot turn PERCENT into the COUNTER fallback. An
+        // unrecognised value falls back to the default.
+        absl::StripAsciiWhitespace(&config->sampling.type);
         if (absl::EqualsIgnoreCase(config->sampling.type, COUNTING_SAMPLING)) {
             config->sampling.type = std::string(COUNTER_SAMPLING);
         } else if (!absl::EqualsIgnoreCase(config->sampling.type, COUNTER_SAMPLING) &&
@@ -1217,12 +1220,18 @@ namespace pinpoint {
         if (channel.idle_timeout_ms > 0) {
             clamp_min(channel.idle_timeout_ms, MIN_GRPC_IDLE_TIMEOUT_MS, "grpc idle timeout");
         }
-        // "gzip" or "none", as the Java agent's *.sender.compression keys. An
-        // unknown value falls back to the default: compression is an
-        // optimization, not a reason to refuse to start.
+        // "gzip" or "none", read as the Java agent reads its
+        // *.sender.compression keys (GrpcSenderCompression.fromValue):
+        // case-insensitive and trimmed, so a stray space from a shell or a
+        // template cannot turn "none" back into gzip, and a blank value is the
+        // default. An unknown value falls back to the default with a warning:
+        // compression is an optimization, not a reason to refuse to start.
         auto& compression = config->collector.grpc.compression;
+        absl::StripAsciiWhitespace(&compression);
         absl::AsciiStrToLower(&compression);
-        if (compression != "gzip" && compression != "none") {
+        if (compression.empty()) {
+            compression = defaults::GRPC_COMPRESSION;
+        } else if (compression != "gzip" && compression != "none") {
             LOG_WARN("grpc compression '{}' is unknown, using default: {}",
                      compression, defaults::GRPC_COMPRESSION);
             compression = defaults::GRPC_COMPRESSION;

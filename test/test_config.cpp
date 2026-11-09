@@ -1210,6 +1210,18 @@ Sampling:
     EXPECT_EQ(config->sampling.type, "percent") << "A recognised type should be left as written";
 }
 
+TEST_F(ConfigTest, SamplingTypeIgnoresSurroundingWhitespaceTest) {
+    // A quoted YAML scalar keeps its spaces; a plain one is already trimmed.
+    set_config_string("Sampling:\n  Type: \" PERCENT\t\"\n");
+    EXPECT_EQ(make_config()->sampling.type, "PERCENT")
+        << "surrounding whitespace must not turn PERCENT into the COUNTER fallback";
+
+    set_config_string("Sampling:\n  Type: COUNTER\n");
+    setenv(full_env(env::SAMPLING_TYPE).c_str(), "PERCENT ", 1);
+    EXPECT_EQ(make_config()->sampling.type, "PERCENT")
+        << "a trailing space from a template is ignored in the environment too";
+}
+
 // ========== Error Handling Tests ==========
 
 TEST_F(ConfigTest, InvalidYamlHandlingTest) {
@@ -3365,8 +3377,17 @@ TEST_F(ConfigTest, GrpcCompressionTest) {
     set_config_string("Collector:\n  Grpc:\n    Compression: zstd\n");
     EXPECT_EQ(make_config()->collector.grpc.compression, "gzip") << "unknown value falls back to the default";
 
-    setenv(full_env(env::GRPC_COMPRESSION).c_str(), "none", 1);
-    EXPECT_EQ(make_config()->collector.grpc.compression, "none") << "environment overrides YAML";
+    // A quoted YAML scalar keeps its spaces; a plain one is already trimmed.
+    set_config_string("Collector:\n  Grpc:\n    Compression: \" None\t\"\n");
+    EXPECT_EQ(make_config()->collector.grpc.compression, "none")
+        << "surrounding whitespace is ignored, as the Java agent's fromValue() trims";
+
+    set_config_string("Collector:\n  Grpc:\n    Compression: \" \"\n");
+    EXPECT_EQ(make_config()->collector.grpc.compression, "gzip") << "a blank value is the default";
+
+    setenv(full_env(env::GRPC_COMPRESSION).c_str(), "none ", 1);
+    EXPECT_EQ(make_config()->collector.grpc.compression, "none")
+        << "environment overrides YAML, and a trailing space from a template does not turn gzip back on";
 }
 
 TEST_F(ConfigTest, SpanBatchDefaultsTest) {

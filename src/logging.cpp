@@ -15,6 +15,9 @@
  */
 
 #include "logging.h"
+
+#include "absl/strings/ascii.h"
+
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -29,7 +32,11 @@ namespace pinpoint {
     }
 
     void Logger::setLogLevel(const std::string& log_level) {
-        const auto level = log_level.c_str();
+        // Trimmed like the agent's other enum-like settings (UidVersion,
+        // Sampling.Type, Collector.Grpc.Compression): a stray space from a
+        // shell or a template must not read as an unknown level.
+        const std::string trimmed(absl::StripAsciiWhitespace(log_level));
+        const auto level = trimmed.c_str();
 
         if (!strcasecmp(level, LOG_LEVEL_DEBUG)) {
             current_level_.store(static_cast<int>(LogLevel::kDebug), std::memory_order_relaxed);
