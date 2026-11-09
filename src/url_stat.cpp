@@ -193,9 +193,11 @@ namespace pinpoint {
         auto fresh = include_in_progress ? std::make_unique<UrlStatSnapshot>() : nullptr;
 
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
-        // Every retained tick goes out in one message: PAgentUriStat carries a
+        // Every retained tick goes out in one send: PAgentUriStat carries a
         // repeated eachUriStat and each entry stamps its own tick, so a backlog
-        // clears in one send rather than one snapshot per send token.
+        // clears at once rather than one snapshot per send token. The sender
+        // splits a send too large for Collector.Grpc.MaxSendMessageSize into
+        // several messages (GrpcStats::build_url_stat_message).
         while (!completed_.empty()) {
             taken->merge(*completed_.front());
             completed_.pop_front();

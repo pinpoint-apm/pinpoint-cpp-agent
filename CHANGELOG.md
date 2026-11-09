@@ -174,6 +174,19 @@
   [Configuration Guide § gRPC Transport](doc/config.md#grpc-transport-configuration)
   and [§ SQL Configuration](doc/config.md#sql-configuration).
 
+- **A URL-stat send over `Collector.Grpc.MaxSendMessageSize` is written in
+  several messages, not lost.** The stats stream sends every retained tick in
+  one `PAgentUriStat`, so a send past the limit (a stats outage of a few
+  minutes with long URL patterns, or `Http.UrlStatLimit` near its ceiling)
+  was refused whole by gRPC with `RESOURCE_EXHAUSTED`: the stream failed and
+  every tick in the message was lost, with only a `failed to send stats`
+  warning and no count. The sender now measures each message and writes a
+  send over the limit as several, back to back, and the shutdown flush splits
+  its final send the same way within its one 500 ms budget. Only an entry
+  too large for any message is dropped, counted, and named in a warning.
+  Documented in
+  [Configuration Guide § gRPC Transport](doc/config.md#grpc-transport-configuration).
+
 - **`SpanEvent::SetOperationName()` (and `pt_span_event_set_operation_name()`)
   renames the event on the wire.** An event created with a name sent the api
   id of that first name, so a later rename never reached the collector and

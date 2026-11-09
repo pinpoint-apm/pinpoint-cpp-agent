@@ -4383,6 +4383,67 @@ TEST_F(AgentIntegrationTest, SplitsSpanBatchesToFitMaxSendMessageSize) {
     }
 }
 
+// With Collector.Grpc.MaxSendMessageSize below one URL-stat send, the send goes
+// out over the stats stream in several messages, each within the limit, and
+// every entry reaches the real server exactly once. gRPC refuses a message
+// past the limit whole, which failed the stream and lost every tick in it.
+TEST_F(AgentIntegrationTest, SplitsUrlStatSendsToFitMaxSendMessageSize) {
+    constexpr int kLimit = 4000;
+    cfg_.grpc_max_send_message_size = kLimit;
+    ASSERT_NO_FATAL_FAILURE(StartStack());
+    // The send rides the stats stream; an agent stat proves it is open.
+    ASSERT_TRUE(collector_.WaitFor([](const auto& snapshot) {
+        return agent_stat_count(snapshot) >= 1;
+    }, kWaitTimeout));
+
+    // Some 330 bytes each on the wire, about 8 KB in all: three messages.
+    constexpr int kEntries = 24;
+    const std::string tail(300, 'u');
+    std::vector<std::string> uris;
+    for (int i = 0; i < kEntries; ++i) {
+        const auto pattern = "/it/split-" + std::to_string(i) + "-" + tail;
+        UrlStatEntry entry{pattern, "GET", 200};
+        entry.elapsed_ = 10;
+        entry.end_time_ = std::chrono::system_clock::now();
+        impl_->getUrlStats().addSnapshot(&entry, *impl_->getConfig());
+        // The fixture enables UrlStatMethodPrefix, so the key carries the method.
+        uris.push_back("GET " + pattern);
+    }
+
+    const auto all_arrived = [&uris](const CollectorSnapshot& snapshot) {
+        return std::all_of(uris.begin(), uris.end(), [&snapshot](const std::string& uri) {
+            return has_uri_stat(snapshot, uri);
+        });
+    };
+    bool arrived = false;
+    for (int attempt = 0; attempt < 20 && !arrived; ++attempt) {
+        std::this_thread::sleep_for(25ms);
+        CloseUrlStatTick();
+        impl_->recordStats(URL_STATS);
+        arrived = collector_.WaitFor(all_arrived, 250ms);
+    }
+    ASSERT_TRUE(arrived) << "every entry of the split send must reach the collector";
+
+    const auto snapshot = collector_.snapshot();
+    size_t split_messages = 0;
+    for (const auto& received : snapshot.stats) {
+        EXPECT_LE(received.message.ByteSizeLong(), static_cast<size_t>(kLimit));
+        if (!received.message.has_agenturistat()) {
+            continue;
+        }
+        const auto& entries = received.message.agenturistat().eachuristat();
+        if (std::any_of(entries.begin(), entries.end(), [](const auto& stat) {
+                return stat.uri().rfind("GET /it/split-", 0) == 0;
+            })) {
+            ++split_messages;
+        }
+    }
+    EXPECT_GE(split_messages, 2u) << "the send needed several messages";
+    for (const auto& uri : uris) {
+        EXPECT_EQ(uri_stat_totals(snapshot, uri).entries, 1u) << uri << " arrives exactly once";
+    }
+}
+
 // The public reload entry points, ReloadAgentConfig() and its C wrapper, parse
 // YAML into the running agent's config. A reloadable change reaches the next
 // span on the wire, a fixed one is reported as needing a restart while the

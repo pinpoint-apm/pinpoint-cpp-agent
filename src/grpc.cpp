@@ -3443,9 +3443,134 @@ namespace pinpoint {
         arena_.Reset();
     }
 
+    void GrpcStats::push_url_stat_backlog(std::unique_ptr<UrlStatSnapshot> snapshot) {
+        // Caller holds stream_mutex_.
+        if (snapshot == nullptr || snapshot->empty()) {
+            return;
+        }
+        url_stat_backlog_.push_back(std::move(snapshot));
+        if (url_stat_backlog_.size() == 1) {
+            url_stat_cursor_ = url_stat_backlog_.front()->getEachStats().begin();
+        }
+    }
+
+    size_t GrpcStats::url_stat_backlog_entries() const noexcept {
+        size_t entries = 0;
+        for (size_t i = 0; i < url_stat_backlog_.size(); ++i) {
+            const auto& stats = url_stat_backlog_[i]->getEachStats();
+            entries += i == 0 ? static_cast<size_t>(std::distance(url_stat_cursor_, stats.end()))
+                              : stats.size();
+        }
+        return entries;
+    }
+
+    size_t GrpcStats::drop_url_stat_backlog() noexcept {
+        const auto entries = url_stat_backlog_entries();
+        url_stat_backlog_.clear();
+        shutdown_dropped_url_stats_.fetch_add(entries, std::memory_order_relaxed);
+        return entries;
+    }
+
+    GrpcStreamStatus GrpcStats::build_url_stat_message() {
+        // Caller holds stream_mutex_ and has released the previous message.
+        using google::protobuf::internal::WireFormatLite;
+        // Measured against Collector.Grpc.MaxSendMessageSize as GrpcSpan
+        // measures its batches: gRPC refuses a message past it with
+        // RESOURCE_EXHAUSTED before writing a byte, failing the stream and
+        // losing every tick the message carried, and the collector refuses
+        // one past its own inbound limit. -1 is unlimited.
+        const auto max_size = config_->collector.grpc.channel.max_send_message_size;
+        const bool limited = max_size >= 0;
+        // What a PStatMessage puts around its entries, at most: the
+        // agentUriStat tag, a length prefix (5 bytes hold any size) and the
+        // bucketVersion field.
+        constexpr size_t kMaxLengthPrefix = 5;
+        const size_t overhead =
+            WireFormatLite::TagSize(v1::PStatMessage::kAgentUriStatFieldNumber, WireFormatLite::TYPE_MESSAGE) +
+            kMaxLengthPrefix +
+            WireFormatLite::TagSize(v1::PAgentUriStat::kBucketVersionFieldNumber, WireFormatLite::TYPE_INT32) +
+            WireFormatLite::Int32Size(URL_STATS_BUCKET_VERSION);
+        const size_t budget =
+            limited && static_cast<size_t>(max_size) > overhead ? static_cast<size_t>(max_size) - overhead : 0;
+
+        auto* uri_stat = google::protobuf::Arena::Create<v1::PAgentUriStat>(&arena_);
+        uri_stat->set_bucketversion(URL_STATS_BUCKET_VERSION);
+
+        // Read through a local position, committed once the message is
+        // complete: a throw part-way leaves the backlog as it was, so the
+        // entries the lost message held are still sent by the next one.
+        size_t index = 0;
+        auto cursor = url_stat_cursor_;
+        size_t size = 0;
+        uint64_t dropped = 0;
+        while (index < url_stat_backlog_.size()) {
+            if (cursor == url_stat_backlog_[index]->getEachStats().end()) {
+                if (++index < url_stat_backlog_.size()) {
+                    cursor = url_stat_backlog_[index]->getEachStats().begin();
+                }
+                continue;
+            }
+            const auto& [key, each_stats] = *cursor;
+            auto* entry = google::protobuf::Arena::Create<v1::PEachUriStat>(&arena_);
+            build_each_url_stat(entry, key, each_stats, &arena_);
+            // The entry as the repeated field frames it: tag, length prefix
+            // and the entry. Summed over the entries it is exactly what they
+            // add to the message.
+            const size_t framed =
+                WireFormatLite::TagSize(v1::PAgentUriStat::kEachUriStatFieldNumber, WireFormatLite::TYPE_MESSAGE) +
+                WireFormatLite::LengthDelimitedSize(entry->ByteSizeLong());
+            if (limited && framed > budget) {
+                // No message could carry it. Left on the arena, freed with it.
+                ++dropped;
+                LOG_WARN_THROTTLED("url stat entry dropped: {} bytes serialized exceeds "
+                                   "Collector.Grpc.MaxSendMessageSize {}, which no message can carry: {:?}",
+                                   framed, max_size, log_excerpt(key.url_));
+                ++cursor;
+                continue;
+            }
+            if (limited && size + framed > budget) {
+                // Starts the next message; built again there.
+                break;
+            }
+            uri_stat->mutable_eachuristat()->UnsafeArenaAddAllocated(entry);
+            size += framed;
+            ++cursor;
+        }
+
+        // The cursor first: once the backlog is used up it points into a
+        // snapshot the erase destroys, and is not read again until the next
+        // push resets it.
+        url_stat_cursor_ = cursor;
+        url_stat_backlog_.erase(url_stat_backlog_.begin(),
+                                url_stat_backlog_.begin() + static_cast<std::ptrdiff_t>(index));
+        oversize_dropped_url_stats_.fetch_add(dropped, std::memory_order_relaxed);
+
+        if (uri_stat->eachuristat_size() == 0) {
+            // Every entry left was dropped: nothing to write.
+            release_written_message_locked();
+            return STREAM_CONTINUE;
+        }
+        msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
+        msg_->unsafe_arena_set_allocated_agenturistat(uri_stat);
+        return STREAM_WRITE;
+    }
+
     GrpcStreamStatus GrpcStats::next_write() try {
         // Caller must hold stream_mutex_.
         release_written_message_locked();
+
+        // The rest of a URL-stat snapshot split over
+        // Collector.Grpc.MaxSendMessageSize goes first, one message per
+        // write, so its parts leave back to back. Once stopping it is left
+        // for the shutdown flush, which sends it ahead of the final tick.
+        if (!url_stat_backlog_.empty()) {
+            if (stopping()) {
+                return STREAM_CONTINUE;
+            }
+            if (build_url_stat_message() == STREAM_WRITE) {
+                return STREAM_WRITE;
+            }
+        }
 
         StatsType stats;
         {
@@ -3472,31 +3597,25 @@ namespace pinpoint {
         // flush_url_stats_on_shutdown(), which the worker runs on its way
         // out — passing agent_->isExiting() here instead could never be
         // true, because stopping() above already returned on it.
-        std::unique_ptr<UrlStatSnapshot> url_snapshot;
-        std::vector<AgentStatsSnapshot> agent_snapshot;
         if (stats == AGENT_STATS) {
-            agent_snapshot = agent_->getAgentStats().takeSnapshots();
+            const auto agent_snapshot = agent_->getAgentStats().takeSnapshots();
             if (agent_snapshot.empty()) {
                 return STREAM_CONTINUE;
             }
-        } else {
-            url_snapshot = agent_->getUrlStats().takeSnapshot();
-            if (url_snapshot->empty()) {
-                // No tick completed since the last send. Send nothing at all
-                // rather than an empty PAgentUriStat.
-                LOG_DEBUG("stats - no completed url stat tick");
-                return STREAM_CONTINUE;
-            }
-        }
-
-        msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
-        if (stats == AGENT_STATS) {
+            msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
             msg_->unsafe_arena_set_allocated_agentstatbatch(build_agent_stat_batch(agent_snapshot, &arena_));
-        } else {
-            msg_->unsafe_arena_set_allocated_agenturistat(build_url_stat(url_snapshot.get(), &arena_));
+            return STREAM_WRITE;
         }
 
-        return STREAM_WRITE;
+        auto url_snapshot = agent_->getUrlStats().takeSnapshot();
+        if (url_snapshot->empty()) {
+            // No tick completed since the last send. Send nothing at all
+            // rather than an empty PAgentUriStat.
+            LOG_DEBUG("stats - no completed url stat tick");
+            return STREAM_CONTINUE;
+        }
+        push_url_stat_backlog(std::move(url_snapshot));
+        return build_url_stat_message();
     } catch (const std::exception &e) {
         LOG_ERROR("failed to build stats message: exception = {}", e.what());
         // No StartWrite was issued for this msg_. Release it here so a failed
@@ -3520,35 +3639,37 @@ namespace pinpoint {
 
     GrpcStreamStatus GrpcStats::build_shutdown_url_stat_write() try {
         // Caller must hold stream_mutex_.
+        release_written_message_locked();
 
-        // Shutdown also sends the partial tick because no later record can complete it.
-        const auto snapshot = agent_->getUrlStats().takeSnapshot(true);
-        if (snapshot->empty()) {
+        // Shutdown also sends the partial tick because no later record can
+        // complete it, queued behind what a split periodic send left. Only
+        // the first call finds a tick to take; later ones continue the
+        // backlog, one message each.
+        push_url_stat_backlog(agent_->getUrlStats().takeSnapshot(true));
+        if (url_stat_backlog_.empty()) {
             LOG_DEBUG("stats - no url stat tick to flush on shutdown");
             return STREAM_CONTINUE;
         }
 
-        const auto entries = snapshot->getEachStats().size();
         if (!stats_channel_ready()) {
             // Counted rather than attempted: a write on a channel that is not
             // READY cannot complete inside the shutdown deadline, and the
             // snapshot is already drained, so the count is the only record
             // these entries leave.
-            shutdown_dropped_url_stats_.fetch_add(entries, std::memory_order_relaxed);
+            const auto entries = drop_url_stat_backlog();
             LOG_WARN("drop {} url stat entries on shutdown: channel not ready", entries);
             return STREAM_CONTINUE;
         }
 
-        release_written_message_locked();
-        msg_ = google::protobuf::Arena::Create<v1::PStatMessage>(&arena_);
-        msg_->unsafe_arena_set_allocated_agenturistat(build_url_stat(snapshot.get(), &arena_));
-        LOG_INFO("flushing {} url stat entries on shutdown", entries);
-        return STREAM_WRITE;
+        return build_url_stat_message();
     } catch (const std::exception& e) {
-        LOG_ERROR("failed to build the shutdown url stat flush: exception = {}", e.what());
         // Same reasoning as next_write's handler: no StartWrite was issued for
-        // this msg_, so release its partial allocations now.
+        // this msg_, so release its partial allocations now. Nothing retries a
+        // shutdown flush, so what was left is counted as dropped.
         release_written_message_locked();
+        const auto entries = drop_url_stat_backlog();
+        LOG_ERROR("failed to build the shutdown url stat flush, {} entries dropped: exception = {}",
+                  entries, e.what());
         return STREAM_CONTINUE;
     }
 
@@ -3560,10 +3681,10 @@ namespace pinpoint {
         // Include the tick in progress so up to 30 seconds of traffic and
         // completed snapshots are not lost on clean shutdown.
         //
-        // An explicit one-shot flush rather than a relaxed next_write() gate:
+        // An explicit flush rather than a relaxed next_write() gate:
         // run_stats_worker's own `if (stop)` returns first, and it must — the
         // token-driven loop has no business running after a stop request. Only a
-        // dedicated call site can bound this one message, probe the channel and
+        // dedicated call site can bound these messages, probe the channel and
         // count what it could not send.
         std::unique_lock<std::mutex> lock(stream_mutex_);
 
@@ -3574,43 +3695,62 @@ namespace pinpoint {
         // going nowhere, and the count is what says so.
         if (stream_context_ == nullptr || grpc_status_ == STREAM_DONE ||
             stats_stream_closing_.load(std::memory_order_relaxed)) {
-            if (const auto snapshot = agent_->getUrlStats().takeSnapshot(true);
-                !snapshot->empty()) {
-                const auto entries = snapshot->getEachStats().size();
-                shutdown_dropped_url_stats_.fetch_add(entries, std::memory_order_relaxed);
+            push_url_stat_backlog(agent_->getUrlStats().takeSnapshot(true));
+            if (const auto entries = drop_url_stat_backlog(); entries > 0) {
                 LOG_WARN("drop {} url stat entries on shutdown: no live stats stream", entries);
             }
             return;
         }
 
-        if (build_shutdown_url_stat_write() != STREAM_WRITE) {
-            return;
-        }
-
-        grpc_status_ = STREAM_WRITE;
-        // Tells stopStatsWorker() that this pending write is the flush and
-        // must not be cancelled out from under it; see there.
-        shutdown_flush_writing_ = true;
-        StartWrite(msg_);
-        const bool completed = stream_cv_.wait_for(
-            lock, tuning_.stats_shutdown_flush_timeout,
-            [this] { return grpc_status_ != STREAM_WRITE; });
-        shutdown_flush_writing_ = false;
-        if (completed) {
+        // One deadline for every message of the flush, as GrpcSpan shares its
+        // permit deadline across the requests of a split batch: a flush split
+        // over Collector.Grpc.MaxSendMessageSize gets the same slice of the
+        // shutdown deadline as one that fits a single message.
+        const auto deadline = std::chrono::steady_clock::now() + tuning_.stats_shutdown_flush_timeout;
+        bool first = true;
+        while (build_shutdown_url_stat_write() == STREAM_WRITE) {
+            if (first) {
+                first = false;
+                LOG_INFO("flushing {} url stat entries on shutdown",
+                         static_cast<size_t>(msg_->agenturistat().eachuristat_size()) +
+                             url_stat_backlog_entries());
+            }
+            grpc_status_ = STREAM_WRITE;
+            // Tells stopStatsWorker() that this pending write is the flush and
+            // must not be cancelled out from under it; see there.
+            shutdown_flush_writing_ = true;
+            StartWrite(msg_);
+            const bool completed = stream_cv_.wait_until(
+                lock, deadline, [this] { return grpc_status_ != STREAM_WRITE; });
+            shutdown_flush_writing_ = false;
+            if (!completed) {
+                // Out of budget. Close and cancel instead of waiting longer:
+                // the caller runs finish_stats_stream() next, whose close is
+                // then the no-op the exchange guard makes it and whose bounded
+                // OnDone wait is the only one this path pays for. No
+                // record_stream_stall() — the escalation it feeds is a forced
+                // channel rotation, and there is no next stream to rotate for.
+                // The messages never started are counted; the one in flight
+                // may yet arrive.
+                if (const auto entries = drop_url_stat_backlog(); entries > 0) {
+                    LOG_WARN("drop {} url stat entries on shutdown: the flush ran out of time", entries);
+                }
+                LOG_WARN("shutdown url stat flush did not complete in time, cancelling");
+                close_stats_stream_locked();
+                if (stream_context_ != nullptr) {
+                    stream_context_->TryCancel();
+                }
+                return;
+            }
             release_written_message_locked();
-            return;
-        }
-
-        // Out of budget. Close and cancel instead of waiting longer: the
-        // caller runs finish_stats_stream() next, whose close is then the
-        // no-op the exchange guard makes it and whose bounded OnDone wait is
-        // the only one this path pays for. No record_stream_stall() — the
-        // escalation it feeds is a forced channel rotation, and there is no
-        // next stream to rotate for.
-        LOG_WARN("shutdown url stat flush did not complete in time, cancelling");
-        close_stats_stream_locked();
-        if (stream_context_ != nullptr) {
-            stream_context_->TryCancel();
+            if (grpc_status_ == STREAM_DONE || stats_stream_closing_.load(std::memory_order_relaxed)) {
+                // A failed write closed the stream: no further write is
+                // allowed on it, and there is no other.
+                if (const auto entries = drop_url_stat_backlog(); entries > 0) {
+                    LOG_WARN("drop {} url stat entries on shutdown: the stats stream ended", entries);
+                }
+                return;
+            }
         }
     }
 
@@ -3671,6 +3811,11 @@ namespace pinpoint {
         if (grpc_status_ == STREAM_DONE) {
             release_written_message_locked();
             stream_context_.reset();
+        }
+        // Both flushes have run, so this is empty unless one of them threw;
+        // nothing will send it now.
+        if (const auto entries = drop_url_stat_backlog(); entries > 0) {
+            LOG_WARN("drop {} url stat entries on shutdown: the stats worker ended", entries);
         }
     } catch (...) {
     }
@@ -3742,8 +3887,8 @@ namespace pinpoint {
         if (stream_context_ == nullptr || grpc_status_ != STREAM_WRITE) {
             // No write is pending, so nothing here is stuck. Cancelling
             // anyway would kill a stream the worker still needs: it is parked
-            // on stats_queue_cv_ and about to run its one shutdown
-            // URL-stat flush over exactly this stream. A cancelled context
+            // on stats_queue_cv_ and about to run its shutdown URL-stat
+            // flush over exactly this stream. A cancelled context
             // fails that write (OnWriteDone(false)) and the flush is
             // unrepeatable, so a clean shutdown would lose the tick it exists to
             // save. stream_mutex_ makes the test exact rather than a guess:

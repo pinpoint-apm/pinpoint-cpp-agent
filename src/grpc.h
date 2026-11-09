@@ -20,6 +20,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -108,8 +109,11 @@ namespace pinpoint {
         /// worker begins stream cleanup. Fixed: no caller, test included, has
         /// ever needed a different value.
         static constexpr std::chrono::milliseconds stream_write_timeout{5000};
-        /// Bounded wait for the one shutdown URL-stat flush write (see
-        /// GrpcStats::flush_url_stats_on_shutdown). Deliberately far below
+        /// Bounded wait for the shutdown URL-stat flush (see
+        /// GrpcStats::flush_url_stats_on_shutdown): one deadline for every
+        /// message it writes, so a flush split over
+        /// Collector.Grpc.MaxSendMessageSize takes no longer than one message
+        /// would. Deliberately far below
         /// stream_write_timeout: the flush and the finish_stats_stream() that
         /// follows it share one kDefaultShutdownDeadline (3s), so the flush
         /// takes a small slice and, on expiry, closes and cancels instead of
@@ -1097,7 +1101,9 @@ namespace pinpoint {
         std::mutex stats_queue_mutex_{};
         std::condition_variable stats_queue_cv_{};
 
-        /// @brief Consumes one queued token and builds its message into msg_.
+        /// @brief Builds the next message into msg_: the next part of a
+        ///        URL-stat snapshot split over Collector.Grpc.MaxSendMessageSize
+        ///        while one is pending, otherwise one queued token's payload.
         /// @return STREAM_WRITE when msg_ is ready to be written, or
         ///         STREAM_CONTINUE when there is nothing to send — an empty
         ///         queue, or a URL-stat token with no completed tick behind
@@ -1105,9 +1111,11 @@ namespace pinpoint {
         ///         without a live stream.
         GrpcStreamStatus next_write();
 
-        /// @brief Builds the shutdown URL-stat message into msg_: every tick
-        /// still held in completed_ plus the tick that was being collected,
-        /// via takeSnapshot(include_in_progress = true).
+        /// @brief Builds the next shutdown URL-stat message into msg_: the
+        /// rest of a split periodic send, then every tick still held in
+        /// completed_ plus the tick that was being collected, via
+        /// takeSnapshot(include_in_progress = true), over as many calls as
+        /// Collector.Grpc.MaxSendMessageSize requires.
         ///
         /// Separate from next_write() because it is not token-driven — the
         /// worker has already left its queue wait by the time it runs — and
@@ -1129,6 +1137,11 @@ namespace pinpoint {
         uint64_t shutdown_dropped_url_stats() const {
             return shutdown_dropped_url_stats_.load(std::memory_order_relaxed);
         }
+        /// @brief URL-stat entries dropped because each, on its own, is over
+        /// Collector.Grpc.MaxSendMessageSize, so no message could carry it.
+        uint64_t oversize_dropped_url_stats() const {
+            return oversize_dropped_url_stats_.load(std::memory_order_relaxed);
+        }
         /// @brief The message build_shutdown_url_stat_write()/next_write()
         ///        last built; owned by arena_, so only valid until the write
         ///        completes. Protected for the flush assertions.
@@ -1149,6 +1162,17 @@ namespace pinpoint {
         google::protobuf::Arena arena_{};
         v1::PStatMessage* msg_{};
         std::atomic<uint64_t> shutdown_dropped_url_stats_{0};
+        std::atomic<uint64_t> oversize_dropped_url_stats_{0};
+        // URL-stat entries taken from UrlStats but not written yet. gRPC
+        // refuses a message over Collector.Grpc.MaxSendMessageSize whole, so a
+        // snapshot too large for one goes out in several, one per write
+        // (build_url_stat_message), ahead of the next token. The front
+        // snapshot's entries before url_stat_cursor_ are written or dropped;
+        // a second one is queued behind it only by the shutdown flush. Worker
+        // thread only, under stream_mutex_ like msg_; the cursor is valid
+        // only while the backlog is not empty.
+        std::deque<std::unique_ptr<UrlStatSnapshot>> url_stat_backlog_;
+        UrlStatSnapshot::UrlStatMap::const_iterator url_stat_cursor_{};
         // True only while flush_url_stats_on_shutdown()'s own write is
         // pending. Guarded by stream_mutex_, which every reader and writer
         // holds, so it needs no atomicity of its own.
@@ -1171,6 +1195,21 @@ namespace pinpoint {
         bool stats_disabled() const {
             return !config_->stat.enable && !config_->http.url_stat.enable;
         }
+
+        /// @brief Queues @p snapshot's entries behind the backlog's; an empty
+        /// or null one adds nothing.
+        void push_url_stat_backlog(std::unique_ptr<UrlStatSnapshot> snapshot);
+        /// @brief Entries in the backlog not yet written or dropped.
+        size_t url_stat_backlog_entries() const noexcept;
+        /// @brief Empties the backlog, counting what it held as dropped on
+        /// shutdown; returns that count.
+        size_t drop_url_stat_backlog() noexcept;
+        /// @brief Builds into msg_ the next message of the backlog: as many
+        /// of its entries as fit within Collector.Grpc.MaxSendMessageSize,
+        /// in order, all of them when the limit is -1. An entry over the
+        /// limit on its own is dropped and counted. STREAM_CONTINUE when
+        /// nothing sendable was left.
+        GrpcStreamStatus build_url_stat_message();
 
         bool start_stats_stream();
         GrpcStreamStatus write_and_await_stats_stream();

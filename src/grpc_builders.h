@@ -31,6 +31,7 @@ namespace google::protobuf {
 namespace v1 {
     class PAgentStatBatch;
     class PAgentUriStat;
+    class PEachUriStat;
     class PExceptionMetaData;
     class PSpan;
     class PSpanChunk;
@@ -55,13 +56,22 @@ namespace pinpoint {
     class SpanChunk;
     class UrlStatSnapshot;
     struct AgentStatsSnapshot;
+    struct EachUrlStat;
+    struct UrlKey;
 
     v1::PTransactionId* build_grpc_transaction_id(const TraceId& tid, google::protobuf::Arena* arena);
     v1::PSpan* build_grpc_span(std::unique_ptr<SpanChunk> chunk, google::protobuf::Arena* arena);
     v1::PSpanChunk* build_grpc_span_chunk(std::unique_ptr<SpanChunk> chunk, google::protobuf::Arena* arena);
     v1::PAgentStatBatch* build_agent_stat_batch(const std::vector<AgentStatsSnapshot>& stats,
                                                 google::protobuf::Arena* arena);
+    /// @brief The whole snapshot as one PAgentUriStat. The stats sender builds
+    ///        its messages entry by entry instead (build_each_url_stat), so
+    ///        that each stays within Collector.Grpc.MaxSendMessageSize.
     v1::PAgentUriStat* build_url_stat(const UrlStatSnapshot* snapshot, google::protobuf::Arena* arena);
+    /// @brief One entry of a PAgentUriStat, built on its own so the sender
+    ///        can measure it before placing it in a message.
+    void build_each_url_stat(v1::PEachUriStat* url_stat, const UrlKey& key,
+                             const EachUrlStat& each_stats, google::protobuf::Arena* arena);
     v1::PExceptionMetaData* build_exception_metadata(
             const TraceId& txid,
             int64_t span_id,

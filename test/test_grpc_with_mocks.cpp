@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -30,6 +31,7 @@
 #include <memory>
 #include <optional>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -797,6 +799,7 @@ public:
     void flushUrlStatsOnShutdownForTest() { flush_url_stats_on_shutdown(); }
     const v1::PStatMessage* pendingMessageForTest() const { return pending_message(); }
     uint64_t shutdownDroppedUrlStatsForTest() const { return shutdown_dropped_url_stats(); }
+    uint64_t oversizeDroppedUrlStatsForTest() const { return oversize_dropped_url_stats(); }
 
 private:
     // Toggled by the test body while the worker thread polls readyChannel();
@@ -5090,6 +5093,158 @@ TEST_F(GrpcMockTest, GrpcSpanSplitBatchWaitsForPermitsWithinOneTimeoutTest) {
     // further request would take seven budgets.
     EXPECT_LT(elapsed_ms, 2 * tuning.span_shutdown_flush_budget.count())
         << "ms the drain took, for a " << tuning.span_shutdown_flush_budget.count() << "ms budget";
+}
+
+// ============================================================
+// GrpcStats URL statistics over Collector.Grpc.MaxSendMessageSize
+// ============================================================
+
+namespace {
+    // An entry under its own key; with the 120-byte tails the tests use, a
+    // little over 160 bytes on the wire.
+    void add_url_stat(UrlStats& url_stats, const Config& config, const std::string& uri,
+                      int64_t end_second) {
+        UrlStatEntry entry{uri, "GET", 200};
+        entry.elapsed_ = 10;
+        entry.end_time_ = std::chrono::system_clock::time_point(std::chrono::seconds(end_second));
+        url_stats.addSnapshot(&entry, config);
+    }
+}
+
+// A URL-stat send over Collector.Grpc.MaxSendMessageSize goes out in several
+// messages, one per write, each within the limit, instead of being refused
+// whole: gRPC answers RESOURCE_EXHAUSTED before anything is sent and fails the
+// stream, losing every tick the message carried. An entry over the limit on
+// its own is the only one dropped, and it is counted and named.
+TEST_F(GrpcMockTest, GrpcStatsSplitsAnOversizeUrlStatSendTest) {
+    constexpr int limit = 1000;
+    mock_agent_service_->mutableConfig()->collector.grpc.channel.max_send_message_size = limit;
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    const auto config = mock_agent_service_->getConfig();
+
+    LogCapture log;
+    const std::string tail(120, 'p');
+    std::set<std::string> expected;
+    for (int i = 0; i < 10; ++i) {
+        const auto uri = "/api/split-" + std::to_string(i) + "-" + tail;
+        add_url_stat(url_stats, *config, uri, 1000);
+        expected.insert(uri);
+    }
+    add_url_stat(url_stats, *config, "/api/huge-" + std::string(1000, 'h'), 1000);
+    // A newer tick cuts the 990s one into the completed queue.
+    add_url_stat(url_stats, *config, "/api/cutter", 1030);
+
+    stats_client.enqueueStats(URL_STATS);
+    std::multiset<std::string> delivered;
+    size_t messages = 0;
+    while (stats_client.nextWriteForTest() == STREAM_WRITE) {
+        const auto* msg = stats_client.pendingMessageForTest();
+        ASSERT_NE(msg, nullptr);
+        ASSERT_TRUE(msg->has_agenturistat());
+        EXPECT_LE(msg->ByteSizeLong(), static_cast<size_t>(limit)) << "every message stays within the limit";
+        for (const auto& each : msg->agenturistat().eachuristat()) {
+            delivered.insert(each.uri());
+        }
+        ASSERT_LT(++messages, 20u) << "the split must end";
+    }
+
+    EXPECT_GE(messages, 2u) << "the send needs several messages";
+    EXPECT_EQ(delivered.size(), expected.size()) << "each entry is sent exactly once";
+    EXPECT_EQ(std::set<std::string>(delivered.begin(), delivered.end()), expected);
+    EXPECT_EQ(stats_client.oversizeDroppedUrlStatsForTest(), 1u)
+        << "the one entry no message can carry is dropped and counted";
+    EXPECT_TRUE(stats_client.queuedStatsForTest().empty());
+
+    const auto text = log.text();
+    EXPECT_EQ(LogCapture::count(text, "url stat entry dropped: "), 1u) << text;
+    EXPECT_NE(text.find("exceeds Collector.Grpc.MaxSendMessageSize 1000"), std::string::npos) << text;
+    EXPECT_NE(text.find("/api/huge-hhh"), std::string::npos) << "the warning names the entry: " << text;
+}
+
+// -1 is unlimited, as for span batches: nothing is measured, and the send
+// leaves whole.
+TEST_F(GrpcMockTest, GrpcStatsSendsAUrlStatSendWholeWhenUnlimitedTest) {
+    mock_agent_service_->mutableConfig()->collector.grpc.channel.max_send_message_size = -1;
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    const auto config = mock_agent_service_->getConfig();
+
+    const std::string tail(1000, 'p');
+    for (int i = 0; i < 10; ++i) {
+        add_url_stat(url_stats, *config, "/api/whole-" + std::to_string(i) + "-" + tail, 1000);
+    }
+    add_url_stat(url_stats, *config, "/api/cutter", 1030);
+
+    stats_client.enqueueStats(URL_STATS);
+    ASSERT_EQ(stats_client.nextWriteForTest(), STREAM_WRITE);
+    const auto* msg = stats_client.pendingMessageForTest();
+    ASSERT_NE(msg, nullptr);
+    EXPECT_EQ(msg->agenturistat().eachuristat_size(), 10);
+    EXPECT_EQ(stats_client.nextWriteForTest(), STREAM_CONTINUE) << "nothing is left for a second message";
+    EXPECT_EQ(stats_client.oversizeDroppedUrlStatsForTest(), 0u);
+}
+
+// The part of a split send that shutdown cuts short goes out with the shutdown
+// flush, ahead of the tick in progress, and the flush is split the same way:
+// across the handoff no entry is lost or sent twice.
+TEST_F(GrpcMockTest, GrpcStatsShutdownFlushContinuesASplitUrlStatSendTest) {
+    constexpr int limit = 1000;
+    mock_agent_service_->mutableConfig()->collector.grpc.channel.max_send_message_size = limit;
+    TestableGrpcStats stats_client(mock_agent_service_.get());
+    auto& url_stats = mock_agent_service_->getUrlStats();
+    const auto config = mock_agent_service_->getConfig();
+
+    const std::string tail(120, 'p');
+    std::set<std::string> expected;
+    for (int i = 0; i < 10; ++i) {
+        const auto uri = "/api/completed-" + std::to_string(i) + "-" + tail;
+        add_url_stat(url_stats, *config, uri, 1000);
+        expected.insert(uri);
+    }
+    // The 1020s tick, still open: only the shutdown flush takes it.
+    for (int i = 0; i < 8; ++i) {
+        const auto uri = "/api/open-" + std::to_string(i) + "-" + tail;
+        add_url_stat(url_stats, *config, uri, 1030);
+        expected.insert(uri);
+    }
+
+    std::vector<std::string> delivered;
+    const auto collect = [&delivered](const v1::PStatMessage* msg) {
+        ASSERT_NE(msg, nullptr);
+        EXPECT_LE(msg->ByteSizeLong(), static_cast<size_t>(limit)) << "every message stays within the limit";
+        for (const auto& each : msg->agenturistat().eachuristat()) {
+            delivered.push_back(each.uri());
+        }
+    };
+
+    stats_client.enqueueStats(URL_STATS);
+    ASSERT_EQ(stats_client.nextWriteForTest(), STREAM_WRITE) << "the first message of the split send";
+    collect(stats_client.pendingMessageForTest());
+    ASSERT_LT(delivered.size(), 10u) << "the completed tick needs more than one message";
+
+    mock_agent_service_->setExiting(true);
+    EXPECT_EQ(stats_client.nextWriteForTest(), STREAM_CONTINUE)
+        << "once stopping, the rest of the send is left to the shutdown flush";
+
+    stats_client.setStatsChannelReady(true);
+    size_t flush_messages = 0;
+    while (stats_client.buildShutdownFlushForTest() == STREAM_WRITE) {
+        collect(stats_client.pendingMessageForTest());
+        ASSERT_LT(++flush_messages, 20u) << "the flush must end";
+    }
+
+    EXPECT_GE(flush_messages, 2u) << "the flush needs several messages too";
+    EXPECT_EQ(delivered.size(), expected.size()) << "each entry is sent exactly once";
+    EXPECT_EQ(std::set<std::string>(delivered.begin(), delivered.end()), expected);
+    const auto first_open = std::find_if(delivered.begin(), delivered.end(), [](const std::string& uri) {
+        return uri.rfind("/api/open-", 0) == 0;
+    });
+    EXPECT_TRUE(std::all_of(first_open, delivered.end(), [](const std::string& uri) {
+        return uri.rfind("/api/open-", 0) == 0;
+    })) << "the rest of the completed tick goes out before the tick in progress";
+    EXPECT_EQ(stats_client.shutdownDroppedUrlStatsForTest(), 0u);
+    EXPECT_EQ(stats_client.oversizeDroppedUrlStatsForTest(), 0u);
 }
 
 } // namespace pinpoint

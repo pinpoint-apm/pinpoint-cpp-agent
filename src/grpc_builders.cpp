@@ -295,24 +295,24 @@ namespace pinpoint {
                 grpc_histogram->add_histogram(url_histogram.histogram(i));
             }
         }
-
-        void build_each_url_stat(v1::PEachUriStat* url_stat,
-                                 const UrlKey& key,
-                                 const EachUrlStat& each_stats,
-                                 google::protobuf::Arena* arena) {
-            url_stat->set_uri(toValidUtf8(key.url_));
-
-            auto* total = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
-            build_url_histogram(total, each_stats.total);
-            url_stat->unsafe_arena_set_allocated_totalhistogram(total);
-
-            auto* fail = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
-            build_url_histogram(fail, each_stats.fail);
-            url_stat->unsafe_arena_set_allocated_failedhistogram(fail);
-
-            url_stat->set_timestamp(key.tick_);
-        }
     }  // namespace
+
+    void build_each_url_stat(v1::PEachUriStat* url_stat,
+                             const UrlKey& key,
+                             const EachUrlStat& each_stats,
+                             google::protobuf::Arena* arena) {
+        url_stat->set_uri(toValidUtf8(key.url_));
+
+        auto* total = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
+        build_url_histogram(total, each_stats.total);
+        url_stat->unsafe_arena_set_allocated_totalhistogram(total);
+
+        auto* fail = google::protobuf::Arena::Create<v1::PUriHistogram>(arena);
+        build_url_histogram(fail, each_stats.fail);
+        url_stat->unsafe_arena_set_allocated_failedhistogram(fail);
+
+        url_stat->set_timestamp(key.tick_);
+    }
 
     v1::PTransactionId* build_grpc_transaction_id(const TraceId& tid, google::protobuf::Arena* arena) {
         auto* ptid = google::protobuf::Arena::Create<v1::PTransactionId>(arena);
