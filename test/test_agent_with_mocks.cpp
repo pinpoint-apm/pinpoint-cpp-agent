@@ -2742,21 +2742,36 @@ protected:
     }
 };
 
+// A span client that reports whether it still holds its transport, i.e.
+// whether its channel has been closed.
+class TransportProbeGrpcSpan : public TestableGrpcSpan {
+public:
+    using TestableGrpcSpan::TestableGrpcSpan;
+    bool holdsTransport() const { return transport_.load() != nullptr; }
+};
+
 // Builds a shared agent whose init thread dies in openChannel(); waits for
 // the failure to be recorded so the caller observes the terminal state.
-std::shared_ptr<AgentImpl> make_init_failed_agent(const std::shared_ptr<Config>& cfg) {
+// @p span_out, when given, receives the agent's span client.
+std::shared_ptr<AgentImpl> make_init_failed_agent(const std::shared_ptr<Config>& cfg,
+                                                  const AgentOptions& options = {},
+                                                  TransportProbeGrpcSpan** span_out = nullptr) {
     auto grpc_agent = std::make_unique<FailingChannelGrpcAgent>(cfg);
     auto grpc_metadata = std::make_unique<TestableGrpcMetadata>(cfg);
-    auto grpc_span = std::make_unique<TestableGrpcSpan>(cfg);
+    auto grpc_span = std::make_unique<TransportProbeGrpcSpan>(cfg);
     auto grpc_stat = std::make_unique<TestableGrpcStats>(cfg);
     grpc_agent->injectMockStubs();
     grpc_metadata->injectMockStubs();
     grpc_span->injectMockStubs();
     grpc_stat->injectMockStubs();
+    if (span_out != nullptr) {
+        *span_out = grpc_span.get();
+    }
 
     auto agent = AgentImpl::createShared(
         cfg, std::move(grpc_agent), std::move(grpc_metadata),
         std::move(grpc_span), std::move(grpc_stat));
+    agent->setOptions(options);
     EXPECT_TRUE(agent->Start()) << "the synchronous half of Start() must succeed";
 
     wait_for_condition([&] { return agent->initFailed(); }, std::chrono::seconds(3),
@@ -2790,6 +2805,44 @@ TEST_F(StartAgentTest, StartAgentReplacesInitFailedGlobalAgent) {
     // brought up running beside the successor until that reference dies.
     EXPECT_TRUE(dead_agent->isExiting())
         << "a replaced init-failed agent must be shut down, not just dropped";
+}
+
+// An init failure used to leave running whatever the bring-up had started,
+// until a Shutdown(), a replacing StartAgent() or the last release: here the
+// config-file watcher Start() launched, which kept reloading the dead agent's
+// config (and the process-wide logger with it), and the channels opened so
+// far. The failure now stops them itself, with no Shutdown().
+TEST_F(StartAgentTest, InitFailureStopsWhatTheBringUpStarted) {
+    write_watcher_config(1, "test-app", false);
+    set_config_file_path(watcher_config_file_.string());
+    struct ScopedPollInterval {
+        ~ScopedPollInterval() { set_config_watcher_poll_interval(std::chrono::milliseconds(0)); }
+    } reset_poll_interval;
+    set_config_watcher_poll_interval(std::chrono::milliseconds(20));
+    auto cfg = make_config();
+    ASSERT_NE(cfg, nullptr);
+    ASSERT_TRUE(cfg->enable_config_file_watcher);
+
+    TransportProbeGrpcSpan* span = nullptr;
+    auto agent = make_init_failed_agent(cfg, options_, &span);
+    ASSERT_TRUE(agent->initFailed());
+    ASSERT_FALSE(agent->isExiting()) << "nothing has shut the agent down";
+    EXPECT_TRUE(wait_for_condition([&] { return !span->holdsTransport(); }, std::chrono::seconds(1)))
+        << "the channels the failed bring-up opened must be closed";
+
+    // As in ConfigFileWatcherReloadsChangesAndStopsPromptly: let the watcher
+    // seed its mtime, then change the file with a clearly newer mtime.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::error_code ec;
+    const auto previous_mtime = std::filesystem::last_write_time(watcher_config_file_, ec);
+    ASSERT_FALSE(ec);
+    write_watcher_config(50, "test-app", false);
+    std::filesystem::last_write_time(watcher_config_file_, previous_mtime + std::chrono::seconds(5), ec);
+    ASSERT_FALSE(ec);
+    EXPECT_FALSE(wait_for_condition([&] { return agent->getConfig()->sampling.counter_rate == 50; },
+                                    std::chrono::milliseconds(500)))
+        << "the config watcher of an init-failed agent kept reloading";
+    agent->Shutdown();
 }
 
 TEST_F(StartAgentTest, ReplacingInitFailedAgentKeepsNewLogSink) {
@@ -2834,6 +2887,86 @@ TEST_F(StartAgentTest, ReplacingInitFailedAgentAllowsShutdownFromTeardownLogSink
         replacement->Shutdown();
         _exit(started && replaced && old_agent->isExiting() && callback_returned ? 0 : 1);
     }, ::testing::ExitedWithCode(0), "");
+}
+
+// Shutdown() promises that no call into the sink is in flight once it returns,
+// and that holds for every caller, not only the one that runs the teardown.
+// Here StartAgent() is tearing the init-failed agent down when a host thread
+// shuts the same agent down: that second Shutdown() must wait for the first
+// teardown to release the sink, or a host freeing the sink's state right after
+// it returns frees it under the teardown's own log line.
+TEST_F(StartAgentTest, SecondShutdownWaitsForTheRunningTeardownsSinkCalls) {
+    auto old_agent = make_init_failed_agent(make_test_config_for_create_agent());
+    ASSERT_TRUE(old_agent->initFailed());
+    set_global_agent(old_agent);
+
+    std::atomic<bool> teardown_line{false};
+    std::atomic<bool> second_returned{false};
+    std::atomic<bool> returned_during_sink_call{false};
+    Logger::getInstance().setLogLevel("info");
+    Logger::getInstance().setSink([&](const char*, const char* message) {
+        if (std::string_view(message).find("close grpc workers done") == std::string_view::npos ||
+            teardown_line.exchange(true)) {
+            return;
+        }
+        // Keep the teardown's line in flight: a Shutdown() that returns
+        // meanwhile has returned with a call into the sink still running.
+        wait_for_condition([&] { return second_returned.load(); }, std::chrono::milliseconds(300));
+        returned_during_sink_call = second_returned.load();
+    });
+    std::thread second([&] {
+        wait_for_condition([&] { return teardown_line.load(); }, std::chrono::seconds(5));
+        old_agent->Shutdown();
+        second_returned = true;
+    });
+
+    set_config_string(kBaseConfigYaml);
+    EXPECT_TRUE(StartAgent());
+    second.join();
+    ASSERT_TRUE(teardown_line.load()) << "the replaced agent's teardown never logged its last line";
+    EXPECT_FALSE(returned_during_sink_call.load())
+        << "the second Shutdown() returned while the teardown was still calling the sink";
+}
+
+// A restart after Shutdown() must log like a first start. Shutdown() closes
+// the logger, which bans the stdout fallback, and only a file logger lifted
+// that again: the lines make_config() writes before it applies the new log
+// settings — the very ones explaining a typo in the new config — were lost in
+// a stdout-only setup, and StartAgent() failed without a word.
+TEST_F(StartAgentTest, RestartAfterShutdownReportsConfigErrorsOnStdout) {
+    auto agent = install_mock_agent(make_test_config_for_create_agent());
+    agent->Shutdown();
+
+    // A misspelled key leaves ApplicationName unset, which check() refuses.
+    set_config_string(R"(
+ApplicatonName: test-app
+Collector:
+  GrpcHost: 127.0.0.1
+)");
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    const bool started = StartAgent();
+    std::cout.flush();
+    const auto captured = testing::internal::GetCapturedStdout();
+    EXPECT_FALSE(started);
+    EXPECT_NE(captured.find("unknown config key 'ApplicatonName'"), std::string::npos)
+        << "the cause of the failed restart never reached stdout:\n" << captured;
+}
+
+// The same closed logger hid StartAgent()'s own notice when it replaced an
+// init-failed agent: shutting that agent down closed the logger first.
+TEST_F(StartAgentTest, ReplacingInitFailedAgentReportsItOnStdout) {
+    set_global_agent(make_init_failed_agent(make_test_config_for_create_agent()));
+    set_config_string(kBaseConfigYaml);
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    const bool started = StartAgent();
+    std::cout.flush();
+    const auto captured = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(started);
+    EXPECT_NE(captured.find("global agent failed to initialize; replacing it with a new agent"),
+              std::string::npos)
+        << captured;
 }
 
 // What the logger generation guards: an agent's Shutdown() still tearing down

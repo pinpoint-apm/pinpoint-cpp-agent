@@ -654,7 +654,12 @@ namespace pinpoint {
         /// is deferred until the workers finish (the object stays leaked if
         /// they never do) rather than blocking the release.
         ///
-        /// Idempotent: a second call (from any thread) is a harmless no-op.
+        /// Idempotent: a second call (from any thread) tears nothing down
+        /// again, but it returns only once the first call's teardown has
+        /// released the log sink, so the sink guarantee (see @ref LogSink)
+        /// holds for every caller — say, a host thread shutting down an agent
+        /// StartAgent() is replacing at the same time. Never call it from
+        /// inside the log sink.
         ///
         /// Terminal for this instance: it can never be brought back online,
         /// Enable() stays false and NewSpan() only returns noop spans. When
@@ -689,12 +694,20 @@ namespace pinpoint {
      * the call; copy anything the sink keeps.
      *
      * @warning Contract, enforced by nothing but this comment:
-     * - **Reentrancy is tolerated, not useful.** The sink runs without the
-     *   agent's logger mutex held, so calling a pinpoint API from it does not
-     *   deadlock; any line the agent would log from inside the sink on that
-     *   thread is dropped. Calling Shutdown() from the sink is allowed.
+     * - **Must not start, stop or reload the agent.** Never call StartAgent(),
+     *   Shutdown() (on any agent, including by destroying a ScopedAgent) or
+     *   ReloadAgentConfig() from the sink. The sink can be called while the
+     *   agent holds a lock those calls need, or while a shutdown or
+     *   replacement waits for this very sink call to return, so such a call
+     *   can deadlock or stall shutdown. A host that wants to react to a log
+     *   line that way must hand the work to another thread.
+     * - **Other reentrancy is tolerated, not useful.** The sink runs without
+     *   the agent's logger mutex held, so the remaining pinpoint APIs
+     *   (GlobalAgent(), spans) do not deadlock when called from it; any line
+     *   the agent would log from inside the sink on that thread is dropped.
      * - **Cleared synchronously.** Once Shutdown() (or a failed StartAgent())
-     *   returns, no call into the sink is in flight on any thread.
+     *   returns, no call into the sink is in flight on any thread — also when
+     *   another thread had already begun shutting the same agent down.
      * - **Must not block.** It is called inline on whichever thread logged,
      *   including host request threads and the gRPC workers.
      * - Exceptions escaping it are swallowed and the line is dropped.
@@ -778,7 +791,8 @@ namespace pinpoint {
         /// before the configuration is parsed, so config errors reach it too,
         /// and dropped again by Shutdown() — the host's logger is free to die
         /// after that. Read the callback contract at @ref LogSink before
-        /// writing one: it must not block and must be thread-safe.
+        /// writing one: it must not block, must be thread-safe, and must not
+        /// call StartAgent(), Shutdown() or ReloadAgentConfig().
         LogSink log_sink;
     };
 
@@ -817,7 +831,10 @@ namespace pinpoint {
      * Calling StartAgent() again in the same process leaves the already
      * running agent untouched and returns true (with a warning); use
      * ReloadAgentConfig() to change its configuration. After Shutdown() a new
-     * StartAgent() call builds a fresh agent.
+     * StartAgent() call builds a fresh agent; one that finds the global agent
+     * failed to initialize shuts that one down first and replaces it.
+     * Concurrent calls are serialized. Never call it from inside the log sink
+     * (see @ref LogSink).
      *
      * @warning Pair every StartAgent() with a Shutdown() before the process
      * ends — through helper::ScopedAgent, an explicit call, or the opt-in

@@ -117,7 +117,14 @@ static R pt_api_call(const char* func, R fallback, F&& fn) noexcept {
 // addresses of the leaked sentinels.
 // ============================================================================
 
-struct pt_agent_s { pinpoint::AgentPtr ptr; };
+struct pt_agent_s {
+    pinpoint::AgentPtr ptr;
+    // Set only on the disabled-agent wrapper a token is retargeted to (see
+    // sync_global_agent_handle): the agent the token named before, which
+    // pt_agent_shutdown() still owes a wait for its teardown. Weak, so the
+    // C layer keeps releasing replaced agents.
+    std::weak_ptr<pinpoint::Agent> retired{};
+};
 struct pt_span_s  { pinpoint::SpanPtr  ptr; };
 static_assert(alignof(pt_agent_s) > 1 && alignof(pt_span_s) > 1,
               "noop sentinel addresses must not use the odd token tag");
@@ -294,7 +301,21 @@ public:
         return reader.entry;
     }
 
+    // The agent a token retargeted at the disabled agent named before, while
+    // it is still alive. Read from the registry itself: the reader caches
+    // keep only the fact that a token is disabled.
+    pinpoint::AgentPtr retired(pt_agent_t handle) {
+        if (handle == nullptr) return {};
+        const auto owned = registry_.find(handle);
+        return owned ? owned->retired.lock() : pinpoint::AgentPtr{};
+    }
+
+    // Callers serialize retargets (sync_global_agent_handle's mutex), so the
+    // entry read here is still the one the swap below replaces.
     Entry retarget(pt_agent_t handle, Entry replacement) {
+        if (const auto current = registry_.find(handle); current && replacement) {
+            replacement->retired = current->ptr;
+        }
         auto previous = registry_.retarget(handle, std::move(replacement));
         // No registry lock is held here; idle readers must release the old agent too.
         for (auto& reader : readers_) {
@@ -963,6 +984,15 @@ void pt_agent_shutdown(pt_agent_t agent) {
         pt_handle_call(agent, [](pt_agent_t valid) {
             valid->ptr->Shutdown();
         });
+        // A handle already retargeted at the disabled agent still names the
+        // agent it was minted for, and that agent's teardown — the shutdown
+        // or replacement that retired the handle — may still be calling the
+        // sink. Its Shutdown() waits for that teardown (an immediate return
+        // when it is over), so this call keeps the promise that the sink is
+        // released once it returns.
+        if (const auto retired = agent_handle_registry().retired(agent)) {
+            retired->Shutdown();
+        }
         // The agent just left the singleton: retarget its handle at the
         // disabled agent so the library no longer pins it.
         (void)sync_global_agent_handle();

@@ -15,6 +15,20 @@
   original ABI-2 library for binaries that have not migrated. Never alias the
   new library under its old ABI-2 name.
 
+- **The log sink must not start, stop or reload the agent.** Since 2.1.0 the
+  `LogSink` contract allowed `Shutdown()` from inside the sink. It no longer
+  does. A sink (`AgentOptions::log_sink`, `pt_agent_options_set_log_sink()`)
+  must not call `StartAgent()`, `Shutdown()` (including by destroying a
+  `ScopedAgent`) or `ReloadAgentConfig()`, nor their C forms
+  `pt_start_agent()`, `pt_agent_shutdown()` and `pt_reload_agent_config()`.
+  The agent can call the sink while it holds a lock those calls need, or while
+  a shutdown or replacement waits for that very sink call to return. Such a
+  call can therefore deadlock or stall shutdown until its deadline.
+  The other APIs remain callable from the sink. A host that restarts or stops
+  the agent in reaction to a log line must hand that work to another thread.
+  Documented on `pinpoint::LogSink` in `tracer.h` and `pt_log_sink_fn` in
+  `tracer_c.h`.
+
 ### Added
 
 - **An unset `AgentName` is auto-generated as `<hostname>-<pid>`.** It used to
@@ -121,10 +135,35 @@
   beside the live one, so a thread that mixes the two neither allocates nor
   refills the cache on each call.
 
-- **Restarting an init-failed agent cannot deadlock on a repeated shutdown
-  from its teardown log sink.** `Shutdown()` now returns before taking the
-  global agent lock when shutdown is already in progress, so the teardown
-  callback can return while `StartAgent()` holds that lock during replacement.
+- **A second `Shutdown()` waits for the running teardown to release the log
+  sink.** A call that found the shutdown already under way returned at once,
+  while the first call's teardown kept logging into the host sink until its
+  end (`close grpc workers done`). That broke the promise that no call into
+  the sink is in flight once `Shutdown()` returns: a host thread shutting down
+  an agent `StartAgent()` was replacing, then freeing the sink's state, freed
+  it under the teardown's last lines. Every `Shutdown()` now returns only once
+  the teardown has released the sink, whichever thread runs it. In the C API
+  the same goes for `pt_agent_shutdown()` through a handle the library has
+  already retargeted at the disabled agent, which returned at once too: the
+  handle still waits for the teardown of the agent it named.
+
+- **A restart logs like a first start.** `Shutdown()` closes the log, and only
+  a new `Log.FilePath` reopened it, so in a setup without a sink or a log file
+  the lines a new `StartAgent()` writes before it applies its log settings were
+  dropped: the YAML and unknown-key errors in the new config, which explain a
+  restart that fails, and the notice that it replaces an agent that failed to
+  initialize. A new `StartAgent()` now reopens the log: those lines go to the
+  previous `Log.FilePath` when one was configured, and to stdout otherwise.
+
+- **An agent whose initialization fails stops what it had started.** Opening
+  the channels or starting the workers can fail after `StartAgent()` returned.
+  The agent then only stopped tracing: its config-file watcher kept reloading
+  its config (and with it the process-wide log settings), and the channels it
+  had opened, the AgentInfo scheduler, the ping stream and any worker already
+  started kept running until a `Shutdown()`, a replacing `StartAgent()` or the
+  last release of the agent. The failure now stops them and closes the
+  channels itself. The URL-stat and agent-stat workers, which never touch the
+  network, still wait for that teardown, which also joins the stopped threads.
 
 - **An async span keeps only its trace's error mask and SQL count alive, not
   the whole root span.** A child pointed at its root's span data, so every

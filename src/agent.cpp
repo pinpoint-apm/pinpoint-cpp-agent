@@ -50,8 +50,9 @@ namespace pinpoint {
         // AtomicSharedPtr below, so per-request lookups cannot contend with a
         // create/reload that holds this mutex across make_config()'s file I/O
         // and YAML parsing.
-        // Recursive because the documented host log sink may call Shutdown()
-        // while StartAgent() is logging under this writer lock.
+        // Recursive so a host log sink that breaks its contract and calls
+        // Shutdown() while StartAgent() logs under this writer lock does not
+        // self-deadlock (see pinpoint::LogSink: a sink must not).
         std::recursive_mutex global_agent_mutex;
 
         // Heap-allocated and never destroyed so its own static destruction
@@ -85,9 +86,10 @@ namespace pinpoint {
         }
 
         // Set while this thread runs a config reload under some agent's
-        // reload_mutex_. The host log sink may call ReloadAgentConfig() from a
-        // line the reload logs, and taking reload_mutex_ again on the same
-        // thread would deadlock; reloadConfigFromYaml() refuses instead.
+        // reload_mutex_. A host log sink must not call ReloadAgentConfig()
+        // (see pinpoint::LogSink), but one that does from a line the reload
+        // logs would take reload_mutex_ again on the same thread and deadlock;
+        // reloadConfigFromYaml() refuses instead.
         thread_local bool config_reload_in_progress = false;
 
         struct ConfigReloadScope {
@@ -700,12 +702,44 @@ namespace pinpoint {
         // returning it as the running agent forever. Set after enabled_ so
         // an observer of init_failed_ never sees a still-enabled agent.
         init_failed_ = true;
+        stop_after_init_failure();
         return;
     } catch (...) {
         LOG_ERROR("failed to init grpc workers: unknown exception");
         enabled_ = false;
         init_failed_ = true;
+        stop_after_init_failure();
         return;
+    }
+
+    void AgentImpl::stop_after_init_failure() noexcept {
+        // Whatever Start() and init_grpc_workers() brought up before the throw
+        // — the config watcher, the channels opened so far, the AgentInfo
+        // scheduler, the ping stream and any worker already spawned — has no
+        // use left, and used to run until a Shutdown(), a replacing
+        // StartAgent() or the last release tore the agent down: AgentInfo and
+        // pings for an agent that never traces, and a watcher reconfiguring
+        // the process-wide logger. Stopped here instead, on the init thread.
+        // Signals only, the same ones the teardown sends: this thread is
+        // kInit, which the teardown joins first, so it must neither join
+        // itself nor join what the teardown joins before kInit (the watcher,
+        // the AgentInfo scheduler). Those threads exit on the signal and stay
+        // joinable until the teardown, which repeats every step harmlessly.
+        // The URL-stat and agent-stat workers wait for isExiting() alone and
+        // keep running until then; they never touch the network.
+        request_stop_workers();
+        // Closing a channel only drops the client's own reference (see the
+        // stub access invariant, grpc.h): a worker still winding down keeps
+        // the snapshot it holds, and the next one it asks for is null, which
+        // every client treats as no channel. The teardown's own closes run
+        // after it joins this thread, so they cannot overlap these.
+        GrpcClient* const clients[] = {
+            grpc_agent_.get(), grpc_metadata_.get(), grpc_span_.get(),
+            grpc_stat_.get(), grpc_command_.get(),
+        };
+        for (auto* client : clients) {
+            try { if (client != nullptr) client->closeChannel(); } catch (...) {}
+        }
     }
 
     // The worker table. Adding a worker: add its enumerator to Worker, a row
@@ -792,7 +826,8 @@ namespace pinpoint {
         // Several take a worker mutex to signal (the wait mutexes, the ping
         // and stats stream_mutex_), which is why this runs on the deadline
         // runner, as the first step of teardown_workers(): a host log sink
-        // may call Shutdown() from a line logged under one of those mutexes,
+        // that breaks its contract (see pinpoint::LogSink) may call
+        // Shutdown() from a line logged under one of those mutexes,
         // and signaling from that thread would deadlock it, while the runner
         // just waits for the sink to return.
         // Per-call try/catch so one failing signal cannot skip the rest.
@@ -1268,29 +1303,63 @@ namespace pinpoint {
     }
 
     void AgentImpl::Shutdown() noexcept {
-        // Teardown log callbacks must not wait on StartAgent's global lock.
-        // Acquire pairs with do_shutdown()'s exchange, so an early return
-        // still sees the first Shutdown()'s unpublish without that lock.
-        if (shutting_down_.load(std::memory_order_acquire)) {
+        // Keep *this alive across do_shutdown() and the wait below: if the
+        // global handle holds the last reference, resetting it would destroy
+        // the agent mid-call when Shutdown() was reached through a raw pointer
+        // or reference.
+        std::shared_ptr<AgentImpl> self;
+        // Once a teardown is under way there is nothing to unpublish, so skip
+        // the global lock, which StartAgent() holds while it tears down an
+        // init-failed agent it replaces. Acquire pairs with do_shutdown()'s
+        // exchange, so this still sees the first caller's unpublish without
+        // that lock.
+        if (!shutting_down_.load(std::memory_order_acquire)) {
+            try {
+                std::lock_guard<std::recursive_mutex> lock(global_agent_mutex);
+                self = global_agent().load();
+                if (self.get() == this) {
+                    global_agent().store(nullptr);
+                } else {
+                    self.reset();
+                }
+            } catch (...) {}
+            // No deferred destroy from here: `self` (or the caller's own
+            // reference) keeps the object shared-owned, so a teardown that
+            // outlives the deadline is parked on a keep-alive instead. A
+            // no-op when a concurrent caller won the exchange.
+            do_shutdown(false);
+        }
+        // Whoever ran the teardown, return only once it has released the host
+        // sink: a host frees the sink's state as soon as Shutdown() returns,
+        // and a second caller returning at once — say, while StartAgent()
+        // tears down the agent it replaces — left the teardown's last lines
+        // calling into freed state.
+        wait_for_teardown();
+    }
+
+    void AgentImpl::mark_teardown_done() noexcept {
+        try {
+            {
+                std::lock_guard<std::mutex> lock(teardown_done_mutex_);
+                teardown_done_ = true;
+            }
+            teardown_done_cv_.notify_all();
+        } catch (...) {}
+    }
+
+    void AgentImpl::wait_for_teardown() noexcept {
+        // A sink must not call Shutdown() (see pinpoint::LogSink), but one
+        // that does must not hang: the teardown's Logger::shutdown() drains
+        // sink calls, this one among them. A forked child cannot wait either:
+        // its inherited state may name a teardown that runs, if at all, in
+        // the parent.
+        if (Logger::inSinkCall() || !ownedByThisProcess()) {
             return;
         }
-        // Keep *this alive across do_shutdown(): if the global handle holds the
-        // last reference, resetting it would destroy the agent mid-call when
-        // Shutdown() was reached through a raw pointer or reference.
-        std::shared_ptr<AgentImpl> self;
         try {
-            std::lock_guard<std::recursive_mutex> lock(global_agent_mutex);
-            self = global_agent().load();
-            if (self.get() == this) {
-                global_agent().store(nullptr);
-            } else {
-                self.reset();
-            }
+            std::unique_lock<std::mutex> lock(teardown_done_mutex_);
+            teardown_done_cv_.wait(lock, [this] { return teardown_done_; });
         } catch (...) {}
-        // No deferred destroy from here: `self` (or the caller's own
-        // reference) keeps the object shared-owned, so a teardown that
-        // outlives the deadline is parked on a keep-alive instead.
-        do_shutdown(false);
     }
 
     void AgentImpl::SharedDeleter::operator()(AgentImpl* agent) const noexcept {
@@ -1339,6 +1408,7 @@ namespace pinpoint {
             // dereference grpc_span_ / grpc_metadata_ would crash the host on
             // a null operator->. Deferred to ~AgentImpl instead, so the
             // pointers stay valid for this object's whole lifetime.
+            mark_teardown_done();
             return false;
         }
 
@@ -1355,8 +1425,8 @@ namespace pinpoint {
         const auto logger_generation = logger_generation_;
         // Through the runner even for an agent that never started, which has
         // no worker to join: its stop signals take the same worker mutexes,
-        // and the caller may be holding one (a log sink calling Shutdown(), see
-        // request_stop_workers()). Only a runner that cannot be spawned makes
+        // and the caller may be holding one (a log sink that breaks its
+        // contract and calls Shutdown(), see request_stop_workers()). Only a runner that cannot be spawned makes
         // the teardown inline.
         const bool destroy_deferred = teardown_workers_with_deadline(may_defer_destroy);
         // The runner may already have deleted this object. Only locals and
@@ -1365,6 +1435,13 @@ namespace pinpoint {
         // shutdown bans stdout, but still allows a configured file to reopen
         // for stragglers; the runner closes it again when they finish.
         try { Logger::getInstance().shutdown(0, logger_generation); } catch (...) {}
+        // The sink is released: let the other Shutdown() callers return.
+        // Not on the deferred path, where the object may be gone already —
+        // and nobody can be waiting: only the SharedDeleter defers, and it
+        // runs once the last reference is gone.
+        if (!destroy_deferred) {
+            mark_teardown_done();
+        }
         return destroy_deferred;
     }
 
@@ -1863,14 +1940,13 @@ namespace pinpoint {
                 init_failed_agent = agent->initFailed();
                 replaced_agent = true;
                 if (init_failed_agent) {
-                    // An init failure only disables the agent: whatever
-                    // init_grpc_workers() brought up before it threw — channels,
-                    // the AgentInfo scheduler, early workers, the config
-                    // watcher — keeps running until shutdown. Dropping our
-                    // reference is not enough when the host still holds an
-                    // AgentPtr, so tear it down here, before the successor
-                    // takes over the logger below. Shutdown() also evicts it
-                    // from the global handle.
+                    // An init-failed agent has signaled its threads to stop
+                    // (stop_after_init_failure()), but they are joined, and
+                    // the URL-stat and agent-stat workers stopped, only by a
+                    // teardown. Dropping our reference is not enough for one
+                    // when the host still holds an AgentPtr, so tear it down
+                    // here, before the successor takes over the logger below.
+                    // Shutdown() also evicts it from the global handle.
                     agent->Shutdown();
                 }
                 global_agent().store(nullptr);

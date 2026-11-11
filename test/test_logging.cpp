@@ -548,6 +548,58 @@ TEST_F(LoggingTest, StdoutLoggerDropsLogsAfterShutdown) {
     EXPECT_TRUE(captured.empty()) << "leaked to the host's stdout: " << captured;
 }
 
+// A new agent (StartAgent()'s setSink with new_agent) starts logging like a
+// first start: what it logs before its own log settings are applied — the
+// errors in a new config among them — must not be dropped as a straggler of
+// the previous agent's shutdown would be.
+TEST_F(LoggingTest, NewAgentSinkLiftsTheClosedStdoutLogger) {
+    Logger::getInstance().setFileLogger("", 0);
+    Logger::getInstance().shutdown();
+    Logger::getInstance().setSink({}, /*new_agent=*/true);
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    Logger::getInstance().logWarn("test.cpp", 1, "new agent on stdout");
+    std::cout.flush();
+    const auto captured = testing::internal::GetCapturedStdout();
+    EXPECT_NE(captured.find("new agent on stdout"), std::string::npos) << captured;
+}
+
+// With a log file configured, those lines go back to that file, not to a
+// stdout the host may not own, and the file stays open for the new agent.
+TEST_F(LoggingTest, NewAgentSinkReopensThePreviousLogFile) {
+    Logger::getInstance().setFileLogger(log_file_.string(), 10);
+    Logger::getInstance().shutdown();
+    Logger::getInstance().setSink({}, /*new_agent=*/true);
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    Logger::getInstance().logWarn("test.cpp", 1, "new agent in the file");
+    Logger::getInstance().logWarn("test.cpp", 2, "and again");
+    std::cout.flush();
+    const auto captured = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(captured.empty()) << "leaked to the host's stdout: " << captured;
+    Logger::getInstance().shutdown();
+    const auto content = read_file(log_file_.string());
+    EXPECT_NE(content.find("new agent in the file"), std::string::npos) << content;
+    EXPECT_NE(content.find("and again"), std::string::npos) << content;
+}
+
+// A setSink() that is not a new agent's (clearing the sink after a failed
+// start, say) leaves a closed logger closed.
+TEST_F(LoggingTest, PlainSetSinkKeepsTheClosedStdoutLoggerClosed) {
+    Logger::getInstance().setFileLogger("", 0);
+    Logger::getInstance().shutdown();
+    Logger::getInstance().setSink({});
+
+    std::cout.flush();
+    testing::internal::CaptureStdout();
+    Logger::getInstance().logWarn("test.cpp", 1, "still closed");
+    std::cout.flush();
+    const auto captured = testing::internal::GetCapturedStdout();
+    EXPECT_TRUE(captured.empty()) << "leaked to the host's stdout: " << captured;
+}
+
 // ========== stdout through a pipe ==========
 //
 // In a container stdout is a pipe, which C stdio buffers fully, and std::cout

@@ -19,6 +19,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <string>
 #include <thread>
@@ -337,9 +338,10 @@ namespace pinpoint {
         // reloadConfigFromYaml() hold it across make_config() as well, since
         // that builds from the running config too (and stamps its revision).
         // Lock order: this mutex first, then global_agent_mutex (agent.cpp) —
-        // reloadConfigFromYaml() takes both, and a log sink may call
-        // Shutdown() from a line logged under this mutex. Nothing may take
-        // this mutex while holding global_agent_mutex. Readers do not take
+        // reloadConfigFromYaml() takes both, and a log sink that breaks its
+        // contract may call Shutdown() from a line logged under this mutex.
+        // Nothing may take this mutex while holding global_agent_mutex.
+        // Readers do not take
         // this mutex; an unchanged generation-cache hit also avoids
         // AtomicSharedPtr's shared source.
         std::mutex reload_mutex_;
@@ -348,6 +350,13 @@ namespace pinpoint {
         std::atomic<uint64_t> trace_id_sequence_{};
         std::atomic<bool> enabled_{false};
         std::atomic<bool> shutting_down_{false};
+        // Set (and broadcast) once the teardown do_shutdown() runs has
+        // released the host sink, i.e. its Logger::shutdown() returned. Every
+        // Shutdown() caller waits for it, not only the one that won
+        // shutting_down_ (see wait_for_teardown()).
+        std::mutex teardown_done_mutex_;
+        std::condition_variable teardown_done_cv_;
+        bool teardown_done_{false};
         // Set by createShared(); see selfRef().
         std::weak_ptr<AgentImpl> self_weak_;
         // Start() flips started_ and records owner_pid_. The supported model
@@ -396,6 +405,10 @@ namespace pinpoint {
         /// responsible for gRPC communication and enables the agent. Runs on
         /// init_thread_.
         void init_grpc_workers();
+        /// @brief init_grpc_workers()' failure path: sends every stop signal
+        /// and closes the channels, so nothing the failed bring-up started
+        /// keeps running until the teardown. Never joins (it runs on kInit).
+        void stop_after_init_failure() noexcept;
         /// @brief Logs, once per agent, that this handle was inherited across
         /// fork() and cannot be used in this process.
         void warn_fork_inheritance() const noexcept;
@@ -448,6 +461,14 @@ namespace pinpoint {
         /// @return true when destruction was deferred; the caller must not
         ///         destroy the object.
         bool do_shutdown(bool may_defer_destroy) noexcept;
+        /// @brief Marks the teardown finished: wakes every wait_for_teardown().
+        void mark_teardown_done() noexcept;
+        /// @brief Blocks until do_shutdown()'s teardown — run by whichever
+        /// caller won shutting_down_ — has released the host sink. Returns at
+        /// once on a thread inside a sink call, whose own call that
+        /// teardown's sink drain waits for, and for an agent inherited across
+        /// fork(), whose teardown thread does not exist in this process.
+        void wait_for_teardown() noexcept;
     };
 
     // Test helpers for managing the global agent singleton

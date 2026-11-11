@@ -92,13 +92,22 @@ namespace pinpoint {
          * sees no duplicates. See `pinpoint::LogSink` for the contract the
          * callback owes us; shutdown() clears the sink, because past that
          * point the host's logger may already be gone.
-         * @param new_agent Starts a new ownership generation for StartAgent().
+         * @param new_agent Starts a new ownership generation for StartAgent(),
+         *        and lifts the closed state a previous agent's shutdown()
+         *        left behind (reopening its log file, if one is configured):
+         *        what a new agent logs before its own log settings are
+         *        applied must be written like a first start's lines, not
+         *        dropped.
          */
         void setSink(LogSink sink, bool new_agent = false);
         /// @brief Waits for calls into a sink just replaced/cleared to return.
         /// No-op on a thread that is itself inside the sink (a sink that
         /// calls Shutdown() must not wait for itself).
         void drain_sink_calls() noexcept;
+        /// @brief True while the calling thread is inside a call into the
+        /// host sink. Nothing that waits for a sink drain may wait from such
+        /// a thread: the drain waits for this very call to return.
+        static bool inSinkCall() noexcept;
         /// @brief Flushes pending log messages and releases file resources,
         /// and bans the std::cout fallback from there on (see `closed_`).
         /// Idempotent: the teardown paths call it more than once, and the
@@ -221,7 +230,8 @@ namespace pinpoint {
         int max_backups_{1};
         std::uint64_t current_file_size_{0};
         bool file_enabled_{false};
-        // Set by shutdown(), cleared by setFileLogger(). It bans the
+        // Set by shutdown(), cleared by setFileLogger() and by a new agent's
+        // setSink(). It bans the
         // std::cout fallback rather than logging itself: the agent is
         // embedded in hosts (nginx) whose stdout must not be polluted by
         // stragglers that log after shutdown. A configured log file stays
@@ -236,7 +246,7 @@ namespace pinpoint {
         // setFileLogger(), which is configuration time and keeps the fallback
         // so the host can see what went wrong, these strand a running agent
         // whose every later line would otherwise land on the host's stdout.
-        // Cleared by setFileLogger().
+        // Cleared by setFileLogger() and by a new agent's setSink().
         bool file_broken_{false};
         std::unique_ptr<std::ofstream> file_stream_;
         // The pointer is guarded by mutex_; the CALL is not made under it.

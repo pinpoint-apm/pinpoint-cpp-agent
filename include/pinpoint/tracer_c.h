@@ -410,12 +410,20 @@ void pt_agent_options_set_app_type(pt_agent_options_t options, int32_t app_type)
  * call; copy anything the sink keeps.
  *
  * Contract:
- * - Reentrancy is tolerated: the sink runs without the agent's logger mutex
- *   held, so a pt_* call from inside it does not deadlock; any line the agent
- *   would log from inside the sink on that thread is dropped.
+ * - Must not start, stop or reload the agent: never call pt_start_agent(),
+ *   pt_agent_shutdown() or pt_reload_agent_config() from the sink. The sink
+ *   can be called while the agent holds a lock those calls need, or while a
+ *   shutdown or replacement waits for this very sink call to return, so such
+ *   a call can deadlock or stall shutdown. Hand that work to another thread.
+ * - Other reentrancy is tolerated: the sink runs without the agent's logger
+ *   mutex held, so the remaining pt_* calls do not deadlock from inside it;
+ *   any line the agent would log from inside the sink on that thread is
+ *   dropped.
  * - Cleared synchronously: once pt_agent_shutdown() (or a failed
  *   pt_start_agent()) returns, no call into the sink is in flight on any
- *   thread, so userdata may be freed.
+ *   thread, so userdata may be freed. That holds also when another thread had
+ *   already begun shutting the agent down or replacing it, and for a handle
+ *   already acting as the disabled agent.
  * - Must not block: it runs inline on whichever thread logged, including host
  *   request threads and the agent's gRPC workers.
  * - Must be thread-safe: several threads call it concurrently.
@@ -495,6 +503,8 @@ void pt_agent_options_set_agent_version(pt_agent_options_t options, const char* 
  * Calling pt_start_agent() again in the same process leaves the already
  * running agent untouched and reports success (with a warning). After
  * pt_agent_shutdown() a new pt_start_agent() call builds a fresh agent.
+ * Concurrent calls are serialized. Never call it from inside the log sink
+ * (see pt_log_sink_fn).
  *
  * An agent inherited across fork() is unusable in the child and is refused
  * (returns 0) — see pinpoint::StartAgent().
@@ -602,6 +612,13 @@ int pt_agent_is_enabled(pt_agent_t agent);
  * pt_agent_is_enabled() stays 0 and it only produces noop spans. When it is
  * the global agent it is also removed from the singleton, so pt_global_agent()
  * returns the disabled-agent sentinel until a new one is installed.
+ *
+ * Returns once the agent's log sink is released (see pt_log_sink_fn), also
+ * when another thread is already shutting the agent down and when @p agent
+ * already acts as the disabled agent because the agent it named was shut
+ * down or replaced: the call then waits for that agent's teardown, which may
+ * still be running, and stops nothing else. Never call it from inside the log
+ * sink.
  *
  * To resume tracing in the same process, call pt_start_agent() again and take
  * the fresh agent's handle from pt_global_agent(); the old handle stays a

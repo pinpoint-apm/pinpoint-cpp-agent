@@ -172,10 +172,17 @@ one; the parts that decide whether your sink is correct:
   which is the `pt_agent_shutdown()` that clears the sink — or the
   `pt_start_agent()` call itself when that returns `0`, since a failed start
   drops the sink too. After either returns, no call is in flight on any thread
-  and `userdata` may be freed.
-- **Calling `pt_*` from inside it is safe** (the sink runs without the agent's
-  logger mutex held); a line the agent would log from inside the sink on that
-  thread is dropped rather than recursing.
+  and `userdata` may be freed — also when another thread had already begun
+  shutting the agent down or replacing it, and when the handle you pass
+  already acts as the disabled agent.
+- **It must not call `pt_start_agent()`, `pt_agent_shutdown()` or
+  `pt_reload_agent_config()`.** The sink can run while the agent holds a lock
+  those calls need, or while a shutdown waits for that very sink call to
+  return, so they can deadlock or stall shutdown. To react to a log line by
+  restarting or stopping the agent, hand the work to another thread.
+- **Other `pt_*` calls from inside it are safe** (the sink runs without the
+  agent's logger mutex held); a line the agent would log from inside the sink
+  on that thread is dropped rather than recursing.
 - Passing `NULL` for `sink` clears it.
 
 ### Using the global agent

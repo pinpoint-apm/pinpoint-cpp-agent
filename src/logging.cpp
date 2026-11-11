@@ -123,6 +123,10 @@ namespace pinpoint {
         thread_local bool in_sink_call = false;
     }
 
+    bool Logger::inSinkCall() noexcept {
+        return in_sink_call;
+    }
+
     void Logger::setSink(LogSink sink, bool new_agent) {
         auto next_sink = sink ? std::make_shared<const LogSink>(std::move(sink)) : nullptr;
         {
@@ -130,6 +134,21 @@ namespace pinpoint {
             revision_.fetch_add(1, std::memory_order_release);
             if (new_agent) {
                 generation_.fetch_add(1, std::memory_order_release);
+                // A new agent logs like a first start until make_config()
+                // applies its log settings: the previous agent's shutdown()
+                // must not keep banning the stdout fallback, or the lines that
+                // explain a failed restart (a typo in the new config, the
+                // replaced agent) are dropped in a stdout-only setup.
+                closed_ = false;
+                file_broken_ = false;
+                if (!file_enabled_ && !file_path_.empty()) {
+                    // The previous agent's log file, which its shutdown()
+                    // closed: those early lines belong there rather than on a
+                    // stdout the host may not own. A failed reopen keeps the
+                    // stdout fallback, as setFileLogger() does at
+                    // configuration time.
+                    (void)openFileLocked();
+                }
             }
             sink_ = std::move(next_sink);
             // Release: publishes sink_ to the acquire-load in write(), which

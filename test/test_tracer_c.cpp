@@ -555,6 +555,44 @@ TEST_F(TracerCApiTest, ShutDownAgentIsReleasedAndKeptHandleActsDisabled) {
     EXPECT_NE(pt_global_agent(), agent_) << "with no global agent, the disabled sentinel";
 }
 
+// pt_agent_shutdown() promises the sink is released once it returns, also for
+// a handle the C layer has already retargeted at the disabled agent. Here the
+// agent's teardown is still running on another thread — the Shutdown() that
+// retired the handle — when a host thread shuts the agent down through its
+// kept handle: that call must wait for the teardown's sink calls too, not
+// return at once as the disabled agent's Shutdown() does.
+TEST_F(TracerCApiTest, ShutdownThroughRetiredHandleWaitsForTheRunningTeardown) {
+    struct SinkGuard {
+        ~SinkGuard() { pinpoint::Logger::getInstance().setSink({}); }
+    } sink_guard;
+    const auto kept = agent_;
+    std::atomic<bool> teardown_line{false};
+    std::atomic<bool> second_returned{false};
+    std::atomic<bool> returned_during_sink_call{false};
+    pinpoint::Logger::getInstance().setLogLevel("info");
+    pinpoint::Logger::getInstance().setSink([&](const char*, const char* message) {
+        if (std::string_view(message).find("close grpc workers done") == std::string_view::npos ||
+            teardown_line.exchange(true)) {
+            return;
+        }
+        pinpoint::wait_for_condition([&] { return second_returned.load(); },
+                                     std::chrono::milliseconds(300));
+        returned_during_sink_call = second_returned.load();
+    });
+    std::thread first([&] { mock_agent_->Shutdown(); });
+    EXPECT_TRUE(pinpoint::wait_for_condition([&] { return teardown_line.load(); },
+                                             std::chrono::seconds(5)))
+        << "the teardown never logged its last line";
+    // The global agent changed, so this retargets the kept handle.
+    EXPECT_NE(pt_global_agent(), kept);
+    EXPECT_EQ(pt_agent_is_enabled(kept), 0);
+    pt_agent_shutdown(kept);
+    second_returned = true;
+    first.join();
+    EXPECT_FALSE(returned_during_sink_call.load())
+        << "pt_agent_shutdown() returned while the teardown was still calling the sink";
+}
+
 TEST_F(TracerCApiTest, IdleHandleReadersDoNotPinShutDownAgent) {
     const auto old_handle = agent_;
     const std::weak_ptr<pinpoint::AgentImpl> watched = mock_agent_;

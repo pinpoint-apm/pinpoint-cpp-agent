@@ -206,3 +206,35 @@ the contract `tracer.h` places on HTTP-backed readers:
   turns every request into its own trace is visible in the agent log.
 - The three-header rule above applies unchanged; case-insensitive matching
   changes how a header is *found*, not which headers are *required*.
+
+## 13. Shutdown and the Log Sink
+
+Not a span rule, but a lifetime rule of the same kind, about the agent itself:
+what the host log sink (`AgentOptions::log_sink`,
+`pt_agent_options_set_log_sink()`) may do, and when it may be torn down.
+The full callback contract is on `pinpoint::LogSink` in `tracer.h` and on
+`pt_log_sink_fn` in `tracer_c.h`.
+
+- **The sink must not start, stop or reload the agent.** Never call
+  `StartAgent()`, `Shutdown()` (including by destroying a `ScopedAgent`) or
+  `ReloadAgentConfig()` from it, nor `pt_start_agent()`, `pt_agent_shutdown()`
+  or `pt_reload_agent_config()`. The agent can call the sink while it holds a
+  lock those calls need, or while a shutdown or replacement waits for that very
+  sink call to return, so such a call can deadlock or stall shutdown until its
+  deadline. To restart or stop the agent in reaction to a log line, hand the
+  work to another thread. Other API calls from the sink are safe; a line the
+  agent would log from inside the sink is dropped.
+- **Once `Shutdown()` returns, no call into the sink is in flight on any
+  thread**, so the host may free the sink's state. That holds for every
+  `Shutdown()` of the agent, not only the one that runs the teardown: a second
+  call — from a host thread, while `StartAgent()` is replacing the same agent,
+  say — returns only once the first call's teardown has released the sink. In
+  the C API the same holds for `pt_agent_shutdown()`, including through a handle
+  that already acts as the disabled agent because its agent was shut down or
+  replaced. A failed `StartAgent()` / `pt_start_agent()` releases the sink it
+  installed before it returns.
+- **A restart logs like a first start.** The lines a new `StartAgent()` writes
+  before it applies its own log settings — a typo in the new config, the notice
+  that it replaces a failed agent — go to the previous `Log.FilePath` when one
+  was configured, and to stdout otherwise, rather than being dropped because the
+  previous agent's shutdown closed the log.

@@ -175,9 +175,10 @@ Leading and trailing whitespace in `ApplicationName`, `AgentName`, `ServiceName`
 > `pt_agent_options_set_log_sink()` (C) before starting the agent. A sink
 > replaces the built-in sinks, so lines are not duplicated, and the settings
 > above then apply to nothing. Read the callback contract in the header first:
-> the sink must not block and must be thread-safe; a line the agent would log
-> from inside the sink is dropped, and once shutdown returns no call into the
-> sink is still in flight.
+> the sink must not block, must be thread-safe, and must not start, stop or
+> reload the agent; a line the agent would log from inside the sink is
+> dropped, and once shutdown returns no call into the sink is still in
+> flight.
 
 > **Multi-process hosts:** the built-in size rotation is not safe when several
 > worker processes share one log file — use the `%pid%` placeholder to give
