@@ -2934,6 +2934,8 @@ TEST_F(StartAgentTest, SecondShutdownWaitsForTheRunningTeardownsSinkCalls) {
 // settings — the very ones explaining a typo in the new config — were lost in
 // a stdout-only setup, and StartAgent() failed without a word.
 TEST_F(StartAgentTest, RestartAfterShutdownReportsConfigErrorsOnStdout) {
+    // Clear any previous test's log file before shutdown closes the logger.
+    Logger::getInstance().setFileLogger("", 0);
     auto agent = install_mock_agent(make_test_config_for_create_agent());
     agent->Shutdown();
 
@@ -2956,6 +2958,8 @@ Collector:
 // The same closed logger hid StartAgent()'s own notice when it replaced an
 // init-failed agent: shutting that agent down closed the logger first.
 TEST_F(StartAgentTest, ReplacingInitFailedAgentReportsItOnStdout) {
+    // Clear any previous test's log file before replacement shuts the agent down.
+    Logger::getInstance().setFileLogger("", 0);
     set_global_agent(make_init_failed_agent(make_test_config_for_create_agent()));
     set_config_string(kBaseConfigYaml);
     std::cout.flush();
